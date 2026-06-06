@@ -1,4 +1,3 @@
-# Shows a "Sponsor" button on the repo. GitHub Sponsors (github:) needs a payout setup (Stripe),
-# so for now the button points at the README's Bitcoin section. Add `github:` later.
+# Sponsor button points to the README Support section.
 custom: ["https://github.com/max-rh/sshelf#support"]
-# github: [max-rh]   # enable once GitHub Sponsors is set up
+# github: [max-rh]

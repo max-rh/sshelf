@@ -7,9 +7,10 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
-## 2026-06-06 — README: trim Support section
+## 2026-06-06 — Funding notes: trim public meta-commentary
 
-- Removed the BTC-address caveat from the Support section (the donate badge + address stay).
+- Removed the BTC-address caveat from the README Support section (the donate badge + address stay).
+- Trimmed the `.github/FUNDING.yml` comment down to the functional config.
 
 ---
 
