@@ -3,6 +3,8 @@
 A fast terminal UI for managing and connecting to SSH hosts. Save each node once, then
 fuzzy-search and connect in two keystrokes.
 
+![sshelf — fuzzy-search your SSH hosts and connect in two keystrokes](docs/sshelf-readme.gif)
+
 **`sshelf` keeps its own host database and generates the correct `ssh` command for you — it
 never reads or edits `~/.ssh/config`** (except an explicit, read-only import). No more hunting
 for the right `ssh -i … -J … user@host` invocation.

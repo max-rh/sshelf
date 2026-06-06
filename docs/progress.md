@@ -7,6 +7,13 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-07 — README demo GIF
+
+- Added an animated demo to the top of the README (`docs/sshelf-readme.gif`): fuzzy-search →
+  yank the generated `ssh` command.
+
+---
+
 ## 2026-06-06 — v0.1.0 released
 
 - First public release is live: dist's `Release` workflow built all four targets, created the
