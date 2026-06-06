@@ -7,6 +7,17 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-06 — v0.1.0 released
+
+- First public release is live: dist's `Release` workflow built all four targets, created the
+  GitHub Release (tarballs + shell installer), and published the Homebrew formula; `release-deb`
+  attached the amd64/arm64 `.deb`s. All jobs green.
+- README **Install** section rewritten for the real channels (Homebrew, shell installer, `.deb`,
+  from source). `docs/packaging.md` synced to the shipped setup: `dist-workspace.toml` config,
+  `workflow_run` sequencing of the `.deb` job, and the `HOMEBREW_TAP_TOKEN` prerequisite.
+
+---
+
 ## 2026-06-06 — Release pipeline: dist (cargo-dist) wired up
 
 - `dist init`: shell + Homebrew installers, 4 Unix targets (mac + linux × x86_64/arm64),

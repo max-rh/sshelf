@@ -35,14 +35,32 @@ your editor, and adds things plain SSH config can't express as nicely:
 
 ## Install
 
-Requires **Rust 1.88+** and **OpenSSH 8.4+** (for password auto-supply). macOS and Linux.
+macOS and Linux, on x86_64 and arm64. The prebuilt installs below need **no Rust toolchain**;
+at runtime sshelf wants **OpenSSH 8.4+** (for password auto-supply).
+
+**Homebrew** (macOS or Linux):
 
 ```sh
-# from source
-git clone <repo> sshelf && cd sshelf
-cargo install --path .
-# or just build
-cargo build --release   # ./target/release/sshelf
+brew install max-rh/tap/sshelf
+```
+
+**Shell installer** (prebuilt binary, picks your platform):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/max-rh/sshelf/releases/latest/download/sshelf-installer.sh | sh
+```
+
+**Debian/Ubuntu** — grab the `.deb` for your architecture from the
+[latest release](https://github.com/max-rh/sshelf/releases/latest), then:
+
+```sh
+sudo apt install ./sshelf_*_amd64.deb      # or *_arm64.deb
+```
+
+**From source** (needs **Rust 1.88+**):
+
+```sh
+cargo install --git https://github.com/max-rh/sshelf
 ```
 
 > Linux uses a pure-Rust Secret Service backend (no `libdbus`/OpenSSL build deps).

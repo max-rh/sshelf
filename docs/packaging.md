@@ -94,17 +94,26 @@ Answer `dist init` with:
 - **Installers:** `shell` and `homebrew`.
 - **Targets:** `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`,
   `aarch64-unknown-linux-gnu` (add the two `*-musl` targets if you want static tarballs).
-- **Homebrew tap:** `max-rh/homebrew-tap` (create that empty GitHub repo first).
+  **Decline Windows** — sshelf is Unix-only; remove `x86_64-pc-windows-msvc` if it's added.
+- **Updater:** **no** (`install-updater = false`) — Homebrew/apt self-update, and the
+  shell-installer audience is small.
+- **Homebrew tap:** `max-rh/homebrew-tap`. Create that repo first and **initialize it with a
+  README** (so it has a default branch dist can push the formula to). Then add a
+  **`HOMEBREW_TAP_TOKEN`** secret to the `sshelf` repo — a PAT with write access to the tap repo,
+  because the default `GITHUB_TOKEN` can't push to *another* repo. Without it the
+  `publish-homebrew-formula` job fails.
 
-`dist init` writes its config and **generates `.github/workflows/release.yml`**. The config
-lives in `Cargo.toml` under `[workspace.metadata.dist]` (newer dist may use a `dist-workspace.toml`)
-— let `dist init`/`dist generate` manage it (it pins `cargo-dist-version` to your installed
-version). It looks roughly like:
+`dist init` writes its config to **`dist-workspace.toml`** and **generates
+`.github/workflows/release.yml`**. Let `dist init`/`dist generate` manage it (it pins
+`cargo-dist-version` to your installed version). Our config:
 
 ```toml
-[workspace.metadata.dist]
-cargo-dist-version = "0.x.y"     # managed by dist; don't hand-edit
-ci = ["github"]
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.32.0"    # managed by dist; don't hand-edit
+ci = "github"
 installers = ["shell", "homebrew"]
 tap = "max-rh/homebrew-tap"
 targets = [
@@ -113,20 +122,25 @@ targets = [
 ]
 publish-jobs = ["homebrew"]
 install-path = "CARGO_HOME"
+install-updater = false
 ```
+
+> **Drop the Windows target:** `dist init` adds `x86_64-pc-windows-msvc` by default. sshelf is
+> Unix-only (the connect path uses `exec()`), so the Windows build can't compile — remove that
+> target from `targets`, leaving the four above.
 
 ### Releasing
 
 ```sh
 # bump version in Cargo.toml, commit, then:
 git tag v0.1.0
-git push --tags
+git push origin v0.1.0
 ```
 
-This triggers **two** workflows on the tag:
-- `release.yml` (dist) → builds every target, creates the GitHub Release with tarballs +
-  `dist-manifest.json` + shell installer, and **updates the formula in `max-rh/homebrew-tap`**.
-- `release-deb.yml` (ours) → attaches the `.deb`s (§4).
+The tag triggers `release.yml` (dist): it builds every target, creates the GitHub Release
+(tarballs + `dist-manifest.json` + shell installer), and **updates the formula in
+`max-rh/homebrew-tap`**. When that workflow *finishes*, `release-deb.yml` runs via `workflow_run`
+and attaches the `.deb`s to the Release (§4) — sequenced, not racing.
 
 Users then:
 
@@ -154,7 +168,7 @@ already in `Cargo.toml`:
 
 ```toml
 [package.metadata.deb]
-maintainer = "max-rh <you@example.com>"   # set your email
+maintainer = "max-rh <max-rh@mail.com>"    # public alias, not a personal inbox
 depends = "$auto, openssh-client"          # we exec ssh
 recommends = "gnome-keyring"               # Secret Service daemon (vault is the fallback)
 section = "utils"
@@ -164,27 +178,39 @@ section = "utils"
 The workflow [`.github/workflows/release-deb.yml`](../.github/workflows/release-deb.yml) builds
 **natively** on each arch (`ubuntu-22.04` for amd64, `ubuntu-24.04-arm` for arm64), generates
 completions + the man page with the `sshelf` subcommands, runs `cargo deb --no-build`, and
-attaches `target/debian/*.deb` to the same `v*` Release (it upserts, so it coexists with dist's
-`release.yml`). Outline:
+attaches `target/debian/*.deb` to the Release. It triggers on **`workflow_run`** — i.e. *after*
+dist's `release.yml` completes — so the two never race to create the Release: dist owns creation,
+this only attaches. (A `release: published` trigger wouldn't fire, because dist creates the
+Release with `GITHUB_TOKEN`, and `GITHUB_TOKEN`-created events can't trigger downstream workflows.)
+Outline:
 
 ```yaml
-strategy:
-  matrix:
-    include:
-      - { arch: amd64, os: ubuntu-22.04 }
-      - { arch: arm64, os: ubuntu-24.04-arm }
-steps:
-  - run: cargo build --release --locked
-  - run: |                       # generate the packaged extras
-      bin=target/release/sshelf
-      mkdir -p dist-extra
-      "$bin" completions bash > dist-extra/sshelf.bash
-      "$bin" completions zsh  > dist-extra/_sshelf
-      "$bin" completions fish > dist-extra/sshelf.fish
-      "$bin" man              > dist-extra/sshelf.1
-  - run: cargo deb --no-build    # .deb arch == runner arch
-  - uses: softprops/action-gh-release@v2
-    with: { files: target/debian/*.deb }
+on:
+  workflow_run: { workflows: ["Release"], types: [completed] }
+jobs:
+  deb:
+    # only after a successful, tag-triggered Release run; head_branch is the tag
+    if: github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-22.04 }
+          - { arch: arm64, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ github.event.workflow_run.head_branch }}" }   # the release tag
+      - run: cargo build --release --locked
+      - run: |                       # generate the packaged extras
+          bin=target/release/sshelf
+          "$bin" completions bash > dist-extra/sshelf.bash   # + zsh, fish
+          "$bin" man              > dist-extra/sshelf.1
+      - run: cargo deb --no-build    # .deb arch == runner arch
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ github.event.workflow_run.head_branch }}"
+          files: target/debian/*.deb
 ```
 
 Users install a downloaded package with:
@@ -317,9 +343,10 @@ is fine for Homebrew; ship a stapled `.pkg` for offline direct downloads.)
 
 1. Bump `version` in `Cargo.toml`; update a `CHANGELOG.md`.
 2. CI green (`cargo test`, `clippy -D warnings`, `cargo fmt --check`).
-3. `git tag vX.Y.Z && git push --tags`.
-4. Watch the two workflows: `release.yml` (dist → tarballs + Homebrew tap + shell installer) and
-   `release-deb.yml` (→ `.deb`s). macOS artifacts signed/notarized (§6).
+3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. Watch `release.yml` (dist → tarballs + Homebrew tap + shell installer); when it finishes,
+   `release-deb.yml` runs via `workflow_run` and attaches the `.deb`s. macOS artifacts are ad-hoc
+   signed (§6).
 5. Smoke-test one install per channel and **connect to a host from inside the TUI** (the
    real-TTY acceptance check in `docs/progress.md`):
    - `brew install max-rh/tap/sshelf`
