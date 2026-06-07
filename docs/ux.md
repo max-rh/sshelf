@@ -117,6 +117,18 @@ already present, warning about unsupported `Match` / `Include` / `ProxyJump`. v1
 new hosts at once (no per-host selection screen) — curate afterwards with `Ctrl-e` / `Ctrl-d`.
 The CLI form supports `--dry-run` to preview. Never writes back to `~/.ssh/config`.
 
+## CLI (outside the TUI)
+
+| Command | What it does |
+|---|---|
+| `sshelf` | Launch the interactive TUI. |
+| `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI — same connect path as `Enter` (frecency recorded before the `exec`, secret auto-supplied). A miss suggests close names; a name that collides with a subcommand (`list`, `import`, …) is reached via the TUI instead. |
+| `sshelf list [query]` | List hosts. `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` (e.g. `sshelf list tag:prod`, `sshelf list web`). |
+| `sshelf import [--dry-run]` | Read-only import from `~/.ssh/config`. |
+| `sshelf set-password <host>` | Store a password (read from stdin) for a host. |
+| `sshelf completions <shell>` · `sshelf man` | Emit shell completions / the man page. |
+| `--config FILE` (global) | Use a specific config file (also `$SSHELF_CONFIG`). |
+
 ## Confirmations & overlays
 
 - **Delete** pops a confirm modal (`y` = delete, any other key = cancel).

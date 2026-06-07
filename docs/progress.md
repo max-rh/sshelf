@@ -7,6 +7,18 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-07 — CLI: direct connect + list filter
+
+- `sshelf <host>` connects straight to a saved host by name/id, skipping the TUI (reuses the TUI
+  connect path: frecency recorded before `exec`, askpass wired only when a secret exists). A miss
+  suggests close names. Clap routes via `args_conflicts_with_subcommands`, so subcommand names win.
+- `sshelf list [query]` filters with the same syntax as the TUI search box (`search::rank`): fuzzy
+  text and/or `tag:NAME`. Plain `sshelf list` is unchanged.
+- 88 tests (added clap-routing + host-resolution); clippy + fmt clean. Docs: README usage + a brew
+  completion-reload note; new `docs/ux.md` CLI section.
+
+---
+
 ## 2026-06-07 — README demo GIF
 
 - Added an animated demo to the top of the README (`docs/sshelf-readme.gif`): fuzzy-search →

@@ -30,19 +30,32 @@ use crate::state::FrecencyState;
 use anyhow::Context;
 
 #[derive(Parser)]
-#[command(name = "sshelf", version, about = "A TUI SSH host manager")]
+#[command(
+    name = "sshelf",
+    version,
+    about = "A TUI SSH host manager",
+    args_conflicts_with_subcommands = true
+)]
 struct Cli {
     /// Use a specific config file (default: ~/.config/sshelf/config.toml).
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// Connect directly to a saved host by name (skips the TUI). With no host and no
+    /// subcommand, sshelf launches the interactive TUI.
+    #[arg(value_name = "HOST")]
+    host: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// List saved hosts (sorted by frecency).
-    List,
+    /// List saved hosts (sorted by frecency). Optional QUERY filters by fuzzy text and/or
+    /// `tag:NAME` tokens — the same syntax as the TUI search box.
+    List {
+        #[arg(value_name = "QUERY", num_args = 0..)]
+        query: Vec<String>,
+    },
     /// Add a host via the wizard.
     Add,
     /// Import hosts from ~/.ssh/config (read-only).
@@ -83,7 +96,7 @@ fn main() -> Result<()> {
         }
     }
     match cli.command {
-        Some(Command::List) => cmd_list(),
+        Some(Command::List { query }) => cmd_list(&query.join(" ")),
         Some(Command::Add) => {
             println!("`sshelf add` arrives in M4. For now, edit hosts.toml directly.");
             Ok(())
@@ -97,7 +110,11 @@ fn main() -> Result<()> {
         Some(Command::Man) => clap_mangen::Man::new(Cli::command())
             .render(&mut std::io::stdout())
             .context("rendering man page"),
-        None => app::run(),
+        // No subcommand: a bare host name connects directly; otherwise launch the TUI.
+        None => match cli.host {
+            Some(name) => cmd_connect(&name),
+            None => app::run(),
+        },
     }
 }
 
@@ -168,7 +185,7 @@ fn cmd_set_password(host_ref: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list() -> Result<()> {
+fn cmd_list(query: &str) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
@@ -183,7 +200,11 @@ fn cmd_list() -> Result<()> {
         return Ok(());
     }
 
-    let order = search::rank(&hosts, "", &st, cfg.decay_rate, cfg.default_sort);
+    let order = search::rank(&hosts, query, &st, cfg.decay_rate, cfg.default_sort);
+    if order.is_empty() {
+        println!("No hosts match '{}'.", query.trim());
+        return Ok(());
+    }
     for &i in &order {
         let h = &hosts[i];
         let tags = if h.tags.is_empty() {
@@ -200,4 +221,104 @@ fn cmd_list() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Connect directly to a host by name or id, skipping the TUI. Mirrors the TUI connect path:
+/// record frecency BEFORE `exec()` (nothing runs after a successful exec), wire `SSH_ASKPASS`
+/// only when a secret is stored, then `exec` ssh.
+fn cmd_connect(host_ref: &str) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts = store::load_hosts(&cfg.hosts_path(&paths))?.hosts;
+
+    let Some(host) = resolve_host(&hosts, host_ref).cloned() else {
+        let st = FrecencyState::load(&paths.state_file()).unwrap_or_default();
+        let order = search::rank(&hosts, host_ref, &st, cfg.decay_rate, cfg.default_sort);
+        if order.is_empty() {
+            anyhow::bail!("no host named '{host_ref}' — run `sshelf list` to see your hosts");
+        }
+        let names: Vec<&str> = order
+            .iter()
+            .take(5)
+            .map(|&i| hosts[i].name.as_str())
+            .collect();
+        anyhow::bail!(
+            "no host named '{host_ref}' — did you mean: {}",
+            names.join(", ")
+        );
+    };
+
+    // Persist usage BEFORE exec() — nothing runs after a successful exec.
+    let mut st = FrecencyState::load(&paths.state_file())?;
+    st.record_use(&host.id);
+    if let Err(e) = st.save(&paths.state_file()) {
+        eprintln!("sshelf: warning: could not save state: {e:#}");
+    }
+    let has_secret = secrets::get_password(&paths.vault_file(), &host.id)
+        .ok()
+        .flatten()
+        .is_some();
+    // Replaces this process on success; returns only on failure.
+    Err(ssh::exec_connect(&host, has_secret))
+}
+
+/// Find a host by exact name or id.
+fn resolve_host<'a>(hosts: &'a [model::Host], reference: &str) -> Option<&'a model::Host> {
+    hosts
+        .iter()
+        .find(|h| h.name == reference || h.id == reference)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_routes_host_vs_subcommand() {
+        // A known subcommand name wins.
+        let c = Cli::try_parse_from(["sshelf", "list"]).unwrap();
+        assert!(matches!(c.command, Some(Command::List { .. })));
+        assert!(c.host.is_none());
+
+        // A bare, unknown token is the host positional → direct connect.
+        let c = Cli::try_parse_from(["sshelf", "prod-web"]).unwrap();
+        assert!(c.command.is_none());
+        assert_eq!(c.host.as_deref(), Some("prod-web"));
+
+        // Nothing → TUI.
+        let c = Cli::try_parse_from(["sshelf"]).unwrap();
+        assert!(c.command.is_none() && c.host.is_none());
+    }
+
+    #[test]
+    fn list_captures_query_tokens() {
+        let c = Cli::try_parse_from(["sshelf", "list", "tag:web", "staging"]).unwrap();
+        match c.command {
+            Some(Command::List { query }) => assert_eq!(query, vec!["tag:web", "staging"]),
+            _ => panic!("expected the list subcommand"),
+        }
+    }
+
+    #[test]
+    fn global_config_works_with_a_host() {
+        let c = Cli::try_parse_from(["sshelf", "--config", "/tmp/x.toml", "prod-web"]).unwrap();
+        assert_eq!(c.host.as_deref(), Some("prod-web"));
+        assert_eq!(
+            c.config.as_deref(),
+            Some(std::path::Path::new("/tmp/x.toml"))
+        );
+    }
+
+    #[test]
+    fn resolve_host_by_name_and_id() {
+        let mut h = model::Host::new("prod-web", "10.0.0.1");
+        h.id = "abc123".into();
+        let hosts = vec![h];
+        assert!(resolve_host(&hosts, "prod-web").is_some());
+        assert!(resolve_host(&hosts, "abc123").is_some());
+        assert!(resolve_host(&hosts, "missing").is_none());
+    }
 }

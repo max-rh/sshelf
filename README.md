@@ -67,12 +67,17 @@ cargo install --git https://github.com/max-rh/sshelf
 
 > Linux uses a pure-Rust Secret Service backend (no `libdbus`/OpenSSL build deps).
 
+> Shell tab-completion ships with every package. After installing, **open a new shell** (or
+> `exec $SHELL`) so it loads — shells read completions once, at startup.
+
 ## Usage
 
 ```sh
 sshelf                       # launch the TUI
-sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)
+sshelf <host>                # connect straight to a saved host by name (skips the TUI)
 sshelf list                  # print saved hosts
+sshelf list <query>          # filter the list: fuzzy text and/or tag:NAME (e.g. tag:prod)
+sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)
 sshelf import [--dry-run]    # read-only import from ~/.ssh/config
 echo "$PASS" | sshelf set-password <name>   # store a password (scriptable / headless)
 ```
