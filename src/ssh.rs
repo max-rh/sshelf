@@ -24,8 +24,8 @@ fn expand_tilde(path: &str) -> String {
 
 /// Build the argument vector passed to `ssh` (excluding the program name).
 ///
-/// `expand`: expand identity-file `~` (required for exec, which has no shell). Pass `false`
-/// for a human-readable command (yank), where `~` is nicer and the user's shell expands it.
+/// `expand`: expand identity-file `~` so the generated argv stays valid without relying on a
+/// shell. `command_string` also expands before quoting, because quoted `~` is not shell-expanded.
 pub fn build_args(host: &Host, expand: bool) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
 
@@ -67,9 +67,9 @@ pub fn build_args(host: &Host, expand: bool) -> Vec<String> {
     a
 }
 
-/// A copy-pasteable `ssh …` command string (tilde preserved, args shell-quoted).
+/// A copy-pasteable `ssh …` command string (identity-file `~` expanded, args shell-quoted).
 pub fn command_string(host: &Host) -> String {
-    let args = build_args(host, false);
+    let args = build_args(host, true);
     let joined =
         shlex::try_join(args.iter().map(|s| s.as_str())).unwrap_or_else(|_| args.join(" "));
     format!("ssh {joined}")
@@ -199,10 +199,18 @@ mod tests {
 
     #[test]
     fn command_string_is_readable() {
+        // SAFETY: single-threaded test; sets HOME for the duration.
+        unsafe {
+            std::env::set_var("HOME", "/home/tester");
+        }
         let mut h = Host::new("a", "example.com");
         h.user = Some("root".into());
+        h.auth = AuthMethod::Key;
+        h.identity_files = vec!["~/.ssh/id key".into()];
         let s = command_string(&h);
         assert!(s.starts_with("ssh "));
+        assert!(s.contains("'/home/tester/.ssh/id key'"));
+        assert!(!s.contains("'~"));
         assert!(s.contains("root@example.com"));
     }
 }

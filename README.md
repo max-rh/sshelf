@@ -75,6 +75,7 @@ cargo install --git https://github.com/max-rh/sshelf
 ```sh
 sshelf                       # launch the TUI
 sshelf <host>                # connect straight to a saved host by name (skips the TUI)
+sshelf print-command <host>  # print the generated ssh command without connecting
 sshelf list                  # print saved hosts
 sshelf list <query>          # filter the list: fuzzy text and/or tag:NAME (e.g. tag:prod)
 sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)

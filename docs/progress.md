@@ -7,6 +7,17 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-12 — CLI: print generated ssh command
+
+- Added `sshelf print-command <host>`: prints the same shell-quoted `ssh …` command as the
+  TUI `Ctrl-y` yank action, without connecting or updating frecency. Useful for scripts,
+  wrappers, and review before running a connection.
+- Fixed generated command strings to expand identity-file `~` before shell-quoting, so yanked
+  or printed commands remain copy-paste runnable.
+- Docs synced: README usage, `docs/ux.md` CLI table, and `docs/ssh-command.md` builder note.
+
+---
+
 ## 2026-06-07 — Release v0.2.0
 
 - Cut **v0.2.0**: ships the `sshelf <host>` direct-connect and `sshelf list <query>` filter

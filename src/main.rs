@@ -69,6 +69,11 @@ enum Command {
         /// Host name or id.
         host: String,
     },
+    /// Print the generated ssh command for a host without connecting.
+    PrintCommand {
+        /// Host name or id.
+        host: String,
+    },
     /// Print shell completions to stdout (for packaging / `source <(sshelf completions bash)`).
     Completions {
         /// Shell: bash, zsh, fish, elvish, or powershell.
@@ -103,6 +108,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Import { dry_run }) => cmd_import(dry_run),
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
+        Some(Command::PrintCommand { host }) => cmd_print_command(&host),
         Some(Command::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "sshelf", &mut std::io::stdout());
             Ok(())
@@ -182,6 +188,18 @@ fn cmd_set_password(host_ref: &str) -> Result<()> {
     }
     secrets::store_password(&paths.vault_file(), &host.id, password)?;
     println!("stored password for \"{}\" ({})", host.name, host.id);
+    Ok(())
+}
+
+fn cmd_print_command(host_ref: &str) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts = store::load_hosts(&cfg.hosts_path(&paths))?.hosts;
+    let host = resolve_host(&hosts, host_ref)
+        .with_context(|| format!("no host with name or id '{host_ref}'"))?;
+    println!("{}", ssh::command_string(host));
     Ok(())
 }
 
@@ -299,6 +317,15 @@ mod tests {
         match c.command {
             Some(Command::List { query }) => assert_eq!(query, vec!["tag:web", "staging"]),
             _ => panic!("expected the list subcommand"),
+        }
+    }
+
+    #[test]
+    fn print_command_captures_host() {
+        let c = Cli::try_parse_from(["sshelf", "print-command", "prod-web"]).unwrap();
+        match c.command {
+            Some(Command::PrintCommand { host }) => assert_eq!(host, "prod-web"),
+            _ => panic!("expected the print-command subcommand"),
         }
     }
 
