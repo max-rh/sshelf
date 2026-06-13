@@ -70,7 +70,8 @@ enum Command {
         host: String,
     },
     /// Print the generated ssh command for a host without connecting.
-    PrintCommand {
+    #[command(name = "print-command")]
+    Print {
         /// Host name or id.
         host: String,
     },
@@ -108,7 +109,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Import { dry_run }) => cmd_import(dry_run),
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
-        Some(Command::PrintCommand { host }) => cmd_print_command(&host),
+        Some(Command::Print { host }) => cmd_print_command(&host),
         Some(Command::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "sshelf", &mut std::io::stdout());
             Ok(())
@@ -324,7 +325,7 @@ mod tests {
     fn print_command_captures_host() {
         let c = Cli::try_parse_from(["sshelf", "print-command", "prod-web"]).unwrap();
         match c.command {
-            Some(Command::PrintCommand { host }) => assert_eq!(host, "prod-web"),
+            Some(Command::Print { host }) => assert_eq!(host, "prod-web"),
             _ => panic!("expected the print-command subcommand"),
         }
     }
