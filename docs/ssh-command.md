@@ -22,9 +22,12 @@ ssh
 - `extra_args` is the escape hatch for anything the wizard doesn't model (`-X`, `-L …`,
   `-o …`). Split with `shlex::split` so quoted args survive.
 - Example: stored host `mike@10.25.25.25` with key `~/.ssh/infra-key` →
-  `ssh -i ~/.ssh/infra-key -o StrictHostKeyChecking=accept-new mike@10.25.25.25`.
+  `ssh -i /home/mike/.ssh/infra-key -o StrictHostKeyChecking=accept-new mike@10.25.25.25`
+  in the printed/yanked command (the exec path expands `~` internally as well).
 
-The same builder backs the `y` **yank** action (copy/print the exact command without connecting).
+The same builder backs the `Ctrl-y` **yank** action and `sshelf print-command <host>`
+(copy/print the exact command without connecting). For copy/paste safety, identity-file `~`
+is expanded before shell-quoting; quoted `~` would not expand in the user's shell.
 
 ## 2. Launch handoff (`exec`)
 
