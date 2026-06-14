@@ -109,6 +109,11 @@ fn configure_askpass(cmd: &mut std::process::Command, host: &Host, wire_askpass:
     cmd.env_remove("SSH_ASKPASS")
         .env_remove("SSH_ASKPASS_REQUIRE");
     if !wire_askpass {
+        // No stored secret → the askpass helper never runs, so the exec'd ssh has no
+        // business inheriting the vault master passphrase (it may be exported in the
+        // shell for headless use). In the wired case it must stay: the helper runs as
+        // ssh's child and reads it to unlock the vault (see docs/ssh-command.md).
+        cmd.env_remove(crate::secrets::VAULT_PASS_ENV);
         return;
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -212,5 +217,36 @@ mod tests {
         assert!(s.contains("'/home/tester/.ssh/id key'"));
         assert!(!s.contains("'~"));
         assert!(s.contains("root@example.com"));
+    }
+
+    #[test]
+    fn vault_env_scrubbed_when_askpass_not_wired() {
+        let h = Host::new("a", "h");
+        let mut cmd = std::process::Command::new("ssh");
+        configure_askpass(&mut cmd, &h, false);
+        // env_remove shows up as (key, None) in get_envs()
+        let scrubbed = cmd
+            .get_envs()
+            .any(|(k, v)| v.is_none() && k == std::ffi::OsStr::new(crate::secrets::VAULT_PASS_ENV));
+        assert!(
+            scrubbed,
+            "vault passphrase must not leak into a no-askpass ssh"
+        );
+    }
+
+    #[test]
+    fn vault_env_kept_when_askpass_wired() {
+        let h = Host::new("a", "h");
+        let mut cmd = std::process::Command::new("ssh");
+        configure_askpass(&mut cmd, &h, true);
+        // Wired: the helper (ssh's child) needs the env var to unlock the vault.
+        let scrubbed = cmd
+            .get_envs()
+            .any(|(k, v)| v.is_none() && k == std::ffi::OsStr::new(crate::secrets::VAULT_PASS_ENV));
+        assert!(!scrubbed);
+        let wired = cmd
+            .get_envs()
+            .any(|(k, v)| k == std::ffi::OsStr::new("SSHELF_ASKPASS") && v.is_some());
+        assert!(wired);
     }
 }

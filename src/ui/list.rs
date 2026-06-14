@@ -43,7 +43,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
     if app.order.is_empty() {
         let msg = if app.hosts.is_empty() {
-            "No hosts yet — press ^a to add one (M4), or import with ^o (M7)."
+            "No hosts yet — press ^a to add one, or import with ^o."
         } else {
             "No matches."
         };

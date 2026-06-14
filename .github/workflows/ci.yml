@@ -31,6 +31,28 @@ jobs:
       - name: Test
         run: cargo test --locked --verbose
 
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on the minimum supported Rust version
+        run: cargo check --locked --all-targets
+
+  audit:
+    name: dependency audit (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit dependencies (RustSec advisory DB)
+        run: cargo audit
+
   headless-vault:
     name: headless vault fallback (no Secret Service)
     runs-on: ubuntu-latest
