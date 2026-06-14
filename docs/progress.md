@@ -3,7 +3,7 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.2.0 (CLI direct-connect + list filter). v1 acceptance gates closed.
+**Current milestone:** v0.3.0 (CLI direct-connect + list filter). v1 acceptance gates closed.
 
 ---
 
