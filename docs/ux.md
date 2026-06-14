@@ -123,12 +123,20 @@ The CLI form supports `--dry-run` to preview. Never writes back to `~/.ssh/confi
 |---|---|
 | `sshelf` | Launch the interactive TUI. |
 | `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI — same connect path as `Enter` (frecency recorded before the `exec`, secret auto-supplied). A miss suggests close names; a name that collides with a subcommand (`list`, `import`, …) is reached via the TUI instead. |
-| `sshelf print-command <host>` | Print the generated, shell-quoted `ssh …` command for a saved host by **name or id**, without connecting or changing frecency. This is the CLI equivalent of the TUI's `Ctrl-y` yank action. |
+| `sshelf -` | Reconnect to the most-recently-used host (max `last_used` in the frecency state). Errors (without connecting) if there's no history yet. |
+| `sshelf add` | With **no args**, opens the TUI add form. With **args**, adds a host non-interactively: `NAME` + `-H/--hostname` required; `-u/--user`, `-p/--port`, `-a/--auth`, `-i/--identity` (repeatable, implies key auth), `-J/--jump`, `-t/--tag`, `--extra "<flags>"`, `--password-stdin` (reads the secret from stdin). Duplicate names are refused. |
+| `sshelf print-command <host>` | Print the generated, shell-quoted `ssh …` command for a saved host by **name or id**, without connecting or changing frecency. CLI equivalent of the TUI's `Ctrl-y` yank. |
 | `sshelf list [query]` | List hosts. `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` (e.g. `sshelf list tag:prod`, `sshelf list web`). |
+| `sshelf list --json [query]` | Same selection, emitted as JSON (each host's fields + its generated `command`). Always valid JSON, even when empty — the stable surface for scripts/integrations. |
 | `sshelf import [--dry-run]` | Read-only import from `~/.ssh/config`. |
 | `sshelf set-password <host>` | Store a password (read from stdin) for a host. |
-| `sshelf completions <shell>` · `sshelf man` | Emit shell completions / the man page. |
+| `sshelf completions <shell>` · `sshelf man` | Emit static completions / the man page. |
 | `--config FILE` (global) | Use a specific config file (also `$SSHELF_CONFIG`). |
+
+**Dynamic completion (host names):** static completions cover subcommands/flags only. Sourcing
+`COMPLETE=<shell> sshelf` (e.g. `source <(COMPLETE=zsh sshelf)`) enables host-name completion via
+clap_complete's engine — `host_name_candidates` reads `hosts.toml` (side-effect-free) and is
+attached to the `<host>` arguments of direct-connect, `print-command`, and `set-password`.
 
 ## Confirmations & overlays
 

@@ -51,7 +51,10 @@ A RAII guard + panic hook guarantees step 3's teardown also runs on panic/early-
 Applies whenever a **stored secret** exists for the host — a login **password** (password
 auth) or a **key passphrase** (key auth with an encrypted key). `exec_connect` wires the
 askpass env only when such a secret exists (`wire_askpass`); otherwise ssh prompts / uses the
-agent normally.
+agent normally — and in that no-secret case `configure_askpass` also **strips
+`SSHELF_VAULT_PASSPHRASE`** from the child env (ssh has no reason to inherit the vault master
+passphrase). In the wired case the variable must stay: the helper runs as ssh's child and
+reads it to unlock the vault (see `docs/security.md`).
 
 `ssh` decides it needs a secret → because `SSH_ASKPASS_REQUIRE=force`, it executes the helper
 as **`sshelf "<prompt text>"`** (the prompt is `argv[1]`; **there is no `--askpass` flag**).
