@@ -1,0 +1,18 @@
+# mdBook config — renders the existing `docs/` tree into a static site, deployed to GitHub
+# Pages by .github/workflows/docs.yml. Local preview:  mdbook serve --open
+[book]
+title = "sshelf"
+description = "A fast terminal UI for managing and connecting to SSH hosts."
+authors = ["max-rh"]
+language = "en"
+src = "docs"
+
+[output.html]
+git-repository-url = "https://github.com/max-rh/sshelf"
+edit-url-template = "https://github.com/max-rh/sshelf/edit/master/docs/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+
+[output.html.fold]
+enable = true
+level = 1
