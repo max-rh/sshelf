@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-14
+
 ### Added
 - **`sshelf add`** opens the TUI add form when run bare, and adds a host **non-interactively**
   when given arguments (`NAME` + `--hostname` required; `--user/--port/--auth/--identity/--jump/
@@ -68,7 +70,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/max-rh/sshelf/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/max-rh/sshelf/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/max-rh/sshelf/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/max-rh/sshelf/releases/tag/v0.1.0
