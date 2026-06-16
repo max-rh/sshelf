@@ -16,6 +16,7 @@ mod secrets;
 mod ssh;
 mod state;
 mod store;
+mod transfer;
 mod ui;
 mod vault;
 

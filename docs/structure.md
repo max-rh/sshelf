@@ -3,7 +3,7 @@
 > Keep this in sync with the actual tree (the docs-in-sync rule).
 >
 > **All modules present:** `main`, `app`, `askpass`, `config`, `import`, `model`, `paths`,
-> `search`, `secrets`, `ssh`, `state`, `store`, `vault`,
+> `search`, `secrets`, `ssh`, `state`, `store`, `transfer`, `vault`,
 > `ui/{mod,list,help,widgets,wizard,browse,settings}`.
 > (`error.rs` was removed — the codebase uses `anyhow` throughout.)
 
@@ -37,6 +37,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color; writes a commented default on first run. |
+| `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp`/`scp` argv builders, the worker↔UI message protocol, and progress math. (Worker thread + dual-pane UI land with the transfer screen.) |
 | `ui/list.rs` | Host list rendering + match highlighting + selection. |
 | `ui/wizard.rs` | Auth-aware add/edit form: fields, validation, key picker, opens the file browser. |
 | `ui/browse.rs` | File-browser modal (fuzzy-filtered) for picking a key file anywhere on disk. |

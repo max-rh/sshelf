@@ -7,6 +7,20 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-16 — Transfer screen: transport core + validated approach
+
+- Started the dual-pane SFTP/SCP **transfer screen**. Settled the transport (see `decisions.md`
+  D-019): move files over the system `sftp`/`scp` riding a single `ssh` **ControlMaster**, so
+  keys/agent/ProxyJump and the stored keyring/vault secret are reused unchanged and password
+  hosts work with no PTY. A spike against a local sshd confirmed `SSH_ASKPASS` opens the master
+  and that `sftp`/`scp` ride it (put/get + recursive).
+- Landed the tested core in `src/transfer/mod.rs`: the master/`sftp`/`scp` argv builders, the
+  `user@host` target + shell-quoted remote-path spec, the worker↔UI message protocol, and
+  progress math. 96 tests; clippy + fmt clean. No UI yet.
+- Next: the worker thread + ControlMaster lifecycle, then the dual-pane browse/transfer UI.
+
+---
+
 ## 2026-06-12 — CLI: print generated ssh command
 
 - Added `sshelf print-command <host>`: prints the same shell-quoted `ssh …` command as the
