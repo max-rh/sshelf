@@ -8,15 +8,17 @@
 //! there is no re-auth and no per-file password prompt. Because the ride commands inherit the
 //! connection from the master, they need NONE of `-p`/`-i`/`-J` — which also sidesteps the
 //! `ssh -p` vs `sftp`/`scp -P` port-flag difference that would otherwise bite.
-#![allow(dead_code)] // protocol types + the session are wired into the UI (M3/M4)
-
+#[cfg(test)]
+mod e2e;
 mod pane;
+mod screen;
 mod worker;
 
-#[allow(unused_imports)] // the transfer screen (M3) consumes these re-exports
-pub use pane::{Pane, PaneEntry, Side, read_local_dir};
-#[allow(unused_imports)]
-pub use worker::TransferSession;
+pub use pane::{Pane, Side};
+// Part of `Pane::set_entries`' signature; named directly only by the renderer's tests.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use pane::PaneEntry;
+pub use screen::{TransferOutcome, TransferScreen};
 
 use std::path::{Path, PathBuf};
 
@@ -170,8 +172,9 @@ pub enum WorkerCmd {
 
 /// An event from the worker back to the UI, drained on each event-loop tick.
 pub enum WorkerEvent {
-    /// The master connection finished opening — `Ok` if it is up, `Err(msg)` if it failed.
-    Ready(Result<(), String>),
+    /// The master connection finished opening — `Ok(home)` carries the remote working directory
+    /// to start browsing from, `Err(msg)` reports why it failed.
+    Ready(Result<PathBuf, String>),
     /// A remote-directory listing completed.
     Listing {
         path: PathBuf,
@@ -188,7 +191,7 @@ pub enum WorkerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Host;
+    use crate::model::{AuthMethod, Host};
     use std::path::Path;
 
     fn host() -> Host {
@@ -216,6 +219,28 @@ mod tests {
         // …and reuses build_args: the endpoint is last and StrictHostKeyChecking is carried.
         assert_eq!(a.last().unwrap(), "deploy@10.0.0.1");
         assert!(a.iter().any(|s| s == "StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn master_carries_jump_hosts_so_transfers_ride_them() {
+        // A ProxyJump target works: the master opens through the jump (key/agent), and
+        // sftp/scp ride that one connection — no per-command jump setup.
+        let mut h = host();
+        h.jump_hosts = vec!["bastion".into()];
+        let a = master_args(&h, Path::new("/tmp/cm"));
+        let j = a.iter().position(|s| s == "-J").expect("jump flag present");
+        assert_eq!(a[j + 1], "bastion");
+    }
+
+    #[test]
+    fn password_host_master_has_no_identity_flag() {
+        // Password hosts carry no `-i`; the secret is supplied to the master via SSH_ASKPASS
+        // (wired by the caller through ssh::configure_askpass), exactly as for connect.
+        let mut h = host();
+        h.auth = AuthMethod::Password;
+        let a = master_args(&h, Path::new("/tmp/cm"));
+        assert!(!a.iter().any(|s| s == "-i"));
+        assert_eq!(a.last().unwrap(), "deploy@10.0.0.1");
     }
 
     #[test]

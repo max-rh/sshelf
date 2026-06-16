@@ -5,6 +5,7 @@ mod browse;
 mod help;
 mod list;
 pub(crate) mod settings;
+mod transfer;
 mod widgets;
 pub(crate) mod wizard;
 
@@ -67,6 +68,11 @@ fn parse_color(name: &str) -> Color {
 
 pub fn render(frame: &mut Frame, app: &App) {
     let _ = ACCENT.set(parse_color(&app.config.accent));
+    // The transfer screen owns the whole frame while open.
+    if let Some(t) = &app.transfer {
+        transfer::render(frame, t);
+        return;
+    }
     // Full-screen modals.
     if let Some(w) = &app.wizard {
         wizard::render(frame, w);

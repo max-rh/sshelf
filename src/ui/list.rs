@@ -104,8 +104,7 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let hint =
-        "↵ connect  ^a add  ^e edit  ^d del  ^y yank  ^o import  F1 help  F2 settings  esc quit";
+    let hint = "↵ connect  ^a add  ^e edit  ^d del  ^y yank  ^t transfer  ^o import  F1 help  F2 settings  esc quit";
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
         area,

@@ -45,6 +45,7 @@ list. Actions therefore use **Ctrl** (or function keys) to avoid being typed int
 | `Ctrl-e` | edit selected host — M4 |
 | `Ctrl-d` | delete selected host (confirm) — M4 |
 | `Ctrl-y` | yank — copy/print the generated `ssh` command without connecting — M3 |
+| `Ctrl-t` | open the dual-pane **file-transfer** screen for the selected host |
 | `Ctrl-o` | import from `~/.ssh/config` (read-only) — M7 |
 | `F1` | help overlay |
 | `F2` | settings (config & hosts-file locations) |
@@ -116,6 +117,35 @@ Parses `~/.ssh/config` **read-only** via `ssh2-config` and adds every host whose
 already present, warning about unsupported `Match` / `Include` / `ProxyJump`. v1 imports all
 new hosts at once (no per-host selection screen) — curate afterwards with `Ctrl-e` / `Ctrl-d`.
 The CLI form supports `--dry-run` to preview. Never writes back to `~/.ssh/config`.
+
+## File transfer (`Ctrl-t`)
+
+`Ctrl-t` on a host opens a **dual-pane transfer screen**: local files on the left, the host's
+files on the right. sshelf authenticates **once** by opening an `ssh` ControlMaster that reuses
+the host's auth (keys/agent/ProxyJump, or the stored keyring/vault secret via `SSH_ASKPASS`),
+then runs `sftp`/`scp` over it. Remote listing and transfers run on a background thread, so the
+UI stays responsive on slow links.
+
+Both panes fuzzy-filter as you type:
+
+| Key | Action |
+|---|---|
+| _type_ | filter the focused pane |
+| `Tab` | switch the focused pane (local ↔ remote) |
+| `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | move the selection |
+| `→` / `Enter` | open the selected directory (or send a file) |
+| `Ctrl-s` | **send** the selected file or folder (recursive) into the *other* pane's directory |
+| `←` | go up a directory |
+| `Backspace` | edit the filter, or go up when it's empty |
+| `Esc` | cancel a running transfer, else clear the filter, else close the screen |
+
+A progress bar shows bytes and percent for single-file downloads; folder and upload transfers
+show as in-flight (cancelable with `Esc`). Directories are marked `name/` and symlinks `name@`;
+symlinks are skipped in this version. Filenames are shell-quoted and control characters stripped
+from display. The connection uses `StrictHostKeyChecking=accept-new`, like connect — so a
+first-time host key is trusted on use (see [`security.md`](security.md)). Only one transfer runs
+at a time in v1, and a same-named file or folder already present in the destination is **skipped**
+(with a message) rather than overwritten.
 
 ## CLI (outside the TUI)
 

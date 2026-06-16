@@ -28,8 +28,27 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
   a `DirSource` trait (a synchronous remote `list()` would block the very UI loop the worker
   keeps responsive); the screen feeds local entries via `std::fs` and remote ones via the worker.
   109 tests; clippy + fmt clean.
-- Next: the `ui/transfer.rs` render + the transfer screen wiring (Ctrl-t entry, pane focus,
-  draining the worker's events each tick).
+- Wired the screen end to end: `transfer/screen.rs` (two panes over one session — local nav is
+  synchronous, remote nav requests via the worker, events drained each tick) and `ui/transfer.rs`
+  (two panes, progress/status line, hint bar; `TestBackend`-snapshotted via a borrowed view, and
+  a "terminal too small" clamp). `Ctrl-t` on the list opens it (`Outcome::Transfer`); the event
+  loop polls + drains while it's open and tears the worker down on close (RAII). Keys: `Tab`
+  switch · `→`/`Enter` open · `Ctrl-s` send file/folder · `←`/`Backspace` up · `Esc` cancel/
+  clear/close. Docs: `ux.md` transfer section + keybinding. 113 tests; clippy + fmt clean.
+- Validated the transport end to end against a throwaway localhost `sshd` (`transfer/e2e.rs`,
+  `#[ignore]`d — run with `cargo test -- --ignored`): the master opens, `sftp` `pwd`/`ls`
+  parse, single-file download + upload (contents verified), and recursive directory download
+  all pass.
+- Robustness + docs pass: a same-named destination is **skipped** rather than clobbered;
+  README gains a feature bullet + the `^t` key, `security.md` covers the transfer network path,
+  and `structure.md` maps the new modules. Added master-command tests for ProxyJump + password
+  hosts — the auth itself reuses `build_args`/`configure_askpass` (already tested), and the M0
+  spike proved `SSH_ASKPASS` opens the master, so a password *target* and key/agent jumps work;
+  a fully automated password-auth transfer E2E needs a PAM/Docker sshd (the rootless test server
+  is key-auth only) and is a CI-with-Docker follow-up.
+- The transfer screen is **functionally complete**: dual-pane browse + fuzzy on both sides,
+  single-file and recursive folder transfer in both directions over one multiplexed master,
+  live progress, cancel, and overwrite-skip. 116 unit tests + 1 e2e; clippy + fmt clean.
 
 ---
 

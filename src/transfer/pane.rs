@@ -41,7 +41,7 @@ impl PaneEntry {
         }
     }
 
-    fn is_parent(&self) -> bool {
+    pub fn is_parent(&self) -> bool {
         self.name == ".."
     }
 
@@ -71,7 +71,6 @@ impl From<RemoteEntry> for PaneEntry {
 }
 
 pub struct Pane {
-    pub side: Side,
     pub cwd: PathBuf,
     entries: Vec<PaneEntry>,
     /// Fuzzy filter over entry labels.
@@ -85,9 +84,8 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(side: Side, cwd: PathBuf) -> Self {
+    pub fn new(cwd: PathBuf) -> Self {
         Pane {
-            side,
             cwd,
             entries: Vec::new(),
             query: String::new(),
@@ -156,6 +154,14 @@ impl Pane {
     pub fn selected_entry(&self) -> Option<&PaneEntry> {
         let visible = self.visible();
         visible.get(self.selected).map(|&i| &self.entries[i])
+    }
+
+    /// Whether the (unfiltered) listing already holds an entry named `name`, ignoring the
+    /// synthetic `..`. Used to avoid silently clobbering a destination on transfer.
+    pub fn contains(&self, name: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|e| !e.is_parent() && e.name == name)
     }
 
     /// Entries to display, in filtered order, paired with their label.
@@ -275,7 +281,7 @@ mod tests {
 
     #[test]
     fn set_entries_prepends_parent_when_not_at_root() {
-        let mut p = Pane::new(Side::Local, PathBuf::from("/home/user/dir"));
+        let mut p = Pane::new(PathBuf::from("/home/user/dir"));
         p.set_entries(entries());
         assert_eq!(p.rows()[0].0.name, "..");
         assert_eq!(p.rows()[0].1, "../");
@@ -284,7 +290,7 @@ mod tests {
 
     #[test]
     fn root_has_no_parent_entry() {
-        let mut p = Pane::new(Side::Local, PathBuf::from("/"));
+        let mut p = Pane::new(PathBuf::from("/"));
         p.set_entries(entries());
         assert!(p.rows().iter().all(|(e, _)| !e.is_parent()));
     }
@@ -323,7 +329,7 @@ mod tests {
 
     #[test]
     fn typing_filters_and_navigate_clears_query() {
-        let mut p = Pane::new(Side::Local, PathBuf::from("/d"));
+        let mut p = Pane::new(PathBuf::from("/d"));
         p.set_entries(entries());
         p.push_query('a');
         p.push_query('l');
@@ -337,7 +343,7 @@ mod tests {
 
     #[test]
     fn move_sel_clamps_to_visible() {
-        let mut p = Pane::new(Side::Local, PathBuf::from("/d"));
+        let mut p = Pane::new(PathBuf::from("/d"));
         p.set_entries(entries()); // 3 rows: .., sub, alpha.txt
         p.move_sel(-1);
         assert_eq!(p.selected(), 0);
@@ -347,8 +353,18 @@ mod tests {
     }
 
     #[test]
+    fn contains_ignores_the_parent_entry() {
+        let mut p = Pane::new(PathBuf::from("/home/user/dir"));
+        p.set_entries(entries());
+        assert!(p.contains("alpha.txt"));
+        assert!(p.contains("sub"));
+        assert!(!p.contains(".."));
+        assert!(!p.contains("missing"));
+    }
+
+    #[test]
     fn set_error_replaces_entries() {
-        let mut p = Pane::new(Side::Remote, PathBuf::from("/srv"));
+        let mut p = Pane::new(PathBuf::from("/srv"));
         p.set_error("permission denied".into());
         assert!(!p.loading);
         assert_eq!(p.error.as_deref(), Some("permission denied"));

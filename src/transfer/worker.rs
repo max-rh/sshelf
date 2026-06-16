@@ -5,7 +5,6 @@
 //! [`WorkerCmd`], the worker emits [`WorkerEvent`] (drained each tick). The worker owns the
 //! master child and its control socket, and tears both down when it stops — on `Shutdown`, a
 //! dropped command channel, or a failed handshake.
-#![allow(dead_code)] // the session is wired into the transfer screen in M3/M4
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -115,12 +114,14 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
         }
     };
 
-    if let Err(e) = handshake(&socket, &target, &mut master) {
+    if let Err(e) = handshake(&socket, &target, &mut master, &cmd_rx) {
         let _ = events.send(WorkerEvent::Ready(Err(e)));
         teardown(&mut master, &socket, &target);
         return;
     }
-    let _ = events.send(WorkerEvent::Ready(Ok(())));
+    // Start browsing from the remote working directory (the login/home dir); fall back to root.
+    let home = remote_home(&socket, &target).unwrap_or_else(|| PathBuf::from("/"));
+    let _ = events.send(WorkerEvent::Ready(Ok(home)));
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -162,10 +163,21 @@ fn open_master(host: &Host, has_secret: bool, socket: &Path) -> std::io::Result<
 }
 
 /// Wait until `ssh -O check` reports the master is up, the master process exits (auth failed),
-/// or the timeout elapses.
-fn handshake(socket: &ControlSocket, target: &str, master: &mut Child) -> Result<(), String> {
+/// the screen closes (`Shutdown`/dropped channel), or the timeout elapses.
+fn handshake(
+    socket: &ControlSocket,
+    target: &str,
+    master: &mut Child,
+    cmd_rx: &Receiver<WorkerCmd>,
+) -> Result<(), String> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     loop {
+        // Let the screen abort a slow connect promptly (so Drop's join doesn't block the UI).
+        if let Ok(WorkerCmd::Shutdown) | Err(TryRecvError::Disconnected) = cmd_rx.try_recv() {
+            let _ = master.kill();
+            let _ = master.wait();
+            return Err("cancelled".into());
+        }
         if master_alive(socket.path(), target) {
             return Ok(());
         }
@@ -243,6 +255,26 @@ fn list_remote(
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+/// Resolve the remote working directory via `sftp`'s `pwd` (`Remote working directory: …`).
+fn remote_home(socket: &ControlSocket, target: &str) -> Option<PathBuf> {
+    let mut child = Command::new("sftp")
+        .args(sftp_batch_args(socket.path(), target))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        let mut stdin = child.stdin.take()?;
+        let _ = stdin.write_all(b"pwd\n");
+    }
+    let out = child.wait_with_output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| {
+        l.split_once("Remote working directory:")
+            .map(|(_, path)| PathBuf::from(path.trim()))
+    })
 }
 
 /// Why a transfer ended other than success.
