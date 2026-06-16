@@ -7,7 +7,7 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
-## 2026-06-16 — Transfer screen: transport core + validated approach
+## 2026-06-16 — Transfer screen: transport core + worker
 
 - Started the dual-pane SFTP/SCP **transfer screen**. Settled the transport (see `decisions.md`
   D-019): move files over the system `sftp`/`scp` riding a single `ssh` **ControlMaster**, so
@@ -16,8 +16,13 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
   and that `sftp`/`scp` ride it (put/get + recursive).
 - Landed the tested core in `src/transfer/mod.rs`: the master/`sftp`/`scp` argv builders, the
   `user@host` target + shell-quoted remote-path spec, the worker↔UI message protocol, and
-  progress math. 96 tests; clippy + fmt clean. No UI yet.
-- Next: the worker thread + ControlMaster lifecycle, then the dual-pane browse/transfer UI.
+  progress math.
+- Added the worker thread + ControlMaster lifecycle (`src/transfer/worker.rs`): it opens the
+  master (reusing `ssh::configure_askpass`, now `pub(crate)`), polls it ready, lists remote
+  dirs by parsing `sftp ls -l`, runs `scp` transfers with throttled progress + mid-flight
+  cancel, and tears the master + control socket down on stop via RAII. 101 tests; clippy + fmt
+  clean. No UI yet; the live end-to-end run lands with the engine milestone.
+- Next: generalize the file browser into a dual-pane `Pane`/`DirSource`, then the transfer UI.
 
 ---
 

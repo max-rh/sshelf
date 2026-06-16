@@ -8,7 +8,12 @@
 //! there is no re-auth and no per-file password prompt. Because the ride commands inherit the
 //! connection from the master, they need NONE of `-p`/`-i`/`-J` — which also sidesteps the
 //! `ssh -p` vs `sftp`/`scp -P` port-flag difference that would otherwise bite.
-#![allow(dead_code)] // builders + protocol types are wired into the worker (M1 IO) and UI (M3/M4)
+#![allow(dead_code)] // protocol types + the session are wired into the UI (M3/M4)
+
+mod worker;
+
+#[allow(unused_imports)] // the transfer screen (M3) consumes this re-export
+pub use worker::TransferSession;
 
 use std::path::{Path, PathBuf};
 
@@ -98,8 +103,13 @@ pub fn scp_args(control_path: &Path, recursive: bool, src: &str, dst: &str) -> V
 /// other metacharacters literal. The `user@host:` prefix is parsed by `scp` locally and must
 /// stay unquoted (scp splits on the first colon to separate host from path).
 pub fn remote_spec(target: &str, remote_path: &str) -> String {
-    let quoted = shlex::try_quote(remote_path).unwrap_or(std::borrow::Cow::Borrowed(remote_path));
-    format!("{target}:{quoted}")
+    format!("{target}:{}", shell_quote(remote_path))
+}
+
+/// Quote `s` for a remote shell (or sftp's `ls` parser). Falls back to the raw string only if
+/// it contains a NUL, which can't appear in a path anyway.
+pub(crate) fn shell_quote(s: &str) -> std::borrow::Cow<'_, str> {
+    shlex::try_quote(s).unwrap_or(std::borrow::Cow::Borrowed(s))
 }
 
 /// Live transfer progress: bytes moved so far out of the total. `bytes_total` is `0` until the
@@ -130,17 +140,25 @@ pub struct RemoteEntry {
     pub size: u64,
 }
 
+/// One transfer task: move `src` (a file or directory) into the other side's `dest_dir`.
+pub struct TransferJob {
+    pub direction: Direction,
+    /// Absolute path of the item to move, on the source side.
+    pub src: PathBuf,
+    /// Absolute directory on the destination side to drop it into.
+    pub dest_dir: PathBuf,
+    /// `src` is a directory (use `scp -r`).
+    pub recursive: bool,
+    /// Total bytes, when known (a single file's size), for the progress bar; `0` = indeterminate.
+    pub size_hint: u64,
+}
+
 /// A request from the UI thread to the transfer worker.
 pub enum WorkerCmd {
     /// List the remote directory at this absolute path.
     ListRemote(PathBuf),
-    /// Transfer `src` (a file or directory) into the other side's `dest_dir`.
-    Transfer {
-        direction: Direction,
-        src: PathBuf,
-        dest_dir: PathBuf,
-        recursive: bool,
-    },
+    /// Run a transfer.
+    Transfer(TransferJob),
     /// Cancel the in-flight transfer (if any).
     Cancel,
     /// Tear the master down and stop the worker.
