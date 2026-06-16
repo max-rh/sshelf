@@ -1,0 +1,95 @@
+# Cut a release without doing it by hand: bump the version, finalize the changelog, commit, and
+# push the tag. Run it from the Actions tab ("Cut release" → enter the version, e.g. 0.4.0).
+#
+# Pushing the tag fires the dist "Release" workflow (release.yml), which builds the artifacts and
+# creates the GitHub Release — with the body taken from this version's CHANGELOG.md section, so
+# the release page shows exactly what changed since the previous tag.
+#
+# REQUIRES a repository secret `RELEASE_TOKEN`: a fine-grained PAT with "Contents: read and write"
+# on this repo, owned by someone who can push to `master`. Two reasons it must be a PAT, not the
+# default GITHUB_TOKEN: (1) a tag pushed with GITHUB_TOKEN does NOT trigger other workflows, so
+# the dist Release would never run; (2) it must bypass branch protection on `master`.
+name: Cut release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.4.0 (a leading 'v' is fine)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only run on master
+        run: |
+          [ "${{ github.ref_name }}" = "master" ] \
+            || { echo "::error::run this workflow on the master branch"; exit 1; }
+
+      - name: Normalize + validate version
+        run: |
+          V="${{ inputs.version }}"; V="${V#v}"
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' \
+            || { echo "::error::'$V' is not a SemVer version"; exit 1; }
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags (for the previous tag + pushing)
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Refuse to re-release an existing tag
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists"; exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test before releasing
+        run: cargo test --locked
+
+      - name: Bump Cargo.toml + sync Cargo.lock
+        run: |
+          sed -i -E '0,/^version = ".*"/s//version = "'"$VERSION"'"/' Cargo.toml
+          grep -m1 '^version = ' Cargo.toml
+          cargo update --workspace # rewrites only the workspace member's version in Cargo.lock
+
+      - name: Finalize CHANGELOG (Unreleased → this version) and refresh compare links
+        run: |
+          PREV="$(git tag --sort=-v:refname | head -n1)"
+          DATE="$(date -u +%Y-%m-%d)"
+          python3 - "$VERSION" "$DATE" "$PREV" <<'PY'
+          import re, sys, pathlib
+          version, date, prev = sys.argv[1], sys.argv[2], sys.argv[3]
+          repo = "https://github.com/max-rh/sshelf"
+          p = pathlib.Path("CHANGELOG.md")
+          text = p.read_text()
+          marker = "## [Unreleased]"
+          i = text.index(marker) + len(marker)
+          # Move the Unreleased items under a new version heading; leave Unreleased empty.
+          text = text[:i] + f"\n\n## [{version}] — {date}" + text[i:]
+          # Point the Unreleased compare-link at the new tag and add this version's link.
+          repl = (
+              f"[Unreleased]: {repo}/compare/v{version}...HEAD\n"
+              f"[{version}]: {repo}/compare/{prev}...v{version}"
+          )
+          text = re.sub(r"^\[Unreleased\]:.*$", repl, text, count=1, flags=re.M)
+          p.write_text(text)
+          PY
+
+      - name: Commit, tag, and push (the tag triggers the dist Release workflow)
+        run: |
+          git config user.name "max-rh"
+          git config user.email "25219094+max-rh@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "release: v$VERSION"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v$VERSION"
+          echo "Pushed v$VERSION — the dist Release workflow will build and publish it." >> "$GITHUB_STEP_SUMMARY"

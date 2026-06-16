@@ -3,7 +3,8 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.3.0 (CLI direct-connect + list filter). v1 acceptance gates closed.
+**Current milestone:** dual-pane SFTP file transfer (`Ctrl-t`), targeting **v0.5.0**. v1
+acceptance gates closed.
 
 ---
 
@@ -76,6 +77,27 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-13 — CLI: non-interactive add, list --json, dynamic completion, reconnect-last
+
+- **`sshelf add` gained flags** for a fully non-interactive add (scripts/dotfiles): `NAME` +
+  `-H/--hostname` required; `-u/-p/-a/-i/-J/-t/--extra/--password-stdin`. Auth is inferred
+  (`key` from `--identity`, `password` from `--password-stdin`, else `agent`). `--extra` allows
+  hyphen-leading values; `--password-stdin` keeps the secret out of argv. Bare `sshelf add`
+  still opens the TUI form. Duplicate names are refused. (`AddArgs::into_host` is pure/tested.)
+- **`sshelf list --json`** emits each selected host's fields plus its generated `command`,
+  always valid JSON (even empty) — the stable surface for integrations.
+- **Dynamic shell completion** of host names via `clap_complete` (`unstable-dynamic`):
+  `CompleteEnv` in `main`, `ArgValueCandidates` on the `<host>` args of direct-connect /
+  `print-command` / `set-password`; `host_name_candidates` reads `hosts.toml` side-effect-free.
+  Enable with `source <(COMPLETE=<shell> sshelf)`.
+- **`sshelf -`** reconnects to the most-recently-used host (`last_used_id` over the frecency
+  state); the CLI connect path was factored into a shared `connect()`.
+- 99 tests; clippy + fmt clean; verified end-to-end (add/list --json/password-stdin/completion).
+- Docs: README (usage + an "Adding hosts from the CLI" flag table + a "Shell completions"
+  section) and the `docs/ux.md` CLI table.
+
+---
+
 ## 2026-06-12 — CLI: print generated ssh command
 
 - Added `sshelf print-command <host>`: prints the same shell-quoted `ssh …` command as the
@@ -84,6 +106,22 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 - Fixed generated command strings to expand identity-file `~` before shell-quoting, so yanked
   or printed commands remain copy-paste runnable.
 - Docs synced: README usage, `docs/ux.md` CLI table, and `docs/ssh-command.md` builder note.
+
+---
+
+## 2026-06-07 — Pre-launch hardening
+
+- **`sshelf add` now opens the TUI with the add form ready** (`app::run_add`) — it was a
+  placeholder message. Empty-list hint and internal comments cleaned of milestone references.
+- **Vault env hygiene:** `configure_askpass` strips `SSHELF_VAULT_PASSPHRASE` from the child
+  env when no stored secret is wired; kept (and now documented) for vault-mode askpass, which
+  reads it as ssh's child. Two new env-wiring tests (`ssh.rs`).
+- **SECURITY.md:** concrete private-reporting channels (GitHub advisories + email) replace the
+  placeholder note; added the vault-mode env-inheritance tradeoff (mirrored in
+  `docs/security.md` + `docs/ssh-command.md`).
+- **CHANGELOG.md** added (backfilled 0.1.0 / 0.2.0); README now states the no-network posture
+  (no telemetry / account / network calls) and documents `sshelf add`.
+- **CI:** new `cargo audit` (RustSec) and MSRV-1.88 check jobs.
 
 ---
 

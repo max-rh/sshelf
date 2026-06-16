@@ -77,7 +77,7 @@ impl FrecencyState {
     }
 
     /// Drop stats for ids no longer present in the host set (called after deletes).
-    #[allow(dead_code)] // used by the delete flow (M4)
+    #[allow(dead_code)] // used by the delete flow
     pub fn retain_ids<'a>(&mut self, live: impl IntoIterator<Item = &'a str>) {
         let keep: std::collections::HashSet<&str> = live.into_iter().collect();
         self.stats.retain(|k, _| keep.contains(k.as_str()));

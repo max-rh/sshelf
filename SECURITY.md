@@ -2,11 +2,12 @@
 
 ## Reporting a vulnerability
 
-Please report security issues **privately** — open a private security advisory on the
-repository (GitHub → Security → Report a vulnerability), or contact the maintainer directly,
-rather than filing a public issue. We'll acknowledge and work on a fix before disclosure.
+Please report security issues **privately** rather than filing a public issue:
 
-> Maintainers: add a concrete contact (email / advisory link) here before publishing.
+- **Preferred:** open a private advisory — [GitHub → Security → Report a vulnerability](https://github.com/max-rh/sshelf/security/advisories/new).
+- **Email:** max-rh@mail.com
+
+Reports are acknowledged and fixed before public disclosure.
 
 ## Threat model (summary)
 
@@ -17,6 +18,14 @@ wherever possible** — stored passwords are the least secure option offered.
 client) by default; or, if `SSHELF_VAULT_PASSPHRASE` is set, an `age`-encrypted `vault.age`
 (scrypt + ChaCha20-Poly1305) for headless/automation use. Secrets are keyed by host id and are
 **never** written to `hosts.toml`, logs, shell history, or process arguments.
+
+**Vault mode and the environment:** in vault mode the askpass helper runs as a child of `ssh`
+and reads `SSHELF_VAULT_PASSPHRASE` from the environment to unlock the vault — so for
+password/passphrase hosts that env var is necessarily visible to the `ssh` process tree (e.g.
+in `/proc/<pid>/environ`, readable by your own user). For hosts with **no** stored secret,
+sshelf strips the variable from the environment before exec'ing `ssh`. This is within the
+threat model below (your own user on a machine you control), but treat the vault passphrase
+accordingly on shared systems — or prefer the OS keyring, which needs no env var.
 
 **How the secret reaches ssh:** via `SSH_ASKPASS` — `sshelf` is re-invoked by `ssh` and prints
 the secret on stdout. It matches the *shape* of OpenSSH's standard prompts (a login password

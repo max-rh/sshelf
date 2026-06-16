@@ -70,17 +70,22 @@ cargo install --git https://github.com/max-rh/sshelf
 
 > Linux uses a pure-Rust Secret Service backend (no `libdbus`/OpenSSL build deps).
 
-> Shell tab-completion ships with every package. After installing, **open a new shell** (or
-> `exec $SHELL`) so it loads — shells read completions once, at startup.
+> Shell tab-completion (subcommands + flags) ships with every package. After installing, **open a
+> new shell** (or `exec $SHELL`) so it loads. For completion of your saved **host names**, see
+> [Shell completions](#shell-completions) below.
 
 ## Usage
 
 ```sh
 sshelf                       # launch the TUI
 sshelf <host>                # connect straight to a saved host by name (skips the TUI)
+sshelf -                     # reconnect to the most recently used host
+sshelf add                   # open the TUI add form
+sshelf add <name> -H <host>  # add a host non-interactively (see "Adding hosts from the CLI")
 sshelf print-command <host>  # print the generated ssh command without connecting
 sshelf list                  # print saved hosts
 sshelf list <query>          # filter the list: fuzzy text and/or tag:NAME (e.g. tag:prod)
+sshelf list --json [query]   # machine-readable output (host fields + the generated command)
 sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)
 sshelf --transfer-log FILE   # log transfer ssh/sftp commands + errors to FILE (debugging)
 sshelf import [--dry-run]    # read-only import from ~/.ssh/config
@@ -97,6 +102,56 @@ anywhere. **F2** opens settings (config & hosts-file locations).
 
 On connect, `sshelf` hands the terminal to `ssh` (it `exec`s into it); when the session ends
 you're back at your shell.
+
+## Adding hosts from the CLI
+
+`sshelf add` with no arguments opens the TUI form. With any argument it adds a host
+non-interactively (handy for scripts and dotfiles); `NAME` and `--hostname` are required:
+
+```sh
+# key auth (a -i identity implies --auth key)
+sshelf add prod-web -H 10.25.25.10 -u deploy -i ~/.ssh/id_ed25519 -t prod,web
+
+# jump host + custom port
+sshelf add prod-db -H 10.25.25.25 -u mike -p 5432 -J bastion.example.net -i ~/.ssh/db
+
+# agent auth (the default) with extra raw ssh flags
+sshelf add edge -H edge.example.net --extra "-o ServerAliveInterval=30"
+
+# password auth — pipe the secret in (kept out of argv/history; stored in the keyring or vault)
+echo "$PASS" | sshelf add legacy -H 10.0.0.9 -u root --password-stdin
+```
+
+| Flag | Meaning |
+|---|---|
+| `NAME` (positional) | Alias to search/connect by. **Required.** |
+| `-H, --hostname <HOST>` | IP or DNS name. **Required.** |
+| `-u, --user <USER>` | Login user (defaults to `$USER` at connect time). |
+| `-p, --port <PORT>` | SSH port (default 22). |
+| `-a, --auth <agent\|key\|password>` | Auth method. Inferred as `key` with `--identity`, `password` with `--password-stdin`, else `agent`. |
+| `-i, --identity <PATH>` | Identity file for key auth (repeatable). |
+| `-J, --jump <HOST>` | ProxyJump host (repeatable or comma-separated). Key/agent auth only. |
+| `-t, --tag <TAG>` | Tag (repeatable or comma-separated). |
+| `--extra "<ARGS>"` | Extra raw ssh flags, appended verbatim. |
+| `--password-stdin` | Read a password / key passphrase from stdin and store it. |
+
+A duplicate name is refused. To store a secret after the fact instead of `--password-stdin`,
+use `sshelf set-password <name>`.
+
+## Shell completions
+
+The packages install static completion (subcommands + flags), also printed by
+`sshelf completions <shell>`. For **host-name** completion — `sshelf <Tab>` completing your saved
+hosts — enable dynamic completions:
+
+```sh
+source <(COMPLETE=bash sshelf)   # bash — add to ~/.bashrc
+source <(COMPLETE=zsh sshelf)    # zsh  — add to ~/.zshrc (after compinit)
+COMPLETE=fish sshelf | source    # fish — add to ~/.config/fish/config.fish
+```
+
+After that, `sshelf prod<Tab>` completes your `prod-*` hosts; the same works after
+`sshelf print-command` and `sshelf set-password`.
 
 ## Configuration
 
@@ -121,8 +176,11 @@ usage state in `~/.local/share/sshelf/`.
 Prefer SSH keys / agent where you can. For password-auth hosts, `sshelf` stores the secret in
 your **OS keyring** by default (macOS Keychain, Linux Secret Service). On headless systems with
 no keyring, set `SSHELF_VAULT_PASSPHRASE` to use an **age-encrypted vault** instead. Passwords
-are never written to `hosts.toml` and never passed on the command line. See
-[`SECURITY.md`](SECURITY.md) for the full threat model.
+are never written to `hosts.toml` and never passed on the command line.
+
+`sshelf` makes **no network calls of its own** — no telemetry, no account, no cloud. The only
+network activity is the `ssh` it hands your terminal to. See [`SECURITY.md`](SECURITY.md) for
+the full threat model.
 
 ## Support
 

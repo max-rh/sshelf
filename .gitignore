@@ -1,4 +1,5 @@
 /target
+/book
 **/*.rs.bk
 
 # macOS Finder metadata

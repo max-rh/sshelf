@@ -16,6 +16,10 @@ user-facing summary of this.
   KDF + ChaCha20-Poly1305). This is the path for headless Linux with no Secret Service daemon,
   and for automation/CI. v1 reads the passphrase from the env var (deterministic, scriptable);
   an interactive prompt + auto-detection of a missing keyring are future enhancements.
+  **Env-inheritance tradeoff:** the askpass helper runs as ssh's *child* and reads the env var
+  to unlock the vault, so for hosts with a stored secret the passphrase is necessarily in the
+  ssh process tree's environment (`/proc/<pid>/environ`, same-user readable). For hosts with
+  **no** stored secret, `ssh.rs::configure_askpass` strips the variable before the exec.
 - **Provisioning:** `sshelf set-password <name|id>` stores a secret from stdin (so it can be
   piped in headless setups) without going through the TUI.
 - **Never** in `hosts.toml`, `state.json`, logs, shell history, or process arguments.

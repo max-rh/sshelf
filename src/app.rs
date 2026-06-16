@@ -435,6 +435,15 @@ impl App {
 /// Set up the terminal, run the loop, restore the terminal, then (if a host was chosen)
 /// perform the `exec()` handoff into ssh.
 pub fn run() -> Result<()> {
+    run_with(false)
+}
+
+/// Like [`run`], but with the add-host form already open (`sshelf add`).
+pub fn run_add() -> Result<()> {
+    run_with(true)
+}
+
+fn run_with(start_add: bool) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
@@ -442,6 +451,9 @@ pub fn run() -> Result<()> {
     let hosts = store::load_hosts(&config.hosts_path(&paths))?.hosts;
     let state = FrecencyState::load(&paths.state_file())?;
     let mut app = App::new(hosts, state, config, paths);
+    if start_add {
+        app.wizard = Some(Wizard::new_add());
+    }
 
     let mut terminal = ratatui::init();
     let loop_result = event_loop(&mut terminal, &mut app);
