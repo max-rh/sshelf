@@ -63,12 +63,12 @@ hostile hosts.
 - **`StrictHostKeyChecking=accept-new`** trusts a *new* host's key on first connect but still
   hard-fails if a *known* host's key changes (MITM protection retained).
 - **Network:** `sshelf` makes no network connections of its own and has no telemetry; it only
-  ever launches the OpenSSH tools — `ssh` to connect, and `ssh`/`sftp`/`scp` for the file-transfer
+  ever launches the OpenSSH tools — `ssh` to connect, and `ssh`/`sftp` for the file-transfer
   screen. Transfers authenticate exactly as connect does (keys/agent, or the stored secret via
-  `SSH_ASKPASS`) by opening **one** multiplexed `ssh` ControlMaster and running `sftp`/`scp` over
-  it — so no extra secret handling, and the secret still never reaches argv. Remote paths are
-  shell-quoted before they reach `sftp`/`scp`, control characters are stripped from displayed
-  names, and `StrictHostKeyChecking=accept-new` applies there too.
+  `SSH_ASKPASS`) by opening **one** multiplexed `ssh` ControlMaster and running `sftp` over it —
+  so no extra secret handling, and the secret still never reaches argv. Remote paths are quoted
+  for `sftp`'s parser, control characters are stripped from displayed names, and
+  `StrictHostKeyChecking=accept-new` applies there too.
 
 ## Reporting
 

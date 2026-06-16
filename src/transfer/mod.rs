@@ -4,10 +4,10 @@
 //! Transport model (validated by the M0 spike — see `docs/decisions.md`): authenticate ONCE by
 //! opening a backgrounded `ssh` ControlMaster, which reuses *every* part of sshelf's auth via
 //! [`crate::ssh::build_args`] + `SSH_ASKPASS` (keys, agent, ProxyJump, port, and the stored
-//! keyring/vault secret). `sftp`/`scp` then ride that master with only `-o ControlPath`, so
-//! there is no re-auth and no per-file password prompt. Because the ride commands inherit the
-//! connection from the master, they need NONE of `-p`/`-i`/`-J` — which also sidesteps the
-//! `ssh -p` vs `sftp`/`scp -P` port-flag difference that would otherwise bite.
+//! keyring/vault secret). `sftp` then rides that master with only `-o ControlPath`, so there is
+//! no re-auth and no per-file password prompt. Because the ride commands inherit the connection
+//! from the master, they need NONE of `-p`/`-i`/`-J`. Transfers use `sftp` `get`/`put` (not
+//! `scp`): `sftp` quotes paths via its own parser consistently across OpenSSH versions.
 #[cfg(test)]
 mod e2e;
 mod pane;
@@ -33,7 +33,7 @@ pub enum Direction {
     Download,
 }
 
-/// The `user@host` destination shared by the master and the `sftp`/`scp` ride commands.
+/// The `user@host` destination shared by the master and the `sftp` ride commands.
 pub fn target(host: &Host) -> String {
     format!("{}@{}", host.effective_user(), host.hostname)
 }
@@ -74,8 +74,8 @@ fn control_op_args(op: &str, control_path: &Path, target: &str) -> Vec<String> {
     ]
 }
 
-/// `sftp -b -` argv that rides the master — used for directory listing (the worker feeds
-/// `ls -l …` on stdin). Only `-o ControlPath` + the destination: the master carries auth/port.
+/// `sftp -b -` argv that rides the master — the worker feeds `ls`/`get`/`put` batch lines on
+/// stdin. Only `-o ControlPath` + the destination: the master carries auth/port.
 pub fn sftp_batch_args(control_path: &Path, target: &str) -> Vec<String> {
     vec![
         "-b".to_string(),
@@ -86,33 +86,10 @@ pub fn sftp_batch_args(control_path: &Path, target: &str) -> Vec<String> {
     ]
 }
 
-/// `scp` argv that rides the master. `src`/`dst` are already-composed endpoints (a local path
-/// or a [`remote_spec`]). `-p` preserves mtimes/modes; `-r` recurses into directories. Like
-/// the other ride commands it carries only `-o ControlPath` — never `-p`(port)/`-i`/`-J`.
-pub fn scp_args(control_path: &Path, recursive: bool, src: &str, dst: &str) -> Vec<String> {
-    let mut a = vec![
-        "-o".to_string(),
-        format!("ControlPath={}", control_path.display()),
-        "-p".to_string(), // preserve mtimes/modes (scp's -p, not a port)
-    ];
-    if recursive {
-        a.push("-r".to_string());
-    }
-    a.push(src.to_string());
-    a.push(dst.to_string());
-    a
-}
-
-/// A remote `scp`/`sftp` endpoint: `user@host:quoted/path`. The path is shell-quoted because
-/// `scp` hands the remote path to the remote login shell — quoting keeps spaces, globs, and
-/// other metacharacters literal. The `user@host:` prefix is parsed by `scp` locally and must
-/// stay unquoted (scp splits on the first colon to separate host from path).
-pub fn remote_spec(target: &str, remote_path: &str) -> String {
-    format!("{target}:{}", shell_quote(remote_path))
-}
-
-/// Quote `s` for a remote shell (or sftp's `ls` parser). Falls back to the raw string only if
-/// it contains a NUL, which can't appear in a path anyway.
+/// Quote `s` for `sftp`'s command parser (used in `ls`/`get`/`put` batch lines). Falls back to
+/// the raw string only if it contains a NUL, which can't appear in a path anyway. Transfers go
+/// through `sftp` rather than `scp` precisely so this one quoting rule applies on every OpenSSH
+/// version — `scp`'s remote-path handling changed in OpenSSH 9 and takes shell quoting literally.
 pub(crate) fn shell_quote(s: &str) -> std::borrow::Cow<'_, str> {
     shlex::try_quote(s).unwrap_or(std::borrow::Cow::Borrowed(s))
 }
@@ -152,7 +129,7 @@ pub struct TransferJob {
     pub src: PathBuf,
     /// Absolute directory on the destination side to drop it into.
     pub dest_dir: PathBuf,
-    /// `src` is a directory (use `scp -r`).
+    /// `src` is a directory (transfer recursively).
     pub recursive: bool,
     /// Total bytes, when known (a single file's size), for the progress bar; `0` = indeterminate.
     pub size_hint: u64,
@@ -244,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn ride_commands_carry_only_controlpath() {
-        // The master already holds port/identity/jump, so the ride commands must NOT repeat
-        // them — and a port flag here would be wrong anyway (sftp/scp use `-P`, not ssh's `-p`).
+    fn sftp_ride_command_carries_only_controlpath() {
+        // The master already holds port/identity/jump, so the ride command (used for listing
+        // and for get/put transfers) carries only the control socket + the destination.
         let cp = Path::new("/tmp/cm.sock");
         assert_eq!(
             sftp_batch_args(cp, "deploy@10.0.0.1"),
@@ -258,17 +235,6 @@ mod tests {
                 "deploy@10.0.0.1"
             ])
         );
-        let scp = scp_args(cp, false, "a.txt", "deploy@10.0.0.1:b.txt");
-        assert!(!scp.iter().any(|s| s == "-i" || s == "-J"));
-        assert!(scp.iter().any(|s| s == "ControlPath=/tmp/cm.sock"));
-        assert_eq!(scp[scp.len() - 2], "a.txt");
-        assert_eq!(scp[scp.len() - 1], "deploy@10.0.0.1:b.txt");
-    }
-
-    #[test]
-    fn scp_recursive_adds_dash_r() {
-        assert!(scp_args(Path::new("/tmp/cm"), true, "dir", "t:dir").contains(&"-r".to_string()));
-        assert!(!scp_args(Path::new("/tmp/cm"), false, "f", "t:f").contains(&"-r".to_string()));
     }
 
     #[test]
@@ -284,12 +250,12 @@ mod tests {
     }
 
     #[test]
-    fn remote_spec_quotes_metacharacters_in_the_path() {
-        let s = remote_spec("deploy@h", "/srv/my data/app.log");
-        assert!(s.starts_with("deploy@h:"));
-        assert!(s.contains("'/srv/my data/app.log'"));
-        // A plain path needs no quoting.
-        assert_eq!(remote_spec("deploy@h", "/srv/app"), "deploy@h:/srv/app");
+    fn shell_quote_wraps_spaces_but_leaves_plain_paths() {
+        assert_eq!(
+            shell_quote("/srv/my data/app.log"),
+            "'/srv/my data/app.log'"
+        );
+        assert_eq!(shell_quote("/srv/app"), "/srv/app");
     }
 
     #[test]

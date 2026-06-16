@@ -18,6 +18,12 @@ ride it for put/get and recursive copies. The ride commands deliberately omit `-
 clash. Rejected: `ssh2`/`wezterm-ssh` (C deps), `russh`/`openssh-sftp-client` (tokio + no askpass
 reuse), and a PTY password screen-scraper (brittle, locale/version-dependent).
 
+**Update (transfers use `sftp`, not `scp`):** listing and copying both run through `sftp`
+(`ls`/`get`/`put`). `scp` was dropped after a filename with spaces failed in testing — OpenSSH 9+
+`scp` speaks the SFTP protocol and takes the remote path *literally*, so shell-quoting it (needed
+by legacy `scp`) injects literal quotes. `sftp` quotes via its own command parser consistently
+across OpenSSH versions, so one quoting rule (`shell_quote`) is correct everywhere.
+
 ### D-018 · Configurable hosts file in config; config file via flag/env only
 A `hosts_file` key in `config.toml` relocates the host DB (editable via the F2 settings screen,
 default under the config dir). The **config file's own** location can't be a config key

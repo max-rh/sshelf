@@ -7,6 +7,19 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-16 — Transfer: use `sftp` (not `scp`) for the copy itself
+
+- Bug found in local testing: transferring a filename with **spaces** failed
+  (`scp: failed to upload … to '/…`). OpenSSH 9+ `scp` speaks the SFTP protocol and takes the
+  remote path literally, so the shell-quoting legacy `scp` needed became *literal quotes* in the
+  name. Plain names slipped through because they aren't quoted.
+- Fixed by running transfers through **`sftp` `get`/`put`** over the same master used for
+  listing — `sftp` quotes via its own command parser consistently across OpenSSH versions, so
+  the version-dependent `scp` quoting trap is gone. Removed `scp_args`/`remote_spec`; added a
+  `transfer_batch` unit test and a spaces regression to the e2e test.
+
+---
+
 ## 2026-06-16 — Transfer screen: transport core + worker
 
 - Started the dual-pane SFTP/SCP **transfer screen**. Settled the transport (see `decisions.md`

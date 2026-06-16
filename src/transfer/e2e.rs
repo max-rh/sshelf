@@ -160,10 +160,11 @@ fn lists_and_transfers_both_directions() {
         return;
     };
 
-    // Remote tree (remote == localhost): a dir with a file and a nested subdir.
+    // Remote tree (remote == localhost): a dir with files (incl. a name with spaces) + a subdir.
     let remote = sshd.dir.join("remote");
     std::fs::create_dir_all(remote.join("sub")).unwrap();
     std::fs::write(remote.join("hello.txt"), b"hello from remote").unwrap();
+    std::fs::write(remote.join("a name with spaces.txt"), b"spaced").unwrap();
     std::fs::write(remote.join("sub/inner.txt"), b"deep").unwrap();
 
     let (session, events) = TransferSession::spawn(host_for(&sshd), false).unwrap();
@@ -208,6 +209,20 @@ fn lists_and_transfers_both_directions() {
         b"hello from remote"
     );
 
+    // Regression: a filename with spaces (scp's quoting corrupted these; sftp get/put is fine).
+    session.send(WorkerCmd::Transfer(TransferJob {
+        direction: Direction::Download,
+        src: remote.join("a name with spaces.txt"),
+        dest_dir: dl.clone(),
+        recursive: false,
+        size_hint: 0,
+    }));
+    expect_done(&events, "spaced download");
+    assert_eq!(
+        std::fs::read(dl.join("a name with spaces.txt")).unwrap(),
+        b"spaced"
+    );
+
     // Upload a single file.
     let up = sshd.dir.join("upload.txt");
     std::fs::write(&up, b"hello from local").unwrap();
@@ -226,7 +241,23 @@ fn lists_and_transfers_both_directions() {
         b"hello from local"
     );
 
-    // Recursive directory download (scp -r copies the dir as a subdir of the destination).
+    // Regression: upload a filename with spaces.
+    let up_spaced = sshd.dir.join("local with spaces.txt");
+    std::fs::write(&up_spaced, b"up spaced").unwrap();
+    session.send(WorkerCmd::Transfer(TransferJob {
+        direction: Direction::Upload,
+        src: up_spaced,
+        dest_dir: remote_dst.clone(),
+        recursive: false,
+        size_hint: 0,
+    }));
+    expect_done(&events, "spaced upload");
+    assert_eq!(
+        std::fs::read(remote_dst.join("local with spaces.txt")).unwrap(),
+        b"up spaced"
+    );
+
+    // Recursive directory download (sftp get -r mirrors the source dir into the dest path).
     let dl2 = sshd.dir.join("download2");
     std::fs::create_dir_all(&dl2).unwrap();
     session.send(WorkerCmd::Transfer(TransferJob {

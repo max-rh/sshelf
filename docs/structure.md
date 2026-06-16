@@ -37,8 +37,8 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color; writes a commented default on first run. |
-| `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp`/`scp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |
-| `transfer/worker.rs` | Background worker thread: owns the ControlMaster (open/readiness/teardown), lists remote dirs (`sftp ls -l`), runs `scp` transfers with progress + cancel. |
+| `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |
+| `transfer/worker.rs` | Background worker thread: owns the ControlMaster (open/readiness/teardown), lists remote dirs (`sftp ls -l`), runs `sftp` `get`/`put` transfers with progress + cancel. |
 | `transfer/pane.rs` | One side's browsing state (fuzzy filter + selection + nav, reusing `search`); `read_local_dir` for the local side; `RemoteEntry`→`PaneEntry`. |
 | `transfer/screen.rs` | The dual-pane `TransferScreen`: two panes over one session, key handling, draining worker events. |
 | `ui/list.rs` | Host list rendering + match highlighting + selection. |

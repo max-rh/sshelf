@@ -123,8 +123,8 @@ The CLI form supports `--dry-run` to preview. Never writes back to `~/.ssh/confi
 `Ctrl-t` on a host opens a **dual-pane transfer screen**: local files on the left, the host's
 files on the right. sshelf authenticates **once** by opening an `ssh` ControlMaster that reuses
 the host's auth (keys/agent/ProxyJump, or the stored keyring/vault secret via `SSH_ASKPASS`),
-then runs `sftp`/`scp` over it. Remote listing and transfers run on a background thread, so the
-UI stays responsive on slow links.
+then runs `sftp` (`ls`/`get`/`put`) over it. Remote listing and transfers run on a background
+thread, so the UI stays responsive on slow links.
 
 Both panes fuzzy-filter as you type:
 

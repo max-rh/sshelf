@@ -1,7 +1,7 @@
 //! The transfer worker thread and the `ssh` ControlMaster it owns.
 //!
-//! The TUI event loop is synchronous; this background thread runs the blocking `ssh`/`sftp`/
-//! `scp` so a slow link never freezes the UI. They talk over std channels: the UI sends
+//! The TUI event loop is synchronous; this background thread runs the blocking `ssh`/`sftp` so
+//! a slow link never freezes the UI. They talk over std channels: the UI sends
 //! [`WorkerCmd`], the worker emits [`WorkerEvent`] (drained each tick). The worker owns the
 //! master child and its control socket, and tears both down when it stops — on `Shutdown`, a
 //! dropped command channel, or a failed handshake.
@@ -19,8 +19,7 @@ use crate::ssh;
 
 use super::{
     Direction, Progress, RemoteEntry, TransferJob, WorkerCmd, WorkerEvent, master_args,
-    master_check_args, master_exit_args, remote_spec, scp_args, sftp_batch_args, shell_quote,
-    target,
+    master_check_args, master_exit_args, sftp_batch_args, shell_quote, target,
 };
 
 /// Wait this long for the master to authenticate and come up before giving up.
@@ -285,7 +284,36 @@ enum TransferError {
     Failed(String),
 }
 
-/// Run one transfer with `scp`, emitting progress and honoring a mid-flight cancel.
+/// Build the `sftp` batch line for a transfer, plus the local destination to poll for download
+/// progress. Paths are quoted for sftp's own command parser, which is consistent across OpenSSH
+/// versions — unlike `scp`, whose remote-path handling switched to the SFTP protocol in OpenSSH
+/// 9 and then takes shell quoting literally, corrupting names with spaces.
+fn transfer_batch(job: &TransferJob, name: &str) -> (String, Option<PathBuf>) {
+    let flag = if job.recursive { "-r " } else { "" };
+    match job.direction {
+        Direction::Download => {
+            let local_dest = job.dest_dir.join(name);
+            let line = format!(
+                "get {flag}{} {}\n",
+                shell_quote(&job.src.to_string_lossy()),
+                shell_quote(&local_dest.to_string_lossy()),
+            );
+            (line, Some(local_dest))
+        }
+        Direction::Upload => {
+            let remote_dest = format!("{}/{name}", job.dest_dir.to_string_lossy());
+            let line = format!(
+                "put {flag}{} {}\n",
+                shell_quote(&job.src.to_string_lossy()),
+                shell_quote(&remote_dest),
+            );
+            (line, None)
+        }
+    }
+}
+
+/// Run one transfer with `sftp` (`put`/`get` over the master), emitting progress and honoring a
+/// mid-flight cancel.
 fn transfer(
     socket: &ControlSocket,
     target: &str,
@@ -296,43 +324,31 @@ fn transfer(
     let name = job
         .src
         .file_name()
-        .ok_or_else(|| TransferError::Failed("invalid source path".into()))?;
+        .ok_or_else(|| TransferError::Failed("invalid source path".into()))?
+        .to_string_lossy()
+        .into_owned();
+    let (batch, local_dest) = transfer_batch(job, &name);
 
-    // Compose the scp endpoints, and (for downloads) the local destination we poll for progress.
-    let (scp_src, scp_dst, local_dest) = match job.direction {
-        Direction::Download => {
-            let src = remote_spec(target, &job.src.to_string_lossy());
-            let dest = job.dest_dir.join(name);
-            let dst = dest.to_string_lossy().into_owned();
-            (src, dst, Some(dest))
-        }
-        Direction::Upload => {
-            let src = job.src.to_string_lossy().into_owned();
-            let remote_path = format!(
-                "{}/{}",
-                job.dest_dir.to_string_lossy(),
-                name.to_string_lossy()
-            );
-            (src, remote_spec(target, &remote_path), None)
-        }
-    };
-
-    let mut child = Command::new("scp")
-        .args(scp_args(socket.path(), job.recursive, &scp_src, &scp_dst))
-        .stdin(Stdio::null())
+    let mut child = Command::new("sftp")
+        .args(sftp_batch_args(socket.path(), target))
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| TransferError::Failed(format!("could not launch scp: {e}")))?;
+        .map_err(|e| TransferError::Failed(format!("could not launch sftp: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(batch.as_bytes());
+        // dropped here → EOF → sftp runs the batch line, then exits
+    }
 
     let mut tick = 0u32;
     loop {
         match cmd_rx.try_recv() {
             Ok(WorkerCmd::Cancel) | Err(TryRecvError::Disconnected) => {
                 kill_and_reap(&mut child);
-                // A partial download leaves a stub file behind; clean it up.
+                // A partial download leaves a stub file/dir behind; clean it up.
                 if let Some(dest) = &local_dest {
-                    let _ = std::fs::remove_file(dest);
+                    let _ = std::fs::remove_file(dest).or_else(|_| std::fs::remove_dir_all(dest));
                 }
                 return Err(TransferError::Cancelled);
             }
@@ -361,7 +377,7 @@ fn transfer(
                 };
             }
             Ok(None) => {}
-            Err(e) => return Err(TransferError::Failed(format!("scp error: {e}"))),
+            Err(e) => return Err(TransferError::Failed(format!("sftp error: {e}"))),
         }
 
         if tick.is_multiple_of(PROGRESS_EVERY)
@@ -522,5 +538,37 @@ mod tests {
         assert!(a.path().starts_with("/tmp/"));
         assert!(a.path().to_string_lossy().len() < 104);
         assert_ne!(a.path(), b.path());
+    }
+
+    #[test]
+    fn transfer_batch_quotes_paths_for_sftp() {
+        use std::path::PathBuf;
+        // Upload a file whose name has spaces: sftp's parser needs the paths single-quoted
+        // (the bug that broke scp — which took the quotes literally).
+        let up = TransferJob {
+            direction: Direction::Upload,
+            src: PathBuf::from("/Users/me/my file.txt"),
+            dest_dir: PathBuf::from("/home/r/Downloads"),
+            recursive: false,
+            size_hint: 0,
+        };
+        let (line, dest) = transfer_batch(&up, "my file.txt");
+        assert_eq!(
+            line,
+            "put '/Users/me/my file.txt' '/home/r/Downloads/my file.txt'\n"
+        );
+        assert!(dest.is_none());
+
+        // Recursive download adds -r and reports the local destination to poll for progress.
+        let down = TransferJob {
+            direction: Direction::Download,
+            src: PathBuf::from("/srv/my data"),
+            dest_dir: PathBuf::from("/tmp/dl"),
+            recursive: true,
+            size_hint: 0,
+        };
+        let (line, dest) = transfer_batch(&down, "my data");
+        assert_eq!(line, "get -r '/srv/my data' '/tmp/dl/my data'\n");
+        assert_eq!(dest, Some(PathBuf::from("/tmp/dl/my data")));
     }
 }
