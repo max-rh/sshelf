@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-16
+
 ### Added
 - **Dual-pane file transfer** (`Ctrl-t` on a host): a two-pane browser — local files on one
   side, the host's on the other — to copy files and folders either direction over SFTP, with
@@ -82,7 +84,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/max-rh/sshelf/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/max-rh/sshelf/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/max-rh/sshelf/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/max-rh/sshelf/compare/v0.1.0...v0.2.0
