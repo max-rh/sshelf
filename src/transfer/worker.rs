@@ -6,6 +6,7 @@
 //! master child and its control socket, and tears both down when it stops — on `Shutdown`, a
 //! dropped command channel, or a failed handshake.
 
+use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -28,6 +29,31 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(100);
 /// Emit a progress event roughly this often (every Nth poll) to avoid UI jitter.
 const PROGRESS_EVERY: u32 = 5;
+
+/// Optional transfer diagnostics, enabled by the `SSHELF_TRANSFER_LOG` file path (or
+/// `--transfer-log`). Records the `ssh`/`sftp` commands and their stderr so a failure can be
+/// inspected after the fact — never any secret, since the password reaches `ssh` via
+/// `SSH_ASKPASS`, not argv. Lives on the single worker thread, so a `RefCell` suffices.
+struct DebugLog(Option<RefCell<std::fs::File>>);
+
+impl DebugLog {
+    fn from_env() -> Self {
+        let file = std::env::var_os(super::LOG_ENV).and_then(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        });
+        DebugLog(file.map(RefCell::new))
+    }
+
+    fn log(&self, msg: &str) {
+        if let Some(file) = &self.0 {
+            let _ = writeln!(file.borrow_mut(), "{msg}");
+        }
+    }
+}
 
 /// A handle to the running transfer worker. Dropping it shuts the worker — and the master
 /// connection — down, and blocks until that teardown finishes (so the socket is gone even on a
@@ -102,10 +128,19 @@ impl Drop for ControlSocket {
 fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender<WorkerEvent>) {
     let target = target(&host);
     let socket = ControlSocket::new();
+    let dbg = DebugLog::from_env();
+    dbg.log(&format!(
+        "=== transfer session: {target} (askpass wired: {has_secret}) ===",
+    ));
+    dbg.log(&format!(
+        "$ ssh {}",
+        master_args(&host, socket.path()).join(" ")
+    ));
 
     let mut master = match open_master(&host, has_secret, socket.path()) {
         Ok(child) => child,
         Err(e) => {
+            dbg.log(&format!("could not launch ssh: {e}"));
             let _ = events.send(WorkerEvent::Ready(Err(format!(
                 "could not launch ssh: {e}"
             ))));
@@ -114,17 +149,19 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
     };
 
     if let Err(e) = handshake(&socket, &target, &mut master, &cmd_rx) {
+        dbg.log(&format!("handshake failed: {e}"));
         let _ = events.send(WorkerEvent::Ready(Err(e)));
         teardown(&mut master, &socket, &target);
         return;
     }
     // Start browsing from the remote working directory (the login/home dir); fall back to root.
     let home = remote_home(&socket, &target).unwrap_or_else(|| PathBuf::from("/"));
+    dbg.log(&format!("master ready; remote home = {}", home.display()));
     let _ = events.send(WorkerEvent::Ready(Ok(home)));
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
-            WorkerCmd::ListRemote(path) => match list_remote(&socket, &target, &path) {
+            WorkerCmd::ListRemote(path) => match list_remote(&socket, &target, &path, &dbg) {
                 Ok(entries) => {
                     let _ = events.send(WorkerEvent::Listing { path, entries });
                 }
@@ -132,15 +169,17 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
                     let _ = events.send(WorkerEvent::Error(e));
                 }
             },
-            WorkerCmd::Transfer(job) => match transfer(&socket, &target, &job, &cmd_rx, &events) {
-                Ok(()) => {
-                    let _ = events.send(WorkerEvent::Done);
+            WorkerCmd::Transfer(job) => {
+                match transfer(&socket, &target, &job, &cmd_rx, &events, &dbg) {
+                    Ok(()) => {
+                        let _ = events.send(WorkerEvent::Done);
+                    }
+                    Err(TransferError::Cancelled) => dbg.log("transfer cancelled"),
+                    Err(TransferError::Failed(e)) => {
+                        let _ = events.send(WorkerEvent::Error(e));
+                    }
                 }
-                Err(TransferError::Cancelled) => {}
-                Err(TransferError::Failed(e)) => {
-                    let _ = events.send(WorkerEvent::Error(e));
-                }
-            },
+            }
             // A stray cancel with nothing running, or anything else: ignore.
             WorkerCmd::Cancel => {}
             WorkerCmd::Shutdown => break,
@@ -214,6 +253,7 @@ fn list_remote(
     socket: &ControlSocket,
     target: &str,
     path: &Path,
+    dbg: &DebugLog,
 ) -> Result<Vec<RemoteEntry>, String> {
     let mut child = Command::new("sftp")
         .args(sftp_batch_args(socket.path(), target))
@@ -223,12 +263,13 @@ fn list_remote(
         .spawn()
         .map_err(|e| format!("could not launch sftp: {e}"))?;
 
+    let line = format!("ls -l {}\n", shell_quote(&path.to_string_lossy()));
+    dbg.log(&format!("sftp> {}", line.trim_end()));
     {
         let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| "sftp stdin unavailable".to_string())?;
-        let line = format!("ls -l {}\n", shell_quote(&path.to_string_lossy()));
         stdin
             .write_all(line.as_bytes())
             .map_err(|e| format!("writing to sftp: {e}"))?;
@@ -239,8 +280,15 @@ fn list_remote(
         .wait_with_output()
         .map_err(|e| format!("sftp failed: {e}"))?;
     if !out.status.success() {
-        return Err(tidy_error(&String::from_utf8_lossy(&out.stderr))
-            .unwrap_or_else(|| format!("could not list {}", path.display())));
+        let err = String::from_utf8_lossy(&out.stderr);
+        dbg.log(&format!(
+            "  ls failed (exit {:?}):\n{}",
+            out.status.code(),
+            err.trim_end()
+        ));
+        return Err(
+            tidy_error(&err).unwrap_or_else(|| format!("could not list {}", path.display()))
+        );
     }
 
     let mut entries: Vec<RemoteEntry> = String::from_utf8_lossy(&out.stdout)
@@ -320,6 +368,7 @@ fn transfer(
     job: &TransferJob,
     cmd_rx: &Receiver<WorkerCmd>,
     events: &Sender<WorkerEvent>,
+    dbg: &DebugLog,
 ) -> Result<(), TransferError> {
     let name = job
         .src
@@ -328,6 +377,7 @@ fn transfer(
         .to_string_lossy()
         .into_owned();
     let (batch, local_dest) = transfer_batch(job, &name);
+    dbg.log(&format!("sftp> {}", batch.trim_end()));
 
     let mut child = Command::new("sftp")
         .args(sftp_batch_args(socket.path(), target))
@@ -370,10 +420,15 @@ fn transfer(
                     }
                     Ok(())
                 } else {
-                    Err(TransferError::Failed(child_error(
-                        &mut child,
-                        "transfer failed",
-                    )))
+                    let err = drain_stderr(&mut child);
+                    dbg.log(&format!(
+                        "  transfer failed (exit {:?}):\n{}",
+                        status.code(),
+                        err.trim_end()
+                    ));
+                    Err(TransferError::Failed(
+                        tidy_error(&err).unwrap_or_else(|| "transfer failed".into()),
+                    ))
                 };
             }
             Ok(None) => {}
@@ -413,13 +468,18 @@ fn local_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-/// Read a child's captured stderr and return the most useful line, or `fallback`.
-fn child_error(child: &mut Child, fallback: &str) -> String {
+/// Take and return a child's captured stderr.
+fn drain_stderr(child: &mut Child) -> String {
     let mut buf = String::new();
     if let Some(mut err) = child.stderr.take() {
         let _ = err.read_to_string(&mut buf);
     }
-    tidy_error(&buf).unwrap_or_else(|| fallback.to_string())
+    buf
+}
+
+/// The most useful line of a child's stderr (ssh/sftp put the real cause last), or `fallback`.
+fn child_error(child: &mut Child, fallback: &str) -> String {
+    tidy_error(&drain_stderr(child)).unwrap_or_else(|| fallback.to_string())
 }
 
 /// The last non-blank line of `raw` (ssh/sftp/scp put the real cause last), if any.

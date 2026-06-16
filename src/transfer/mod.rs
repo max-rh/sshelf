@@ -24,6 +24,11 @@ use std::path::{Path, PathBuf};
 
 use crate::model::Host;
 
+/// Env var (also set by `--transfer-log <FILE>`) naming a file the worker appends transfer
+/// diagnostics to: the `ssh`/`sftp` commands and their stderr. No secrets are logged — the
+/// password reaches `ssh` via `SSH_ASKPASS`, never argv.
+pub(crate) const LOG_ENV: &str = "SSHELF_TRANSFER_LOG";
+
 /// Direction of a transfer, named by where the bytes end up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {

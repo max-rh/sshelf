@@ -147,6 +147,11 @@ first-time host key is trusted on use (see [`security.md`](security.md)). Only o
 at a time in v1, and a same-named file or folder already present in the destination is **skipped**
 (with a message) rather than overwritten.
 
+On failure the status line shows the underlying `sftp` error. For more detail, run with
+`sshelf --transfer-log <FILE>` (or `$SSHELF_TRANSFER_LOG=<FILE>`): the worker appends every
+`ssh`/`sftp` command and its full stderr to that file. The log holds no secrets — the password
+reaches `ssh` via `SSH_ASKPASS`, never the command line.
+
 ## CLI (outside the TUI)
 
 | Command | What it does |
@@ -159,6 +164,7 @@ at a time in v1, and a same-named file or folder already present in the destinat
 | `sshelf set-password <host>` | Store a password (read from stdin) for a host. |
 | `sshelf completions <shell>` · `sshelf man` | Emit shell completions / the man page. |
 | `--config FILE` (global) | Use a specific config file (also `$SSHELF_CONFIG`). |
+| `--transfer-log FILE` (global) | Append transfer-screen diagnostics — the `ssh`/`sftp` commands and their errors (no secrets) — to `FILE`. Also `$SSHELF_TRANSFER_LOG`. |
 
 ## Confirmations & overlays
 

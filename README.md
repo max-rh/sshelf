@@ -82,6 +82,7 @@ sshelf print-command <host>  # print the generated ssh command without connectin
 sshelf list                  # print saved hosts
 sshelf list <query>          # filter the list: fuzzy text and/or tag:NAME (e.g. tag:prod)
 sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)
+sshelf --transfer-log FILE   # log transfer ssh/sftp commands + errors to FILE (debugging)
 sshelf import [--dry-run]    # read-only import from ~/.ssh/config
 echo "$PASS" | sshelf set-password <name>   # store a password (scriptable / headless)
 ```

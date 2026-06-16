@@ -1,11 +1,11 @@
 //! End-to-end transfer tests against a throwaway, rootless `sshd` on localhost.
 //!
-//! These spawn a real `sshd` plus `ssh`/`sftp`/`scp`, so they are `#[ignore]`d — run them with
+//! These spawn a real `sshd` plus `ssh`/`sftp`, so they are `#[ignore]`d — run them with
 //! `cargo test -- --ignored` on a machine with OpenSSH installed. They drive the worker exactly
 //! as the transfer screen does (open the master, list a remote directory, copy files both ways,
-//! recursively), and confirm the ControlMaster + `sftp`/`scp` transport works against a real
-//! server. The unit tests cover the pure pieces (argv builders, `ls -l` parsing, progress math);
-//! this is the integration layer the M0 spike proved by hand.
+//! recursively, with a filename containing spaces), and confirm the ControlMaster + `sftp`
+//! transport works against a real server. The unit tests cover the pure pieces (argv builders,
+//! `ls -l` parsing, progress math); this is the integration layer the M0 spike proved by hand.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -167,6 +167,11 @@ fn lists_and_transfers_both_directions() {
     std::fs::write(remote.join("a name with spaces.txt"), b"spaced").unwrap();
     std::fs::write(remote.join("sub/inner.txt"), b"deep").unwrap();
 
+    // Enable the diagnostic log and confirm it captures the commands (the `--transfer-log` /
+    // SSHELF_TRANSFER_LOG feature). SAFETY: this #[ignore]d test owns its process.
+    let log_path = sshd.dir.join("transfer.log");
+    unsafe { std::env::set_var(super::LOG_ENV, &log_path) };
+
     let (session, events) = TransferSession::spawn(host_for(&sshd), false).unwrap();
 
     // The master opens and reports a working directory.
@@ -272,6 +277,22 @@ fn lists_and_transfers_both_directions() {
         std::fs::read(dl2.join("remote/sub/inner.txt")).unwrap(),
         b"deep"
     );
+
+    // The diagnostic log recorded the master + the sftp commands (and no secrets to leak).
+    let logged = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        logged.contains("$ ssh "),
+        "log should record the master command"
+    );
+    assert!(
+        logged.contains("sftp> get "),
+        "log should record get commands"
+    );
+    assert!(
+        logged.contains("sftp> put "),
+        "log should record put commands"
+    );
+    unsafe { std::env::remove_var(super::LOG_ENV) };
 
     drop(session); // tears the master + control socket down
 }

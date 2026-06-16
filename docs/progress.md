@@ -7,6 +7,17 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-16 — Transfer: `--transfer-log` diagnostics
+
+- Added a transfer debug log: `sshelf --transfer-log <FILE>` (or `$SSHELF_TRANSFER_LOG`) appends
+  every `ssh`/`sftp` command the worker runs plus its full stderr to `FILE`, so a failed transfer
+  can be inspected after the fact (the status line still shows the one-line cause). No secrets are
+  logged — the password reaches `ssh` via `SSH_ASKPASS`, never argv. The e2e test asserts the log
+  captures the master + `get`/`put` commands. Docs: README, `ux.md` (CLI table + transfer
+  section), `security.md`.
+
+---
+
 ## 2026-06-16 — Transfer: use `sftp` (not `scp`) for the copy itself
 
 - Bug found in local testing: transferring a filename with **spaces** failed

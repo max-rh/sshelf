@@ -68,7 +68,9 @@ hostile hosts.
   `SSH_ASKPASS`) by opening **one** multiplexed `ssh` ControlMaster and running `sftp` over it —
   so no extra secret handling, and the secret still never reaches argv. Remote paths are quoted
   for `sftp`'s parser, control characters are stripped from displayed names, and
-  `StrictHostKeyChecking=accept-new` applies there too.
+  `StrictHostKeyChecking=accept-new` applies there too. The optional transfer log
+  (`--transfer-log` / `$SSHELF_TRANSFER_LOG`) records the `ssh`/`sftp` commands and their stderr
+  for troubleshooting — it contains **no secrets** (same reason: the password goes via askpass).
 
 ## Reporting
 
