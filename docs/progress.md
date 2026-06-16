@@ -3,8 +3,77 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** post-v0.3.0 CLI surface (non-interactive add, `list --json`, dynamic
-completion, `sshelf -`). v1 acceptance gates closed.
+**Current milestone:** dual-pane SFTP file transfer (`Ctrl-t`), targeting **v0.5.0**. v1
+acceptance gates closed.
+
+---
+
+## 2026-06-16 — Transfer: `--transfer-log` diagnostics
+
+- Added a transfer debug log: `sshelf --transfer-log <FILE>` (or `$SSHELF_TRANSFER_LOG`) appends
+  every `ssh`/`sftp` command the worker runs plus its full stderr to `FILE`, so a failed transfer
+  can be inspected after the fact (the status line still shows the one-line cause). No secrets are
+  logged — the password reaches `ssh` via `SSH_ASKPASS`, never argv. The e2e test asserts the log
+  captures the master + `get`/`put` commands. Docs: README, `ux.md` (CLI table + transfer
+  section), `security.md`.
+
+---
+
+## 2026-06-16 — Transfer: use `sftp` (not `scp`) for the copy itself
+
+- Bug found in local testing: transferring a filename with **spaces** failed
+  (`scp: failed to upload … to '/…`). OpenSSH 9+ `scp` speaks the SFTP protocol and takes the
+  remote path literally, so the shell-quoting legacy `scp` needed became *literal quotes* in the
+  name. Plain names slipped through because they aren't quoted.
+- Fixed by running transfers through **`sftp` `get`/`put`** over the same master used for
+  listing — `sftp` quotes via its own command parser consistently across OpenSSH versions, so
+  the version-dependent `scp` quoting trap is gone. Removed `scp_args`/`remote_spec`; added a
+  `transfer_batch` unit test and a spaces regression to the e2e test.
+
+---
+
+## 2026-06-16 — Transfer screen: transport core + worker
+
+- Started the dual-pane SFTP/SCP **transfer screen**. Settled the transport (see `decisions.md`
+  D-019): move files over the system `sftp`/`scp` riding a single `ssh` **ControlMaster**, so
+  keys/agent/ProxyJump and the stored keyring/vault secret are reused unchanged and password
+  hosts work with no PTY. A spike against a local sshd confirmed `SSH_ASKPASS` opens the master
+  and that `sftp`/`scp` ride it (put/get + recursive).
+- Landed the tested core in `src/transfer/mod.rs`: the master/`sftp`/`scp` argv builders, the
+  `user@host` target + shell-quoted remote-path spec, the worker↔UI message protocol, and
+  progress math.
+- Added the worker thread + ControlMaster lifecycle (`src/transfer/worker.rs`): it opens the
+  master (reusing `ssh::configure_askpass`, now `pub(crate)`), polls it ready, lists remote
+  dirs by parsing `sftp ls -l`, runs `scp` transfers with throttled progress + mid-flight
+  cancel, and tears the master + control socket down on stop via RAII. 101 tests; clippy + fmt
+  clean. No UI yet; the live end-to-end run lands with the engine milestone.
+- Added `transfer/pane.rs`: one side's state — fuzzy filter + selection + navigation reused
+  from the key-picker browser, a synthetic `..` entry, `ls -F`-style dir/`@`-symlink labels with
+  control-char stripping, and a local-directory reader. Kept source-agnostic rather than behind
+  a `DirSource` trait (a synchronous remote `list()` would block the very UI loop the worker
+  keeps responsive); the screen feeds local entries via `std::fs` and remote ones via the worker.
+  109 tests; clippy + fmt clean.
+- Wired the screen end to end: `transfer/screen.rs` (two panes over one session — local nav is
+  synchronous, remote nav requests via the worker, events drained each tick) and `ui/transfer.rs`
+  (two panes, progress/status line, hint bar; `TestBackend`-snapshotted via a borrowed view, and
+  a "terminal too small" clamp). `Ctrl-t` on the list opens it (`Outcome::Transfer`); the event
+  loop polls + drains while it's open and tears the worker down on close (RAII). Keys: `Tab`
+  switch · `→`/`Enter` open · `Ctrl-s` send file/folder · `←`/`Backspace` up · `Esc` cancel/
+  clear/close. Docs: `ux.md` transfer section + keybinding. 113 tests; clippy + fmt clean.
+- Validated the transport end to end against a throwaway localhost `sshd` (`transfer/e2e.rs`,
+  `#[ignore]`d — run with `cargo test -- --ignored`): the master opens, `sftp` `pwd`/`ls`
+  parse, single-file download + upload (contents verified), and recursive directory download
+  all pass.
+- Robustness + docs pass: a same-named destination is **skipped** rather than clobbered;
+  README gains a feature bullet + the `^t` key, `security.md` covers the transfer network path,
+  and `structure.md` maps the new modules. Added master-command tests for ProxyJump + password
+  hosts — the auth itself reuses `build_args`/`configure_askpass` (already tested), and the M0
+  spike proved `SSH_ASKPASS` opens the master, so a password *target* and key/agent jumps work;
+  a fully automated password-auth transfer E2E needs a PAM/Docker sshd (the rootless test server
+  is key-auth only) and is a CI-with-Docker follow-up.
+- The transfer screen is **functionally complete**: dual-pane browse + fuzzy on both sides,
+  single-file and recursive folder transfer in both directions over one multiplexed master,
+  live progress, cancel, and overwrite-skip. 116 unit tests + 1 e2e; clippy + fmt clean.
 
 ---
 

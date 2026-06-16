@@ -5,6 +5,25 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-019 · File transfer rides an `ssh` ControlMaster; `sftp`/`scp` as subprocesses
+The dual-pane transfer screen moves files over the **system `sftp`/`scp` binaries**, not a Rust
+SSH library: every pure-Rust option either pulls C deps (libssh2) or forces `tokio` and can't
+reuse sshelf's `SSH_ASKPASS`/ProxyJump auth. To support password hosts without a fragile PTY,
+sshelf authenticates **once** by opening a backgrounded `ssh` **ControlMaster** (reusing
+`build_args` + the askpass env exactly as connect does); `sftp`/`scp` then ride it with only
+`-o ControlPath`, so there is no re-auth and no per-file prompt. A spike against a local sshd
+confirmed that (a) `SSH_ASKPASS` supplies the secret to open the master and (b) `sftp`/`scp`
+ride it for put/get and recursive copies. The ride commands deliberately omit `-p`/`-i`/`-J`
+(the master already carries them) — which also avoids the `ssh -p` vs `sftp`/`scp -P` port-flag
+clash. Rejected: `ssh2`/`wezterm-ssh` (C deps), `russh`/`openssh-sftp-client` (tokio + no askpass
+reuse), and a PTY password screen-scraper (brittle, locale/version-dependent).
+
+**Update (transfers use `sftp`, not `scp`):** listing and copying both run through `sftp`
+(`ls`/`get`/`put`). `scp` was dropped after a filename with spaces failed in testing — OpenSSH 9+
+`scp` speaks the SFTP protocol and takes the remote path *literally*, so shell-quoting it (needed
+by legacy `scp`) injects literal quotes. `sftp` quotes via its own command parser consistently
+across OpenSSH versions, so one quoting rule (`shell_quote`) is correct everywhere.
+
 ### D-018 · Configurable hosts file in config; config file via flag/env only
 A `hosts_file` key in `config.toml` relocates the host DB (editable via the F2 settings screen,
 default under the config dir). The **config file's own** location can't be a config key

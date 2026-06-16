@@ -105,7 +105,9 @@ pub fn exec_connect(host: &Host, wire_askpass: bool) -> anyhow::Error {
 /// Wire our own binary as the `SSH_ASKPASS` helper so the stored secret (a login password OR
 /// a key passphrase) is supplied automatically. Only when `wire_askpass` is set (a secret
 /// exists); otherwise clear any inherited askpass so ssh prompts / uses the agent normally.
-fn configure_askpass(cmd: &mut std::process::Command, host: &Host, wire_askpass: bool) {
+///
+/// Reused by the transfer worker to authenticate the ControlMaster exactly as connect does.
+pub(crate) fn configure_askpass(cmd: &mut std::process::Command, host: &Host, wire_askpass: bool) {
     cmd.env_remove("SSH_ASKPASS")
         .env_remove("SSH_ASKPASS_REQUIRE");
     if !wire_askpass {

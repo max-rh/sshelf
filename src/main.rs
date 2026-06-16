@@ -16,6 +16,7 @@ mod secrets;
 mod ssh;
 mod state;
 mod store;
+mod transfer;
 mod ui;
 mod vault;
 
@@ -43,6 +44,10 @@ struct Cli {
     /// Use a specific config file (default: ~/.config/sshelf/config.toml).
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// Append transfer-screen diagnostics (the ssh/sftp commands + their errors; no secrets)
+    /// to FILE. Also settable via $SSHELF_TRANSFER_LOG.
+    #[arg(long, global = true, value_name = "FILE")]
+    transfer_log: Option<PathBuf>,
     /// Connect directly to a saved host by name (skips the TUI), or `-` to reconnect to the
     /// most recently used host. With no host and no subcommand, sshelf launches the TUI.
     #[arg(value_name = "HOST", add = ArgValueCandidates::new(host_name_candidates))]
@@ -217,6 +222,12 @@ fn main() -> Result<()> {
         // SAFETY: set once at startup, before any threads are spawned.
         unsafe {
             std::env::set_var(CONFIG_ENV, path);
+        }
+    }
+    if let Some(path) = &cli.transfer_log {
+        // SAFETY: set once at startup, before any threads are spawned.
+        unsafe {
+            std::env::set_var(transfer::LOG_ENV, path);
         }
     }
     match cli.command {

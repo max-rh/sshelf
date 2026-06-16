@@ -5,6 +5,18 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+- **Dual-pane file transfer** (`Ctrl-t` on a host): a two-pane browser — local files on one
+  side, the host's on the other — to copy files and folders either direction over SFTP, with
+  fuzzy search on both sides and live progress. Authenticates **once** via an `ssh` ControlMaster
+  that reuses the host's existing auth (keys / agent / ProxyJump, or a stored password through
+  `SSH_ASKPASS`), then runs `sftp` over it — no PTY, no per-file re-prompt, and `~/.ssh/config`
+  is never touched. `Tab` switches panes, `→`/`Enter` opens a directory, `Ctrl-s` sends the
+  selection, `Esc` cancels; a same-named destination is skipped (not overwritten) and symlinks
+  are flagged and skipped. No new dependencies.
+- **`--transfer-log <FILE>`** (also `$SSHELF_TRANSFER_LOG`): append the transfer screen's
+  `ssh`/`sftp` commands and their errors to a file for debugging — no secrets are logged.
+
 ## [0.4.0] — 2026-06-14
 
 ### Added

@@ -45,6 +45,7 @@ list. Actions therefore use **Ctrl** (or function keys) to avoid being typed int
 | `Ctrl-e` | edit selected host — M4 |
 | `Ctrl-d` | delete selected host (confirm) — M4 |
 | `Ctrl-y` | yank — copy/print the generated `ssh` command without connecting — M3 |
+| `Ctrl-t` | open the dual-pane **file-transfer** screen for the selected host |
 | `Ctrl-o` | import from `~/.ssh/config` (read-only) — M7 |
 | `F1` | help overlay |
 | `F2` | settings (config & hosts-file locations) |
@@ -117,6 +118,40 @@ already present, warning about unsupported `Match` / `Include` / `ProxyJump`. v1
 new hosts at once (no per-host selection screen) — curate afterwards with `Ctrl-e` / `Ctrl-d`.
 The CLI form supports `--dry-run` to preview. Never writes back to `~/.ssh/config`.
 
+## File transfer (`Ctrl-t`)
+
+`Ctrl-t` on a host opens a **dual-pane transfer screen**: local files on the left, the host's
+files on the right. sshelf authenticates **once** by opening an `ssh` ControlMaster that reuses
+the host's auth (keys/agent/ProxyJump, or the stored keyring/vault secret via `SSH_ASKPASS`),
+then runs `sftp` (`ls`/`get`/`put`) over it. Remote listing and transfers run on a background
+thread, so the UI stays responsive on slow links.
+
+Both panes fuzzy-filter as you type:
+
+| Key | Action |
+|---|---|
+| _type_ | filter the focused pane |
+| `Tab` | switch the focused pane (local ↔ remote) |
+| `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | move the selection |
+| `→` / `Enter` | open the selected directory (or send a file) |
+| `Ctrl-s` | **send** the selected file or folder (recursive) into the *other* pane's directory |
+| `←` | go up a directory |
+| `Backspace` | edit the filter, or go up when it's empty |
+| `Esc` | cancel a running transfer, else clear the filter, else close the screen |
+
+A progress bar shows bytes and percent for single-file downloads; folder and upload transfers
+show as in-flight (cancelable with `Esc`). Directories are marked `name/` and symlinks `name@`;
+symlinks are skipped in this version. Filenames are shell-quoted and control characters stripped
+from display. The connection uses `StrictHostKeyChecking=accept-new`, like connect — so a
+first-time host key is trusted on use (see [`security.md`](security.md)). Only one transfer runs
+at a time in v1, and a same-named file or folder already present in the destination is **skipped**
+(with a message) rather than overwritten.
+
+On failure the status line shows the underlying `sftp` error. For more detail, run with
+`sshelf --transfer-log <FILE>` (or `$SSHELF_TRANSFER_LOG=<FILE>`): the worker appends every
+`ssh`/`sftp` command and its full stderr to that file. The log holds no secrets — the password
+reaches `ssh` via `SSH_ASKPASS`, never the command line.
+
 ## CLI (outside the TUI)
 
 | Command | What it does |
@@ -132,6 +167,7 @@ The CLI form supports `--dry-run` to preview. Never writes back to `~/.ssh/confi
 | `sshelf set-password <host>` | Store a password (read from stdin) for a host. |
 | `sshelf completions <shell>` · `sshelf man` | Emit static completions / the man page. |
 | `--config FILE` (global) | Use a specific config file (also `$SSHELF_CONFIG`). |
+| `--transfer-log FILE` (global) | Append transfer-screen diagnostics — the `ssh`/`sftp` commands and their errors (no secrets) — to `FILE`. Also `$SSHELF_TRANSFER_LOG`. |
 
 **Dynamic completion (host names):** static completions cover subcommands/flags only. Sourcing
 `COMPLETE=<shell> sshelf` (e.g. `source <(COMPLETE=zsh sshelf)`) enables host-name completion via

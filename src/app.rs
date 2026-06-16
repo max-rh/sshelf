@@ -8,6 +8,7 @@
 //! once the TUI is torn down (so ssh inherits a clean TTY).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -21,6 +22,7 @@ use crate::secrets;
 use crate::ssh;
 use crate::state::FrecencyState;
 use crate::store;
+use crate::transfer::{self, TransferOutcome};
 use crate::ui;
 use crate::ui::settings::{Settings, SettingsOutcome};
 use crate::ui::wizard::{Wizard, WizardOutcome};
@@ -45,6 +47,8 @@ pub enum Outcome {
     Quit,
     Connect(usize),
     Yank(usize),
+    /// Open the transfer screen for this host (the loop spawns the worker after key handling).
+    Transfer(usize),
 }
 
 pub struct App {
@@ -64,6 +68,8 @@ pub struct App {
     pub wizard: Option<Wizard>,
     pub confirm: Option<ConfirmDelete>,
     pub settings: Option<Settings>,
+    /// The dual-pane file-transfer screen, when open.
+    pub transfer: Option<transfer::TransferScreen>,
     /// Transient status line (cleared on next keypress).
     pub status: Option<String>,
     pub should_quit: bool,
@@ -87,6 +93,7 @@ impl App {
             wizard: None,
             confirm: None,
             settings: None,
+            transfer: None,
             status: None,
             should_quit: false,
             pending_connect: None,
@@ -128,6 +135,13 @@ impl App {
 
     pub fn on_key(&mut self, key: KeyEvent) -> Outcome {
         if key.kind != KeyEventKind::Press {
+            return Outcome::Continue;
+        }
+        if let Some(screen) = self.transfer.as_mut() {
+            // Dropping the screen closes the worker (master + socket torn down) via its RAII.
+            if let TransferOutcome::Close = screen.on_key(key) {
+                self.transfer = None;
+            }
             return Outcome::Continue;
         }
         if self.confirm.is_some() {
@@ -172,6 +186,11 @@ impl App {
             (KeyCode::Char('y'), true) => {
                 if let Some(i) = self.current() {
                     return Outcome::Yank(i);
+                }
+            }
+            (KeyCode::Char('t'), true) => {
+                if let Some(i) = self.current() {
+                    return Outcome::Transfer(i);
                 }
             }
             (KeyCode::Char('a'), true) => self.wizard = Some(Wizard::new_add()),
@@ -383,6 +402,25 @@ impl App {
         }
     }
 
+    /// Spawn the transfer worker for `idx` and open the dual-pane screen. Mirrors connect: the
+    /// event loop calls this so the side effects (a worker thread, a secrets lookup) stay out
+    /// of the testable `on_key`.
+    fn open_transfer(&mut self, idx: usize) {
+        let host = self.hosts[idx].clone();
+        let has_secret = secrets::get_password(&self.paths.vault_file(), &host.id)
+            .ok()
+            .flatten()
+            .is_some();
+        let start = std::env::current_dir()
+            .ok()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("/"));
+        match transfer::TransferScreen::open(&host, has_secret, start) {
+            Ok(screen) => self.transfer = Some(screen),
+            Err(e) => self.set_status(format!("could not start transfer: {e}")),
+        }
+    }
+
     fn move_down(&mut self) {
         if !self.order.is_empty() && self.selected + 1 < self.order.len() {
             self.selected += 1;
@@ -444,26 +482,43 @@ fn run_with(start_add: bool) -> Result<()> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
-        if let Event::Key(key) = event::read()? {
-            match app.on_key(key) {
-                Outcome::Quit => app.should_quit = true,
-                Outcome::Connect(idx) => {
-                    app.pending_connect = Some(idx);
-                    app.should_quit = true;
-                }
-                Outcome::Yank(idx) => {
-                    let cmd = ssh::command_string(&app.hosts[idx]);
-                    if ssh::copy_to_clipboard(&cmd) {
-                        app.set_status(format!("copied: {cmd}"));
-                    } else {
-                        app.set_status(cmd);
-                    }
-                }
-                Outcome::Continue => {}
+        if app.transfer.is_some() {
+            // The transfer screen is live: poll so worker events and progress animate without a
+            // keypress, then drain whatever the worker produced this tick.
+            if event::poll(Duration::from_millis(100))?
+                && let Event::Key(key) = event::read()?
+            {
+                dispatch(app, key);
             }
+            if let Some(screen) = app.transfer.as_mut() {
+                screen.drain_events();
+            }
+        } else if let Event::Key(key) = event::read()? {
+            dispatch(app, key);
         }
     }
     Ok(())
+}
+
+/// Handle one key by routing the resulting outcome (shared by the blocking and polling paths).
+fn dispatch(app: &mut App, key: KeyEvent) {
+    match app.on_key(key) {
+        Outcome::Quit => app.should_quit = true,
+        Outcome::Connect(idx) => {
+            app.pending_connect = Some(idx);
+            app.should_quit = true;
+        }
+        Outcome::Yank(idx) => {
+            let cmd = ssh::command_string(&app.hosts[idx]);
+            if ssh::copy_to_clipboard(&cmd) {
+                app.set_status(format!("copied: {cmd}"));
+            } else {
+                app.set_status(cmd);
+            }
+        }
+        Outcome::Transfer(idx) => app.open_transfer(idx),
+        Outcome::Continue => {}
+    }
 }
 
 #[cfg(test)]
@@ -537,6 +592,16 @@ mod tests {
         assert_eq!(
             app.on_key(ctrl(KeyCode::Char('y'))),
             Outcome::Yank(expected)
+        );
+    }
+
+    #[test]
+    fn ctrl_t_opens_transfer_for_selected() {
+        let mut app = test_app();
+        let expected = app.order[app.selected];
+        assert_eq!(
+            app.on_key(ctrl(KeyCode::Char('t'))),
+            Outcome::Transfer(expected)
         );
     }
 

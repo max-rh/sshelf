@@ -28,6 +28,9 @@ an independent database, so it never risks corrupting a config shared with Ansib
 your editor, and adds things plain SSH config can't express as nicely:
 
 - **Atuin-style fuzzy launcher** — type to filter, `Enter` to connect.
+- **Dual-pane file transfer** (`Ctrl-t`) — a two-pane browser to copy files and folders to and
+  from a host over SFTP/SCP, with fuzzy search on both sides and live progress. It authenticates
+  once (reusing the host's keys/agent or stored password) and never touches `~/.ssh/config`.
 - **Guided add/edit form** — hostname, user, port, auth, jump hosts, tags, extra args.
 - **Auto-supplied passwords** for password-auth hosts (via `SSH_ASKPASS`; no `sshpass`, the
   secret never appears in `ps`). Stored in your OS keyring, or an encrypted vault.
@@ -84,13 +87,14 @@ sshelf list                  # print saved hosts
 sshelf list <query>          # filter the list: fuzzy text and/or tag:NAME (e.g. tag:prod)
 sshelf list --json [query]   # machine-readable output (host fields + the generated command)
 sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)
+sshelf --transfer-log FILE   # log transfer ssh/sftp commands + errors to FILE (debugging)
 sshelf import [--dry-run]    # read-only import from ~/.ssh/config
 echo "$PASS" | sshelf set-password <name>   # store a password (scriptable / headless)
 ```
 
 **Keys:** type to filter · `tag:NAME` to filter by tag · `↑/↓` move · `Enter` connect ·
-`Ctrl-a` add · `Ctrl-e` edit · `Ctrl-d` delete · `Ctrl-y` yank the `ssh` command · `Ctrl-o`
-import · `F1` help · `F2` settings · `Esc`/`Ctrl-c` quit.
+`Ctrl-a` add · `Ctrl-e` edit · `Ctrl-d` delete · `Ctrl-y` yank the `ssh` command · `Ctrl-t`
+transfer files · `Ctrl-o` import · `F1` help · `F2` settings · `Esc`/`Ctrl-c` quit.
 
 In the **add/edit** form the Key field picks an identity: `←/→` cycles keys found in `~/.ssh`
 (including `.pem`), and `Enter` opens a file browser (type to fuzzy-filter) to choose a key

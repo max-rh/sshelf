@@ -3,8 +3,8 @@
 > Keep this in sync with the actual tree (the docs-in-sync rule).
 >
 > **All modules present:** `main`, `app`, `askpass`, `config`, `import`, `model`, `paths`,
-> `search`, `secrets`, `ssh`, `state`, `store`, `vault`,
-> `ui/{mod,list,help,widgets,wizard,browse,settings}`.
+> `search`, `secrets`, `ssh`, `state`, `store`, `transfer/{mod,worker,pane,screen}`, `vault`,
+> `ui/{mod,list,help,widgets,wizard,browse,settings,transfer}`.
 > (`error.rs` was removed — the codebase uses `anyhow` throughout.)
 
 ## Repository
@@ -37,7 +37,12 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color; writes a commented default on first run. |
+| `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |
+| `transfer/worker.rs` | Background worker thread: owns the ControlMaster (open/readiness/teardown), lists remote dirs (`sftp ls -l`), runs `sftp` `get`/`put` transfers with progress + cancel. |
+| `transfer/pane.rs` | One side's browsing state (fuzzy filter + selection + nav, reusing `search`); `read_local_dir` for the local side; `RemoteEntry`→`PaneEntry`. |
+| `transfer/screen.rs` | The dual-pane `TransferScreen`: two panes over one session, key handling, draining worker events. |
 | `ui/list.rs` | Host list rendering + match highlighting + selection. |
+| `ui/transfer.rs` | Renders the transfer screen (two panes + progress/status + hint bar) from a borrowed view. |
 | `ui/wizard.rs` | Auth-aware add/edit form: fields, validation, key picker, opens the file browser. |
 | `ui/browse.rs` | File-browser modal (fuzzy-filtered) for picking a key file anywhere on disk. |
 | `ui/settings.rs` | Settings screen (F2): config-file display + editable hosts-file location. |
