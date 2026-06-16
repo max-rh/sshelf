@@ -22,7 +22,14 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
   dirs by parsing `sftp ls -l`, runs `scp` transfers with throttled progress + mid-flight
   cancel, and tears the master + control socket down on stop via RAII. 101 tests; clippy + fmt
   clean. No UI yet; the live end-to-end run lands with the engine milestone.
-- Next: generalize the file browser into a dual-pane `Pane`/`DirSource`, then the transfer UI.
+- Added `transfer/pane.rs`: one side's state — fuzzy filter + selection + navigation reused
+  from the key-picker browser, a synthetic `..` entry, `ls -F`-style dir/`@`-symlink labels with
+  control-char stripping, and a local-directory reader. Kept source-agnostic rather than behind
+  a `DirSource` trait (a synchronous remote `list()` would block the very UI loop the worker
+  keeps responsive); the screen feeds local entries via `std::fs` and remote ones via the worker.
+  109 tests; clippy + fmt clean.
+- Next: the `ui/transfer.rs` render + the transfer screen wiring (Ctrl-t entry, pane focus,
+  draining the worker's events each tick).
 
 ---
 

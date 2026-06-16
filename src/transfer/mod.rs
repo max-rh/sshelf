@@ -10,9 +10,12 @@
 //! `ssh -p` vs `sftp`/`scp -P` port-flag difference that would otherwise bite.
 #![allow(dead_code)] // protocol types + the session are wired into the UI (M3/M4)
 
+mod pane;
 mod worker;
 
-#[allow(unused_imports)] // the transfer screen (M3) consumes this re-export
+#[allow(unused_imports)] // the transfer screen (M3) consumes these re-exports
+pub use pane::{Pane, PaneEntry, Side, read_local_dir};
+#[allow(unused_imports)]
 pub use worker::TransferSession;
 
 use std::path::{Path, PathBuf};
