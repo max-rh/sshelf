@@ -62,6 +62,13 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/max-rh/sshelf/releases/
 sudo apt install ./sshelf_*_amd64.deb      # or *_arm64.deb
 ```
 
+**Gentoo** — add Masterwolf repository `eselect repository enable masterwolf`, then:
+
+```sh
+emerge --sync   # if needed
+emerge --ask app-admin/sshelf
+```
+
 **From source** (needs **Rust 1.88+**):
 
 ```sh
