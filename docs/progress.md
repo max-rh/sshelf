@@ -8,6 +8,19 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-17 — Sites: grouped/flat host list (M2)
+
+- The host list now **groups by site** when idle (`── {site} ({n}) ──` section headers, sites
+  alphabetical, `(no site)` last) and shows a flat ranked list with a dim `·site·` column while
+  filtering. `recompute` builds a grouped `order` when the query is empty (`group_order`);
+  `order` still holds host indices only, so selection/navigation are unchanged — the renderer
+  maps the selected host past the non-selectable headers to the `ListState` index.
+- Tests: `group_order` sectioning (case-insensitive, `(no site)` last); render checks for the
+  grouped headers + the filtered site column. 135 tests; clippy + fmt clean.
+- Next: the wizard site chooser + F3 sites manager (M3), then CLI (M4).
+
+---
+
 ## 2026-06-17 — Sites: model + inheritance + search (M1)
 
 - New **Site** concept: a one-per-host grouping that may carry **optional** shared SSH defaults

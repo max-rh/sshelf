@@ -111,15 +111,22 @@ impl App {
         app
     }
 
-    /// Re-rank the host list for the current query and clamp the selection.
+    /// Re-rank the host list for the current query and clamp the selection. When the query is
+    /// empty (idle) the order is grouped into site sections; while filtering it's the flat
+    /// ranked order (`order` always holds host indices — section headers are render-only).
     pub fn recompute(&mut self) {
-        self.order = search::rank(
+        let ranked = search::rank(
             &self.hosts,
             &self.query,
             &self.state,
             self.config.decay_rate,
             self.config.default_sort,
         );
+        self.order = if self.query.is_empty() {
+            group_order(&self.hosts, &ranked)
+        } else {
+            ranked
+        };
         if self.selected >= self.order.len() {
             self.selected = self.order.len().saturating_sub(1);
         }
@@ -446,6 +453,29 @@ impl App {
     }
 }
 
+/// Reorder ranked host indices into site sections: distinct sites in case-insensitive name
+/// order, the "(no site)" group last; within a section the hosts keep their ranked
+/// (frecency/name) order. Returns host indices only — the renderer adds the section headers.
+fn group_order(hosts: &[Host], ranked: &[usize]) -> Vec<usize> {
+    let mut keys: Vec<String> = ranked
+        .iter()
+        .filter_map(|&i| hosts[i].site.as_deref().map(str::to_lowercase))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut out = Vec::with_capacity(ranked.len());
+    for key in &keys {
+        out.extend(ranked.iter().copied().filter(|&i| {
+            hosts[i]
+                .site
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(key))
+        }));
+    }
+    out.extend(ranked.iter().copied().filter(|&i| hosts[i].site.is_none()));
+    out
+}
+
 /// Set up the terminal, run the loop, restore the terminal, then (if a host was chosen)
 /// perform the `exec()` handoff into ssh.
 pub fn run() -> Result<()> {
@@ -568,6 +598,23 @@ mod tests {
             Config::default(),
             paths,
         )
+    }
+
+    #[test]
+    fn group_order_sections_sites_alpha_then_no_site() {
+        let mut a = Host::new("a", "h");
+        a.site = Some("zeta".into());
+        let mut b = Host::new("b", "h");
+        b.site = Some("alpha".into());
+        let mut c = Host::new("c", "h");
+        c.site = Some("ALPHA".into()); // same section as b (case-insensitive)
+        let d = Host::new("d", "h"); // no site
+        let hosts = vec![a, b, c, d];
+        // ranked order is [0,1,2,3]; group_order keeps that order within each section.
+        let order = group_order(&hosts, &[0, 1, 2, 3]);
+        let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
+        // alpha section (b, c), then zeta (a), then the (no site) group (d).
+        assert_eq!(names, vec!["b", "c", "a", "d"]);
     }
 
     #[test]
