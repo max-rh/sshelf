@@ -8,6 +8,19 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-17 — Sites: docs + feature complete (M5)
+
+- Docs synced: `decisions.md` D-020 (the Sites ADR), `data-model.md` (`[[site]]` schema +
+  inheritance/override + back-compat), `ux.md` (grouped/flat list, `site:` filter, F3 manager,
+  CLI table), `structure.md` (`ui/sites.rs` + model note), README (feature bullet, keys, usage),
+  CHANGELOG `[Unreleased]`.
+- **Sites is feature-complete:** one-per-host grouping with optional inherited SSH defaults
+  (bastion/user/port/identity); grouped-when-idle / flat-when-filtering list; wizard chooser; F3
+  manager with rename + delete cascades; and the full CLI. 145 tests + 1 e2e; clippy + fmt clean.
+  Ships in **v0.6.0** via the usual `feat/sites` branch → PR → cut-release.
+
+---
+
 ## 2026-06-17 — Sites: CLI surface (M4)
 
 - `sshelf add --site NAME` (`-s`) assigns a site (warns, non-fatally, if it isn't defined yet).

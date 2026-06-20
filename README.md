@@ -31,7 +31,10 @@ your editor, and adds things plain SSH config can't express as nicely:
 - **Dual-pane file transfer** (`Ctrl-t`) — a two-pane browser to copy files and folders to and
   from a host over SFTP/SCP, with fuzzy search on both sides and live progress. It authenticates
   once (reusing the host's keys/agent or stored password) and never touches `~/.ssh/config`.
-- **Guided add/edit form** — hostname, user, port, auth, jump hosts, tags, extra args.
+- **Guided add/edit form** — hostname, user, port, auth, jump hosts, tags, site, extra args.
+- **Sites** (`F3`) — group hosts (one per host, e.g. a data center) and optionally give the site
+  a **shared bastion + default user/port/key** that members inherit at connect time. The list
+  groups by site; `site:NAME` filters. Distinct from the many-valued, free-form tags.
 - **Auto-supplied passwords** for password-auth hosts (via `SSH_ASKPASS`; no `sshpass`, the
   secret never appears in `ps`). Stored in your OS keyring, or an encrypted vault.
 - **Jump hosts** (`ProxyJump`), **tags/groups** (`tag:prod`), and **frecency** ordering
@@ -83,18 +86,20 @@ sshelf -                     # reconnect to the most recently used host
 sshelf add                   # open the TUI add form
 sshelf add <name> -H <host>  # add a host non-interactively (see "Adding hosts from the CLI")
 sshelf print-command <host>  # print the generated ssh command without connecting
-sshelf list                  # print saved hosts
-sshelf list <query>          # filter the list: fuzzy text and/or tag:NAME (e.g. tag:prod)
+sshelf list                  # print saved hosts (with a ·site· column)
+sshelf list <query>          # filter: fuzzy text and/or tag:NAME / site:NAME (e.g. site:prod-dc)
 sshelf list --json [query]   # machine-readable output (host fields + the generated command)
+sshelf sites                 # list sites (member counts + shared defaults)
+sshelf sites add <name> -u deploy -J bastion   # define a site with shared defaults
 sshelf --config FILE         # use a specific config file (also: $SSHELF_CONFIG)
 sshelf --transfer-log FILE   # log transfer ssh/sftp commands + errors to FILE (debugging)
 sshelf import [--dry-run]    # read-only import from ~/.ssh/config
 echo "$PASS" | sshelf set-password <name>   # store a password (scriptable / headless)
 ```
 
-**Keys:** type to filter · `tag:NAME` to filter by tag · `↑/↓` move · `Enter` connect ·
+**Keys:** type to filter · `tag:NAME` / `site:NAME` to filter · `↑/↓` move · `Enter` connect ·
 `Ctrl-a` add · `Ctrl-e` edit · `Ctrl-d` delete · `Ctrl-y` yank the `ssh` command · `Ctrl-t`
-transfer files · `Ctrl-o` import · `F1` help · `F2` settings · `Esc`/`Ctrl-c` quit.
+transfer files · `Ctrl-o` import · `F1` help · `F2` settings · `F3` sites · `Esc`/`Ctrl-c` quit.
 
 In the **add/edit** form the Key field picks an identity: `←/→` cycles keys found in `~/.ssh`
 (including `.pem`), and `Enter` opens a file browser (type to fuzzy-filter) to choose a key

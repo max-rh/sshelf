@@ -4,7 +4,7 @@
 >
 > **All modules present:** `main`, `app`, `askpass`, `config`, `import`, `model`, `paths`,
 > `search`, `secrets`, `ssh`, `state`, `store`, `transfer/{mod,worker,pane,screen}`, `vault`,
-> `ui/{mod,list,help,widgets,wizard,browse,settings,transfer}`.
+> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer}`.
 > (`error.rs` was removed — the codebase uses `anyhow` throughout.)
 
 ## Repository
@@ -27,7 +27,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 |---|---|
 | `main.rs` | Entry/dispatch. If `SSHELF_ASKPASS` is set → askpass mode (read `argv[1]`). Else clap parses: default TUI, or subcommands (`import`, `list`, `add`). |
 | `app.rs` | `App` state + synchronous event loop + screen routing (component orchestration). |
-| `model.rs` | `Host` struct + `AuthMethod` enum (`Key` / `Password` / `Agent`); serde derives. |
+| `model.rs` | `Host` + `Site` structs (+ `AuthMethod`); `Host::with_site_defaults`/`find_site` (site inheritance); serde derives. |
 | `store.rs` | Load/save `hosts.toml` with atomic write (temp + rename); load `config.toml`. |
 | `state.rs` | Frecency state (`use_count`, `last_used`) load/save (`state.json`); score computation. |
 | `secrets.rs` | `SecretStore` trait → keyring backend + `age`-vault fallback; `zeroize` on secrets. |
@@ -46,6 +46,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `ui/wizard.rs` | Auth-aware add/edit form: fields, validation, key picker, opens the file browser. |
 | `ui/browse.rs` | File-browser modal (fuzzy-filtered) for picking a key file anywhere on disk. |
 | `ui/settings.rs` | Settings screen (F2): config-file display + editable hosts-file location. |
+| `ui/sites.rs` | Sites manager (F3): list + add/edit/delete sites and their optional defaults; emits renames for the app to cascade. |
 | `ui/help.rs` | Help overlay. |
 | `ui/widgets.rs` | Shared widgets: single-line text input (hand-rolled), keybind hint bar, confirm modal. |
 

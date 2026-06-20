@@ -39,6 +39,7 @@ list. Actions therefore use **Ctrl** (or function keys) to avoid being typed int
 |---|---|
 | _type_ | filter the list (fuzzy) |
 | `tag:NAME` | filter by tag; combine with text and repeat (`tag:prod tag:db`, AND) |
+| `site:NAME` | filter by site (one site per host) |
 | `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | move selection |
 | `Enter` | connect to selected host (tears down TUI, `exec()`s ssh) — M3 |
 | `Ctrl-a` | add host (wizard) — M4 |
@@ -49,6 +50,7 @@ list. Actions therefore use **Ctrl** (or function keys) to avoid being typed int
 | `Ctrl-o` | import from `~/.ssh/config` (read-only) — M7 |
 | `F1` | help overlay |
 | `F2` | settings (config & hosts-file locations) |
+| `F3` | manage sites (create/edit/delete groups + their shared defaults) |
 | `Esc` | clear the query if non-empty, otherwise quit |
 | `Ctrl-c` | quit |
 
@@ -111,6 +113,25 @@ age vault) keyed by host id — **never** in `hosts.toml`. On edit, leaving it b
 existing secret. It's auto-supplied at connect time (see `ssh-command.md`). Deleting a host
 (`Ctrl-d`) removes the host, its frecency entry, and its stored secret.
 
+## Sites (`F3`)
+
+A **site** groups hosts (one per host — a data center / project) and, unlike tags, may carry
+**optional** shared SSH defaults — user, port, ProxyJump (bastion), identity — that member hosts
+inherit at connect time. A bare site (name only) is pure grouping; per-host fields always
+override the site's; auth stays per-host.
+
+- **In the list:** with an empty search box, hosts are grouped under `── site (n) ──` headers
+  (a `(no site)` group last); while filtering, the list is flat with a dim `·site·` column and a
+  `site:NAME` filter token.
+- **Assigning a site:** the add/edit form has a **Site** chooser (`←`/`→` over the defined sites
+  + `(none)`).
+- **Managing sites (`F3`):** a list with `a` add, `e`/`Enter` edit, `d` delete, `Ctrl-s` save,
+  `Esc` cancel. Each site's form is name + optional user/port/jump/identity. Renaming a site
+  updates its member hosts; deleting one clears members' site (nothing dangles). A host that names
+  an undefined site still groups under that name but inherits nothing.
+
+Inherited defaults appear in the generated command (yank, `print-command`, connect, transfers).
+
 ## Import (`Ctrl-o` / `sshelf import`)
 
 Parses `~/.ssh/config` **read-only** via `ssh2-config` and adds every host whose name isn't
@@ -159,9 +180,11 @@ reaches `ssh` via `SSH_ASKPASS`, never the command line.
 | `sshelf` | Launch the interactive TUI. |
 | `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI — same connect path as `Enter` (frecency recorded before the `exec`, secret auto-supplied). A miss suggests close names; a name that collides with a subcommand (`list`, `import`, …) is reached via the TUI instead. |
 | `sshelf -` | Reconnect to the most-recently-used host (max `last_used` in the frecency state). Errors (without connecting) if there's no history yet. |
-| `sshelf add` | With **no args**, opens the TUI add form. With **args**, adds a host non-interactively: `NAME` + `-H/--hostname` required; `-u/--user`, `-p/--port`, `-a/--auth`, `-i/--identity` (repeatable, implies key auth), `-J/--jump`, `-t/--tag`, `--extra "<flags>"`, `--password-stdin` (reads the secret from stdin). Duplicate names are refused. |
-| `sshelf print-command <host>` | Print the generated, shell-quoted `ssh …` command for a saved host by **name or id**, without connecting or changing frecency. CLI equivalent of the TUI's `Ctrl-y` yank. |
-| `sshelf list [query]` | List hosts. `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` (e.g. `sshelf list tag:prod`, `sshelf list web`). |
+| `sshelf add` | With **no args**, opens the TUI add form. With **args**, adds a host non-interactively: `NAME` + `-H/--hostname` required; `-u/--user`, `-p/--port`, `-a/--auth`, `-i/--identity` (repeatable, implies key auth), `-J/--jump`, `-t/--tag`, `-s/--site`, `--extra "<flags>"`, `--password-stdin` (reads the secret from stdin). Duplicate names are refused. |
+| `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
+| `sshelf sites add NAME [-u/-p/-J/-i]` | Define a site (settings optional; edit later with F3). |
+| `sshelf print-command <host>` | Print the generated, shell-quoted `ssh …` command for a saved host by **name or id** (reflecting any inherited site defaults), without connecting or changing frecency. CLI equivalent of the TUI's `Ctrl-y` yank. |
+| `sshelf list [query]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). |
 | `sshelf list --json [query]` | Same selection, emitted as JSON (each host's fields + its generated `command`). Always valid JSON, even when empty — the stable surface for scripts/integrations. |
 | `sshelf import [--dry-run]` | Read-only import from `~/.ssh/config`. |
 | `sshelf set-password <host>` | Store a password (read from stdin) for a host. |

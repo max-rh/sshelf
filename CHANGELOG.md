@@ -5,6 +5,16 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+- **Sites** — group hosts (one site per host, e.g. a data center / project), distinct from the
+  many-valued free-form tags. A site can carry **optional** shared SSH defaults — user, port,
+  ProxyJump (bastion), identity — that member hosts inherit at connect time where the host
+  leaves a field unset (the host always wins; auth stays per-host). The list **groups by site**
+  when idle and shows a `·site·` column + `site:NAME` filter while typing. Manage sites with
+  **F3** (create/edit/delete + their defaults); assign one in the add/edit form. CLI: `sshelf
+  sites [--json]`, `sshelf sites add NAME [-u/-p/-J/-i]`, and `sshelf add --site NAME`. Stored in
+  `hosts.toml` as `[[site]]` — old files load unchanged.
+
 ## [0.5.0] — 2026-06-16
 
 ### Added
