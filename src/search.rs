@@ -20,17 +20,22 @@ pub fn matcher() -> Matcher {
     Matcher::new(Config::DEFAULT)
 }
 
-/// Split a query into `tag:` filters and the remaining fuzzy text.
-pub fn parse_query(query: &str) -> (Vec<String>, String) {
+/// Split a query into `tag:` filters, an optional single `site:` filter, and the remaining
+/// fuzzy text.
+pub fn parse_query(query: &str) -> (Vec<String>, Option<String>, String) {
     let mut tags = Vec::new();
+    let mut site: Option<String> = None;
     let mut rest: Vec<&str> = Vec::new();
     for tok in query.split_whitespace() {
-        match tok.strip_prefix("tag:") {
-            Some(t) if !t.is_empty() => tags.push(t.to_lowercase()),
-            _ => rest.push(tok),
+        if let Some(t) = tok.strip_prefix("tag:").filter(|t| !t.is_empty()) {
+            tags.push(t.to_lowercase());
+        } else if let Some(s) = tok.strip_prefix("site:").filter(|s| !s.is_empty()) {
+            site = Some(s.to_lowercase()); // single-valued: the last one wins
+        } else {
+            rest.push(tok);
         }
     }
-    (tags, rest.join(" "))
+    (tags, site, rest.join(" "))
 }
 
 /// Host indices (into `hosts`) in display order.
@@ -41,9 +46,11 @@ pub fn rank(
     decay: f64,
     sort: Sort,
 ) -> Vec<usize> {
-    let (tag_filters, fuzzy) = parse_query(query);
+    let (tag_filters, site_filter, fuzzy) = parse_query(query);
     let candidates: Vec<usize> = (0..hosts.len())
-        .filter(|&i| has_all_tags(&hosts[i], &tag_filters))
+        .filter(|&i| {
+            has_all_tags(&hosts[i], &tag_filters) && matches_site(&hosts[i], site_filter.as_deref())
+        })
         .collect();
 
     let fq = fuzzy.trim();
@@ -121,6 +128,15 @@ pub fn match_indices(text: &str, query: &str, matcher: &mut Matcher) -> Vec<u32>
 fn has_all_tags(h: &Host, tags: &[String]) -> bool {
     tags.iter()
         .all(|t| h.tags.iter().any(|ht| ht.to_lowercase() == *t))
+}
+
+/// `None` (no filter) matches everything; otherwise the host's site must equal `want`
+/// (case-insensitive). `want` is already lowercased by `parse_query`.
+fn matches_site(h: &Host, want: Option<&str>) -> bool {
+    match want {
+        None => true,
+        Some(w) => h.site.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(w)),
+    }
 }
 
 /// Higher frecency first.
@@ -217,10 +233,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_splits_tags_and_text() {
-        let (tags, rest) = parse_query("tag:prod web tag:db x");
+    fn parse_query_splits_tags_site_and_text() {
+        let (tags, site, rest) = parse_query("tag:prod web site:dc1 tag:db x");
         assert_eq!(tags, vec!["prod", "db"]);
+        assert_eq!(site.as_deref(), Some("dc1"));
         assert_eq!(rest, "web x");
+    }
+
+    #[test]
+    fn site_token_filters_case_insensitively() {
+        let mut a = Host::new("web1", "10.0.0.1");
+        a.site = Some("dc1".into());
+        let mut b = Host::new("web2", "10.0.0.2");
+        b.site = Some("dc2".into());
+        let plain = Host::new("plain", "10.0.0.3"); // no site
+        let hosts = vec![a, b, plain];
+        let state = FrecencyState::default();
+        let order = rank(&hosts, "site:DC1", &state, 0.2, Sort::Name);
+        let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
+        assert_eq!(names, vec!["web1"]);
     }
 
     #[test]

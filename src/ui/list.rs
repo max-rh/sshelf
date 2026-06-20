@@ -70,7 +70,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .fg(super::accent())
         .add_modifier(Modifier::BOLD);
     // Highlight only the fuzzy part of the query (not any `tag:` tokens).
-    let (_, fuzzy) = search::parse_query(&app.query);
+    let (_, _, fuzzy) = search::parse_query(&app.query);
 
     let items: Vec<ListItem> = app
         .order
@@ -137,7 +137,13 @@ mod tests {
             data_dir: std::env::temp_dir(),
             config_file_override: None,
         };
-        let mut app = App::new(hosts, FrecencyState::default(), Config::default(), paths);
+        let mut app = App::new(
+            hosts,
+            Vec::new(),
+            FrecencyState::default(),
+            Config::default(),
+            paths,
+        );
         app.query.push_str(query);
         app.recompute();
         app
@@ -195,6 +201,7 @@ mod tests {
         };
         let app = App::new(
             vec![prod_web, prod_db, bastion],
+            Vec::new(),
             FrecencyState::default(),
             Config::default(),
             paths,

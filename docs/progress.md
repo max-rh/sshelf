@@ -3,8 +3,28 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** dual-pane SFTP file transfer (`Ctrl-t`), targeting **v0.5.0**. v1
-acceptance gates closed.
+**Current milestone:** Sites — group hosts with optional inherited SSH defaults, targeting
+**v0.6.0**. v1 acceptance gates closed.
+
+---
+
+## 2026-06-17 — Sites: model + inheritance + search (M1)
+
+- New **Site** concept: a one-per-host grouping that may carry **optional** shared SSH defaults
+  (user/port/jump/identity) member hosts inherit at connect time. Bare site = pure grouping;
+  per-host fields always override; auth stays per-host. Distinct from many-valued `tags`.
+- `model.rs`: `Site` struct + `Host.site: Option<String>` (by name) + `HostsFile.sites`
+  (`[[site]]`, sites-first; no `format_version` bump — old files load unchanged). Inheritance
+  via `Host::with_site_defaults(&[Site])` (clone, fill only unset fields, id preserved; unknown
+  site name degrades to plain grouping) + `find_site` (case-insensitive). `search_haystack`
+  includes the site.
+- `search.rs`: `parse_query` now also yields an optional `site:NAME` token; `rank` filters by it.
+- Threaded resolution into every Host→ssh-args boundary: TUI connect/yank/transfer, CLI
+  connect/`-`/print-command/`list --json` command. `App.sites` loaded + persisted (and it
+  follows an F2 hosts-file move). Verified end-to-end via `print-command` + `list --json`.
+- 132 tests (model inheritance/degradation, `site:` filter, store round-trip + pre-sites
+  back-compat); clippy + fmt clean. No UI yet.
+- Next: the grouped/flat list (M2), then the wizard chooser + F3 sites manager (M3), CLI (M4).
 
 ---
 

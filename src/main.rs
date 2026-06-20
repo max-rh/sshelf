@@ -29,7 +29,7 @@ use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::model::{AuthMethod, Host};
+use crate::model::{AuthMethod, Host, Site};
 use crate::paths::{CONFIG_ENV, Paths};
 use crate::state::FrecencyState;
 
@@ -331,10 +331,13 @@ fn cmd_print_command(host_ref: &str) -> Result<()> {
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
-    let hosts = store::load_hosts(&cfg.hosts_path(&paths))?.hosts;
-    let host = resolve_host(&hosts, host_ref)
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
+    let host = resolve_host(&file.hosts, host_ref)
         .with_context(|| format!("no host with name or id '{host_ref}'"))?;
-    println!("{}", ssh::command_string(host));
+    println!(
+        "{}",
+        ssh::command_string(&host.with_site_defaults(&file.sites))
+    );
     Ok(())
 }
 
@@ -344,14 +347,15 @@ fn cmd_list(query: &str, json: bool) -> Result<()> {
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
     let hosts_path = cfg.hosts_path(&paths);
-    let hosts = store::load_hosts(&hosts_path)?.hosts;
+    let file = store::load_hosts(&hosts_path)?;
+    let (hosts, sites) = (file.hosts, file.sites);
     let st = FrecencyState::load(&paths.state_file())?;
     let order = search::rank(&hosts, query, &st, cfg.decay_rate, cfg.default_sort);
 
     // JSON must always be valid (even empty) for scripts — emit before the human messages.
     if json {
         let selected: Vec<&Host> = order.iter().map(|&i| &hosts[i]).collect();
-        println!("{}", hosts_to_json(&selected)?);
+        println!("{}", hosts_to_json(&selected, &sites)?);
         return Ok(());
     }
 
@@ -391,12 +395,14 @@ struct HostJson<'a> {
     command: String,
 }
 
-fn hosts_to_json(hosts: &[&Host]) -> Result<String> {
+/// `command` reflects the host's resolved site defaults; the flattened `host` fields stay
+/// exactly as stored on disk.
+fn hosts_to_json(hosts: &[&Host], sites: &[Site]) -> Result<String> {
     let items: Vec<HostJson> = hosts
         .iter()
         .map(|&h| HostJson {
             host: h,
-            command: ssh::command_string(h),
+            command: ssh::command_string(&h.with_site_defaults(sites)),
         })
         .collect();
     serde_json::to_string_pretty(&items).context("serializing hosts to JSON")
@@ -460,7 +466,8 @@ fn cmd_connect(host_ref: &str) -> Result<()> {
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
-    let hosts = store::load_hosts(&cfg.hosts_path(&paths))?.hosts;
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
+    let (hosts, sites) = (file.hosts, file.sites);
 
     let Some(host) = resolve_host(&hosts, host_ref).cloned() else {
         let st = FrecencyState::load(&paths.state_file()).unwrap_or_default();
@@ -478,7 +485,7 @@ fn cmd_connect(host_ref: &str) -> Result<()> {
             names.join(", ")
         );
     };
-    connect(&host, &paths)
+    connect(&host.with_site_defaults(&sites), &paths)
 }
 
 /// Reconnect to the most-recently-used host (`sshelf -`).
@@ -487,16 +494,17 @@ fn cmd_connect_last() -> Result<()> {
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
-    let hosts = store::load_hosts(&cfg.hosts_path(&paths))?.hosts;
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
     let st = FrecencyState::load(&paths.state_file())?;
     let id = last_used_id(&st)
         .context("no recent host yet — connect to one first, then `sshelf -` reconnects to it")?;
-    let host = hosts
+    let host = file
+        .hosts
         .iter()
         .find(|h| h.id == id)
         .cloned()
         .context("the last-used host is no longer in your list — run `sshelf list`")?;
-    connect(&host, &paths)
+    connect(&host.with_site_defaults(&file.sites), &paths)
 }
 
 /// Record frecency BEFORE `exec()` (nothing runs after a successful exec), wire `SSH_ASKPASS`
@@ -723,7 +731,7 @@ mod tests {
         let mut h = Host::new("web", "10.0.0.1");
         h.user = Some("root".into());
         let refs = vec![&h];
-        let j = hosts_to_json(&refs).unwrap();
+        let j = hosts_to_json(&refs, &[]).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert!(parsed.is_array());
         assert_eq!(parsed[0]["name"], "web");

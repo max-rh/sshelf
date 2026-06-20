@@ -15,7 +15,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 
 use crate::config::Config;
 use crate::import;
-use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile};
+use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile, Site};
 use crate::paths::Paths;
 use crate::search;
 use crate::secrets;
@@ -53,6 +53,8 @@ pub enum Outcome {
 
 pub struct App {
     pub hosts: Vec<Host>,
+    /// Defined sites (groups + optional inherited SSH defaults).
+    pub sites: Vec<Site>,
     pub state: FrecencyState,
     pub config: Config,
     pub paths: Paths,
@@ -78,10 +80,17 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(hosts: Vec<Host>, state: FrecencyState, config: Config, paths: Paths) -> Self {
+    pub fn new(
+        hosts: Vec<Host>,
+        sites: Vec<Site>,
+        state: FrecencyState,
+        config: Config,
+        paths: Paths,
+    ) -> Self {
         let hosts_path = config.hosts_path(&paths);
         let mut app = App {
             hosts,
+            sites,
             state,
             config,
             paths,
@@ -128,6 +137,7 @@ impl App {
     fn persist_hosts(&self) -> Result<()> {
         let file = HostsFile {
             format_version: CURRENT_FORMAT_VERSION,
+            sites: self.sites.clone(),
             hosts: self.hosts.clone(),
         };
         store::save_hosts(&self.hosts_path, &file)
@@ -309,6 +319,7 @@ impl App {
                     match store::load_hosts(&new_path) {
                         Ok(file) => {
                             self.hosts = file.hosts;
+                            self.sites = file.sites;
                             Ok(format!("using existing hosts at {}", new_path.display()))
                         }
                         Err(e) => Err(format!("could not read {}: {e}", new_path.display())),
@@ -316,6 +327,7 @@ impl App {
                 } else {
                     let file = HostsFile {
                         format_version: CURRENT_FORMAT_VERSION,
+                        sites: self.sites.clone(),
                         hosts: self.hosts.clone(),
                     };
                     match store::save_hosts(&new_path, &file) {
@@ -406,7 +418,9 @@ impl App {
     /// event loop calls this so the side effects (a worker thread, a secrets lookup) stay out
     /// of the testable `on_key`.
     fn open_transfer(&mut self, idx: usize) {
-        let host = self.hosts[idx].clone();
+        // Resolve the host's site defaults so transfers ride the site's bastion / use its
+        // default user; `id` is preserved so the secrets lookup below is unaffected.
+        let host = self.hosts[idx].with_site_defaults(&self.sites);
         let has_secret = secrets::get_password(&self.paths.vault_file(), &host.id)
             .ok()
             .flatten()
@@ -448,9 +462,9 @@ fn run_with(start_add: bool) -> Result<()> {
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let config = Config::load(&paths.config_file())?;
-    let hosts = store::load_hosts(&config.hosts_path(&paths))?.hosts;
+    let file = store::load_hosts(&config.hosts_path(&paths))?;
     let state = FrecencyState::load(&paths.state_file())?;
-    let mut app = App::new(hosts, state, config, paths);
+    let mut app = App::new(file.hosts, file.sites, state, config, paths);
     if start_add {
         app.wizard = Some(Wizard::new_add());
     }
@@ -461,7 +475,8 @@ fn run_with(start_add: bool) -> Result<()> {
     loop_result?;
 
     if let Some(idx) = app.pending_connect {
-        let host = app.hosts[idx].clone();
+        // Resolve the host's site defaults (bastion/user/port/identity) for the real connect.
+        let host = app.hosts[idx].with_site_defaults(&app.sites);
         // Persist usage BEFORE exec() — nothing runs after a successful exec.
         app.state.record_use(&host.id);
         if let Err(e) = app.state.save(&app.paths.state_file()) {
@@ -509,7 +524,7 @@ fn dispatch(app: &mut App, key: KeyEvent) {
             app.should_quit = true;
         }
         Outcome::Yank(idx) => {
-            let cmd = ssh::command_string(&app.hosts[idx]);
+            let cmd = ssh::command_string(&app.hosts[idx].with_site_defaults(&app.sites));
             if ssh::copy_to_clipboard(&cmd) {
                 app.set_status(format!("copied: {cmd}"));
             } else {
@@ -546,7 +561,13 @@ mod tests {
             data_dir: dir,
             config_file_override: None,
         };
-        App::new(hosts, FrecencyState::default(), Config::default(), paths)
+        App::new(
+            hosts,
+            Vec::new(),
+            FrecencyState::default(),
+            Config::default(),
+            paths,
+        )
     }
 
     #[test]
@@ -697,6 +718,7 @@ mod tests {
         let new_path = dir.join("hosts.toml");
         let existing = HostsFile {
             format_version: CURRENT_FORMAT_VERSION,
+            sites: Vec::new(),
             hosts: vec![Host::new("fromdisk", "9.9.9.9")],
         };
         store::save_hosts(&new_path, &existing).unwrap();
