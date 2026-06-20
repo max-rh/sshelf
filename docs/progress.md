@@ -8,6 +8,18 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-17 — Sites: CLI surface (M4)
+
+- `sshelf add --site NAME` (`-s`) assigns a site (warns, non-fatally, if it isn't defined yet).
+- `sshelf sites` lists defined sites with member counts + their defaults; `sshelf sites --json`
+  for scripts; `sshelf sites add NAME [-u/-p/-J/-i]` creates one.
+- `sshelf list` shows a `·site·` column; `--json` already carries the `site` field and a
+  `command` that reflects inheritance. Dynamic completion of site names on `--site`.
+- 145 tests (add `--site` + `sites` parse); clippy + fmt clean. Verified end to end.
+- Next: docs (D-020, data-model, ux, structure, README, CHANGELOG).
+
+---
+
 ## 2026-06-17 — Sites: wizard chooser + F3 manager (M3)
 
 - The add/edit form gains a **Site** chooser (←/→ over the defined sites + "(none)"); editing a

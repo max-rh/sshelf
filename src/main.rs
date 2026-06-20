@@ -90,6 +90,11 @@ enum Command {
         #[arg(add = ArgValueCandidates::new(host_name_candidates))]
         host: String,
     },
+    /// Manage sites (groups with optional shared SSH defaults): list them, or add one.
+    Sites {
+        #[command(subcommand)]
+        action: Option<SitesAction>,
+    },
     /// Print static shell completions to stdout (for packaging). For host-name completion,
     /// set up dynamic completions instead — see the README.
     Completions {
@@ -98,6 +103,34 @@ enum Command {
     },
     /// Print the man page (roff) to stdout.
     Man,
+}
+
+#[derive(Subcommand)]
+enum SitesAction {
+    /// List defined sites (the default action).
+    List {
+        /// Emit JSON instead of the human table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Define a new site. Settings are optional (a bare site is pure grouping); edit later in
+    /// the TUI with F3.
+    Add {
+        /// Site name (must be unique).
+        name: String,
+        /// Default login user for member hosts.
+        #[arg(short = 'u', long)]
+        user: Option<String>,
+        /// Default SSH port for member hosts.
+        #[arg(short = 'p', long)]
+        port: Option<u16>,
+        /// Default ProxyJump (bastion) — repeatable or comma-separated.
+        #[arg(short = 'J', long = "jump", value_name = "HOST", value_delimiter = ',')]
+        jump_hosts: Vec<String>,
+        /// Default identity file(s) for key-auth members — repeatable.
+        #[arg(short = 'i', long = "identity", value_name = "PATH")]
+        identity_files: Vec<String>,
+    },
 }
 
 /// Flags for non-interactive `sshelf add`. All optional, so bare `sshelf add` opens the TUI.
@@ -127,6 +160,9 @@ struct AddArgs {
     /// Tag for grouping/filtering (repeatable or comma-separated).
     #[arg(short = 't', long = "tag", value_name = "TAG", value_delimiter = ',')]
     tags: Vec<String>,
+    /// Site to assign (groups the host + may supply inherited SSH defaults). See `sshelf sites`.
+    #[arg(short = 's', long, value_name = "NAME", add = ArgValueCandidates::new(site_name_candidates))]
+    site: Option<String>,
     /// Extra raw ssh flags, appended verbatim (e.g. "-o BatchMode=yes"). Quote the whole value;
     /// hyphen-leading values are allowed here so the flags pass through.
     #[arg(long = "extra", value_name = "ARGS", allow_hyphen_values = true)]
@@ -168,6 +204,7 @@ impl AddArgs {
             || !self.identity_files.is_empty()
             || !self.jump_hosts.is_empty()
             || !self.tags.is_empty()
+            || self.site.is_some()
             || self.extra_args.is_some()
             || self.password_stdin
     }
@@ -198,6 +235,7 @@ impl AddArgs {
         host.identity_files = self.identity_files;
         host.jump_hosts = self.jump_hosts;
         host.tags = self.tags;
+        host.site = self.site;
         host.extra_args = self.extra_args;
         Ok(host)
     }
@@ -242,6 +280,7 @@ fn main() -> Result<()> {
         Some(Command::Import { dry_run }) => cmd_import(dry_run),
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
         Some(Command::Print { host }) => cmd_print_command(&host),
+        Some(Command::Sites { action }) => cmd_sites(action),
         Some(Command::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "sshelf", &mut std::io::stdout());
             Ok(())
@@ -370,16 +409,22 @@ fn cmd_list(query: &str, json: bool) -> Result<()> {
     }
     for &i in &order {
         let h = &hosts[i];
+        let site = h
+            .site
+            .as_deref()
+            .map(|s| format!("  ·{s}·"))
+            .unwrap_or_default();
         let tags = if h.tags.is_empty() {
             String::new()
         } else {
             format!("  [{}]", h.tags.join(", "))
         };
         println!(
-            "{:<20}  {:<28}  {}{}",
+            "{:<20}  {:<28}  {}{}{}",
             h.name,
             h.endpoint(),
             h.auth.as_str(),
+            site,
             tags
         );
     }
@@ -426,6 +471,13 @@ fn cmd_add(args: AddArgs) -> Result<()> {
             host.name
         );
     }
+    if let Some(site) = &host.site
+        && crate::model::find_site(&file.sites, site).is_none()
+    {
+        println!(
+            "note: site '{site}' isn't defined yet — add it with `sshelf sites add {site}` (or F3 in the TUI)"
+        );
+    }
 
     // Read the secret before writing anything, so empty stdin can't leave a half-added host.
     let secret = if read_secret {
@@ -457,6 +509,98 @@ fn cmd_add(args: AddArgs) -> Result<()> {
             "note: password auth set but no password stored — run `sshelf set-password {name}`"
         );
     }
+    Ok(())
+}
+
+fn cmd_sites(action: Option<SitesAction>) -> Result<()> {
+    match action {
+        Some(SitesAction::Add {
+            name,
+            user,
+            port,
+            jump_hosts,
+            identity_files,
+        }) => cmd_sites_add(name, user, port, jump_hosts, identity_files),
+        Some(SitesAction::List { json }) => cmd_sites_list(json),
+        None => cmd_sites_list(false),
+    }
+}
+
+fn cmd_sites_list(json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&file.sites).context("serializing sites to JSON")?
+        );
+        return Ok(());
+    }
+    if file.sites.is_empty() {
+        println!("No sites yet. Add one with `sshelf sites add <name>`, or in the TUI (F3).");
+        return Ok(());
+    }
+    for s in &file.sites {
+        let members = file
+            .hosts
+            .iter()
+            .filter(|h| {
+                h.site
+                    .as_deref()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(&s.name))
+            })
+            .count();
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(u) = &s.user {
+            parts.push(format!("user={u}"));
+        }
+        if let Some(p) = s.port {
+            parts.push(format!("port={p}"));
+        }
+        if !s.jump_hosts.is_empty() {
+            parts.push(format!("jump={}", s.jump_hosts.join(",")));
+        }
+        if !s.identity_files.is_empty() {
+            parts.push(format!("identity={}", s.identity_files.join(",")));
+        }
+        let defaults = if parts.is_empty() {
+            "(grouping only)".to_string()
+        } else {
+            parts.join("  ")
+        };
+        println!("{:<20}  {} host(s)  {}", s.name, members, defaults);
+    }
+    Ok(())
+}
+
+fn cmd_sites_add(
+    name: String,
+    user: Option<String>,
+    port: Option<u16>,
+    jump_hosts: Vec<String>,
+    identity_files: Vec<String>,
+) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts_path = cfg.hosts_path(&paths);
+    let mut file = store::load_hosts(&hosts_path)?;
+    if crate::model::find_site(&file.sites, &name).is_some() {
+        anyhow::bail!("a site named '{name}' already exists");
+    }
+    file.sites.push(Site {
+        name: name.clone(),
+        user,
+        port,
+        jump_hosts,
+        identity_files,
+    });
+    store::save_hosts(&hosts_path, &file)?;
+    println!("added site '{name}'");
     Ok(())
 }
 
@@ -559,6 +703,24 @@ fn host_candidates_from(hosts: &[Host]) -> Vec<CompletionCandidate> {
         .iter()
         .map(|h| CompletionCandidate::new(&h.name).help(Some(h.endpoint().into())))
         .collect()
+}
+
+/// Completion candidates for a `--site` argument: each defined site's name. Best-effort.
+fn site_name_candidates() -> Vec<CompletionCandidate> {
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let Ok(cfg) = Config::load(&paths.config_file()) else {
+        return Vec::new();
+    };
+    match store::load_hosts(&cfg.hosts_path(&paths)) {
+        Ok(file) => file
+            .sites
+            .iter()
+            .map(|s| CompletionCandidate::new(&s.name))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -748,5 +910,48 @@ mod tests {
     fn host_candidates_from_lists_each_name() {
         let hosts = vec![Host::new("a", "h1"), Host::new("b", "h2")];
         assert_eq!(host_candidates_from(&hosts).len(), 2);
+    }
+
+    #[test]
+    fn add_parses_site_flag_and_sets_it() {
+        let c = Cli::try_parse_from([
+            "sshelf", "add", "web", "-H", "10.0.0.1", "--site", "prod-dc",
+        ])
+        .unwrap();
+        match c.command {
+            Some(Command::Add(a)) => {
+                assert_eq!(a.site.as_deref(), Some("prod-dc"));
+                assert!(a.has_args());
+                assert_eq!(a.into_host().unwrap().site.as_deref(), Some("prod-dc"));
+            }
+            _ => panic!("expected add"),
+        }
+    }
+
+    #[test]
+    fn sites_subcommand_parses() {
+        let c = Cli::try_parse_from(["sshelf", "sites"]).unwrap();
+        assert!(matches!(c.command, Some(Command::Sites { action: None })));
+
+        let c = Cli::try_parse_from([
+            "sshelf", "sites", "add", "dc1", "-u", "deploy", "-J", "b1,b2",
+        ])
+        .unwrap();
+        match c.command {
+            Some(Command::Sites {
+                action:
+                    Some(SitesAction::Add {
+                        name,
+                        user,
+                        jump_hosts,
+                        ..
+                    }),
+            }) => {
+                assert_eq!(name, "dc1");
+                assert_eq!(user.as_deref(), Some("deploy"));
+                assert_eq!(jump_hosts, vec!["b1", "b2"]);
+            }
+            _ => panic!("expected sites add"),
+        }
     }
 }
