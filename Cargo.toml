@@ -1,6 +1,6 @@
 [package]
 name = "sshelf"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A TUI for managing and connecting to SSH hosts — generates the ssh command, never touches ~/.ssh/config."
