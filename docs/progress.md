@@ -3,8 +3,81 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** dual-pane SFTP file transfer (`Ctrl-t`), targeting **v0.5.0**. v1
-acceptance gates closed.
+**Current milestone:** Sites — group hosts with optional inherited SSH defaults, targeting
+**v0.6.0**. v1 acceptance gates closed.
+
+---
+
+## 2026-06-17 — Sites: docs + feature complete (M5)
+
+- Docs synced: `decisions.md` D-020 (the Sites ADR), `data-model.md` (`[[site]]` schema +
+  inheritance/override + back-compat), `ux.md` (grouped/flat list, `site:` filter, F3 manager,
+  CLI table), `structure.md` (`ui/sites.rs` + model note), README (feature bullet, keys, usage),
+  CHANGELOG `[Unreleased]`.
+- **Sites is feature-complete:** one-per-host grouping with optional inherited SSH defaults
+  (bastion/user/port/identity); grouped-when-idle / flat-when-filtering list; wizard chooser; F3
+  manager with rename + delete cascades; and the full CLI. 145 tests + 1 e2e; clippy + fmt clean.
+  Ships in **v0.6.0** via the usual `feat/sites` branch → PR → cut-release.
+
+---
+
+## 2026-06-17 — Sites: CLI surface (M4)
+
+- `sshelf add --site NAME` (`-s`) assigns a site (warns, non-fatally, if it isn't defined yet).
+- `sshelf sites` lists defined sites with member counts + their defaults; `sshelf sites --json`
+  for scripts; `sshelf sites add NAME [-u/-p/-J/-i]` creates one.
+- `sshelf list` shows a `·site·` column; `--json` already carries the `site` field and a
+  `command` that reflects inheritance. Dynamic completion of site names on `--site`.
+- 145 tests (add `--site` + `sites` parse); clippy + fmt clean. Verified end to end.
+- Next: docs (D-020, data-model, ux, structure, README, CHANGELOG).
+
+---
+
+## 2026-06-17 — Sites: wizard chooser + F3 manager (M3)
+
+- The add/edit form gains a **Site** chooser (←/→ over the defined sites + "(none)"); editing a
+  host preselects its site.
+- New **F3 sites manager** (`ui/sites.rs`): a list of sites with add / edit / delete and an
+  inline form for each site's optional defaults (user/port/jump/identity, with name-uniqueness +
+  port validation). Name edits are tracked as renames; on save the app rewrites member hosts'
+  `site` and clears any host whose site was deleted (orphans self-heal). Help overlay + list hint
+  updated (`F3`, `site:`, and the previously-missing `^t`).
+- Tests: wizard chooser + preselect; manager add/edit/rename/delete/duplicate-reject; an
+  app-level F3 rename-cascade + delete-orphan end to end. 143 tests; clippy + fmt clean.
+- Next: CLI (`add --site`, `sites`/`sites add`, list column, completion), then docs.
+
+---
+
+## 2026-06-17 — Sites: grouped/flat host list (M2)
+
+- The host list now **groups by site** when idle (`── {site} ({n}) ──` section headers, sites
+  alphabetical, `(no site)` last) and shows a flat ranked list with a dim `·site·` column while
+  filtering. `recompute` builds a grouped `order` when the query is empty (`group_order`);
+  `order` still holds host indices only, so selection/navigation are unchanged — the renderer
+  maps the selected host past the non-selectable headers to the `ListState` index.
+- Tests: `group_order` sectioning (case-insensitive, `(no site)` last); render checks for the
+  grouped headers + the filtered site column. 135 tests; clippy + fmt clean.
+- Next: the wizard site chooser + F3 sites manager (M3), then CLI (M4).
+
+---
+
+## 2026-06-17 — Sites: model + inheritance + search (M1)
+
+- New **Site** concept: a one-per-host grouping that may carry **optional** shared SSH defaults
+  (user/port/jump/identity) member hosts inherit at connect time. Bare site = pure grouping;
+  per-host fields always override; auth stays per-host. Distinct from many-valued `tags`.
+- `model.rs`: `Site` struct + `Host.site: Option<String>` (by name) + `HostsFile.sites`
+  (`[[site]]`, sites-first; no `format_version` bump — old files load unchanged). Inheritance
+  via `Host::with_site_defaults(&[Site])` (clone, fill only unset fields, id preserved; unknown
+  site name degrades to plain grouping) + `find_site` (case-insensitive). `search_haystack`
+  includes the site.
+- `search.rs`: `parse_query` now also yields an optional `site:NAME` token; `rank` filters by it.
+- Threaded resolution into every Host→ssh-args boundary: TUI connect/yank/transfer, CLI
+  connect/`-`/print-command/`list --json` command. `App.sites` loaded + persisted (and it
+  follows an F2 hosts-file move). Verified end-to-end via `print-command` + `list --json`.
+- 132 tests (model inheritance/degradation, `site:` filter, store round-trip + pre-sites
+  back-compat); clippy + fmt clean. No UI yet.
+- Next: the grouped/flat list (M2), then the wizard chooser + F3 sites manager (M3), CLI (M4).
 
 ---
 

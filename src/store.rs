@@ -94,16 +94,39 @@ mod tests {
         b.port = Some(2222);
         b.auth = AuthMethod::Password;
 
+        let mut site = crate::model::Site::new("prod-dc");
+        site.user = Some("deploy".into());
+        site.jump_hosts = vec!["bastion".into()];
+        a.site = Some("prod-dc".into());
+
         let hf = HostsFile {
             format_version: crate::model::CURRENT_FORMAT_VERSION,
+            sites: vec![site.clone()],
             hosts: vec![a.clone(), b.clone()],
         };
 
         save_hosts(&path, &hf).unwrap();
         let loaded = load_hosts(&path).unwrap();
         assert_eq!(loaded, hf);
+        assert_eq!(loaded.sites[0], site);
         assert_eq!(loaded.hosts[0], a);
         assert_eq!(loaded.hosts[1], b);
+    }
+
+    #[test]
+    fn loads_pre_sites_file_without_a_sites_array() {
+        // An old hosts.toml (no [[site]], no host `site=`) must still load: sites default empty.
+        let dir = tmpdir();
+        let path = dir.join("hosts.toml");
+        std::fs::write(
+            &path,
+            "format_version = 1\n\n[[host]]\nid = \"01HOST\"\nname = \"web\"\nhostname = \"10.0.0.1\"\n",
+        )
+        .unwrap();
+        let loaded = load_hosts(&path).unwrap();
+        assert!(loaded.sites.is_empty());
+        assert_eq!(loaded.hosts.len(), 1);
+        assert_eq!(loaded.hosts[0].site, None);
     }
 
     #[test]

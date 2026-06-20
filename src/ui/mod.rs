@@ -5,6 +5,7 @@ mod browse;
 mod help;
 mod list;
 pub(crate) mod settings;
+pub(crate) mod sites;
 mod transfer;
 mod widgets;
 pub(crate) mod wizard;
@@ -80,6 +81,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if let Some(s) = &app.settings {
         settings::render(frame, s);
+        return;
+    }
+    if let Some(m) = &app.sites_manager {
+        sites::render(frame, m);
         return;
     }
     list::render(frame, app);

@@ -5,6 +5,25 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-020 · Sites: one-per-host grouping with optional inherited SSH defaults
+Hosts can belong to a **Site** (a data center / project), distinct from many-valued free-form
+`tags`. A site is **one per host** and may carry **optional** shared SSH defaults — `user`,
+`port`, `jump_hosts` (the bastion), `identity_files` — that members inherit at connect time
+**only where the host leaves that field unset** (the host always wins). A bare site (name only)
+is pure grouping. **Auth is not inheritable** (it stays per-host; inheriting it would change
+which fields apply and surprise users — a site can still carry a default identity that only
+takes effect for key-auth members). Inheritance is computed by resolving a host into an
+"effective host" (`Host::with_site_defaults`) at every Host→ssh-args boundary (connect, yank,
+transfer master, CLI print/list-json), leaving `ssh::build_args` untouched — chosen over
+threading `&[Site]` through `build_args` and its many callers/tests. Hosts reference a site **by
+name**; an undefined name **degrades gracefully** (pure grouping, no inheritance, no error).
+Stored in `hosts.toml` as `[[site]]` (sites before hosts; `format_version` unchanged — old files
+load with `sites = []`). The list **groups by site when idle** and shows a flat `·site·` column
++ `site:NAME` filter while typing. Renames in the F3 manager **cascade** to member hosts;
+deleting a site **clears** members' `site` (self-healing) rather than leaving a dangling name.
+Rejected: a single special tag (too weak — no inherited config); a separate sites file (one
+atomic `hosts.toml` is simpler and keeps the reference local).
+
 ### D-019 · File transfer rides an `ssh` ControlMaster; `sftp`/`scp` as subprocesses
 The dual-pane transfer screen moves files over the **system `sftp`/`scp` binaries**, not a Rust
 SSH library: every pure-Rust option either pulls C deps (libssh2) or forces `tokio` and can't

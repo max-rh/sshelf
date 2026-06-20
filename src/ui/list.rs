@@ -1,5 +1,8 @@
 //! The main list screen: search box, host list with match highlighting, hint bar.
 
+use std::collections::HashMap;
+
+use nucleo_matcher::Matcher;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -7,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::App;
+use crate::model::Host;
 use crate::search;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -69,22 +73,55 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     let hl = Style::default()
         .fg(super::accent())
         .add_modifier(Modifier::BOLD);
-    // Highlight only the fuzzy part of the query (not any `tag:` tokens).
-    let (_, fuzzy) = search::parse_query(&app.query);
+    // Highlight only the fuzzy part of the query (not any `tag:`/`site:` tokens).
+    let (_, _, fuzzy) = search::parse_query(&app.query);
 
-    let items: Vec<ListItem> = app
-        .order
-        .iter()
-        .map(|&i| {
+    // Idle → group hosts under site headers; filtering → a flat list with a site column.
+    // `app.selected` indexes `order` (hosts only); headers shift the ListState index, so we
+    // track the selected host's position among the rendered items.
+    let grouped = app.query.is_empty();
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_listidx = 0usize;
+
+    if grouped {
+        let header_style = Style::default().fg(Color::DarkGray);
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for &i in &app.order {
+            *counts.entry(section_key(&app.hosts[i])).or_default() += 1;
+        }
+        let mut prev: Option<String> = None;
+        for (pos, &i) in app.order.iter().enumerate() {
             let h = &app.hosts[i];
-            let mut text = format!("{:<width$}  {}", h.name, h.endpoint(), width = name_w);
-            if !h.tags.is_empty() {
-                text.push_str(&format!("  [{}]", h.tags.join(",")));
+            let key = section_key(h);
+            if prev.as_deref() != Some(key.as_str()) {
+                let n = counts.get(&key).copied().unwrap_or(0);
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("── {} ({}) ──", section_display(h), n),
+                    header_style,
+                ))));
+                prev = Some(key);
             }
-            let indices = search::match_indices(&text, &fuzzy, &mut matcher);
-            ListItem::new(Line::from(super::highlight(&text, &indices, base, hl)))
-        })
-        .collect();
+            if pos == app.selected {
+                selected_listidx = items.len();
+            }
+            items.push(host_row(h, name_w, &fuzzy, &mut matcher, base, hl, false));
+        }
+    } else {
+        for (pos, &i) in app.order.iter().enumerate() {
+            if pos == app.selected {
+                selected_listidx = items.len();
+            }
+            items.push(host_row(
+                &app.hosts[i],
+                name_w,
+                &fuzzy,
+                &mut matcher,
+                base,
+                hl,
+                true,
+            ));
+        }
+    }
 
     let list = List::new(items)
         .block(block)
@@ -92,8 +129,44 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    state.select(Some(app.selected));
+    state.select(Some(selected_listidx));
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// The section a host belongs to, for display (its site name, or `(no site)`).
+fn section_display(h: &Host) -> &str {
+    h.site.as_deref().unwrap_or("(no site)")
+}
+
+/// The case-insensitive section key (matches `app::group_order`'s grouping).
+fn section_key(h: &Host) -> String {
+    section_display(h).to_lowercase()
+}
+
+/// One host row: `name  user@host:port  [tags]`, fuzzy-highlighted, with an optional dim
+/// `·site·` column (shown only in the flat/filtered view, where there are no section headers).
+fn host_row(
+    h: &Host,
+    name_w: usize,
+    fuzzy: &str,
+    matcher: &mut Matcher,
+    base: Style,
+    hl: Style,
+    show_site: bool,
+) -> ListItem<'static> {
+    let mut text = format!("{:<width$}  {}", h.name, h.endpoint(), width = name_w);
+    if !h.tags.is_empty() {
+        text.push_str(&format!("  [{}]", h.tags.join(",")));
+    }
+    let indices = search::match_indices(&text, fuzzy, matcher);
+    let mut spans = super::highlight(&text, &indices, base, hl);
+    if show_site && let Some(site) = &h.site {
+        spans.push(Span::styled(
+            format!("  ·{site}·"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    ListItem::new(Line::from(spans))
 }
 
 fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
@@ -104,7 +177,7 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let hint = "↵ connect  ^a add  ^e edit  ^d del  ^y yank  ^t transfer  ^o import  F1 help  F2 settings  esc quit";
+    let hint = "↵ connect  ^a add  ^e edit  ^d del  ^y yank  ^t transfer  ^o import  F1 help  F2 settings  F3 sites  esc quit";
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
         area,
@@ -137,7 +210,13 @@ mod tests {
             data_dir: std::env::temp_dir(),
             config_file_override: None,
         };
-        let mut app = App::new(hosts, FrecencyState::default(), Config::default(), paths);
+        let mut app = App::new(
+            hosts,
+            Vec::new(),
+            FrecencyState::default(),
+            Config::default(),
+            paths,
+        );
         app.query.push_str(query);
         app.recompute();
         app
@@ -163,6 +242,33 @@ mod tests {
         assert!(text.contains("prod-web"));
         assert!(text.contains("prod-db"));
         assert!(!text.contains("bastion"));
+    }
+
+    #[test]
+    fn idle_groups_under_site_headers() {
+        let mut app = app_with("");
+        app.hosts[0].site = Some("prod-dc".into());
+        app.hosts[1].site = Some("prod-dc".into());
+        app.recompute(); // bastion (idx 2) stays site-less
+        let text = draw(&app);
+        assert!(
+            text.contains("prod-dc"),
+            "expected a prod-dc section header"
+        );
+        assert!(text.contains("(no site)"), "expected a (no site) group");
+    }
+
+    #[test]
+    fn filtering_shows_the_site_column() {
+        let mut app = app_with("");
+        app.hosts[0].site = Some("prod-dc".into());
+        app.query.push_str("prod-web");
+        app.recompute();
+        let text = draw(&app);
+        assert!(
+            text.contains("·prod-dc·"),
+            "expected a ·site· column when filtering"
+        );
     }
 
     fn buffer_lines(buf: &ratatui::buffer::Buffer) -> Vec<String> {
@@ -195,6 +301,7 @@ mod tests {
         };
         let app = App::new(
             vec![prod_web, prod_db, bastion],
+            Vec::new(),
             FrecencyState::default(),
             Config::default(),
             paths,

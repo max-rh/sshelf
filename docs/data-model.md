@@ -15,10 +15,17 @@ config hand-editable instead of buried in macOS `~/Library`.
 
 Directories are created on first run (`0700`). **Secrets are never written to `hosts.toml`.**
 
-## `Host` schema (`hosts.toml`)
+## `Host` / `Site` schema (`hosts.toml`)
 
 ```toml
-format_version = 1            # top-level; for future migrations
+format_version = 1            # top-level scalar; for future migrations
+
+[[site]]                      # optional; sites are listed before hosts (scalars-before-AoT)
+name      = "prod-dc"         # the name hosts reference (see host.site)
+user      = "deploy"          # optional default login for member hosts
+port      = 22                # optional default port
+jump_hosts = ["bastion.prod"] # optional default ProxyJump (the site's bastion)
+identity_files = ["~/.ssh/prod"]  # optional default key(s) (applied to key-auth members)
 
 [[host]]
 id        = "01J…"            # stable unique id (e.g. ULID/UUID); keys secrets & frecency
@@ -29,7 +36,8 @@ port      = 22                # optional; default 22
 auth      = "key"             # "key" | "password" | "agent"
 identity_files = ["~/.ssh/infra-key"]   # for auth="key"; repeatable (-i per entry)
 jump_hosts = ["bastion.example.com"]    # ProxyJump chain; key/agent auth only in v1
-tags      = ["prod", "db"]    # for filtering/grouping
+tags      = ["prod", "db"]    # many-valued, free-form; for filtering/grouping
+site      = "prod-dc"         # optional; one site (by name); groups + inherits its defaults
 extra_args = "-o ServerAliveInterval=30"  # raw, shlex-split, appended verbatim
 # NOTE: no password field — ever. auth="password" means "look up the secret by id".
 ```
@@ -38,7 +46,18 @@ Notes:
 - Optional fields use `Option<T>` in Rust with `#[serde(skip_serializing_if = "Option::is_none")]`
   so the TOML stays clean; new fields use `#[serde(default)]` for backward compatibility.
 - `identity_files` / `jump_hosts` / `tags` are `Vec<String>` (empty = absent).
-- `format_version` lets us migrate the schema later without breaking older files.
+- `format_version` lets us migrate the schema later without breaking older files. Adding `[[site]]`
+  and `host.site` needed **no** bump — old files load with `sites = []` / `site = None`.
+
+### Sites vs tags, and inheritance
+
+A **Site** is *one per host* and may carry optional shared SSH defaults; **tags** are
+many-valued free-form labels. At connect time a host is resolved into an *effective host*
+(`Host::with_site_defaults`): for `user`, `port`, `jump_hosts`, `identity_files`, the site's
+value fills in **only where the host leaves that field unset** — the host always wins. Auth is
+**not** inheritable. A host that names an **undefined** site still groups under that name but
+inherits nothing (graceful degradation). Renaming a site (F3 manager) cascades to member hosts;
+deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
 
 ## Frecency state (`state.json`)
 

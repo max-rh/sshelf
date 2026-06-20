@@ -15,7 +15,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 
 use crate::config::Config;
 use crate::import;
-use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile};
+use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile, Site};
 use crate::paths::Paths;
 use crate::search;
 use crate::secrets;
@@ -25,6 +25,7 @@ use crate::store;
 use crate::transfer::{self, TransferOutcome};
 use crate::ui;
 use crate::ui::settings::{Settings, SettingsOutcome};
+use crate::ui::sites::{SitesManager, SitesOutcome};
 use crate::ui::wizard::{Wizard, WizardOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,8 @@ pub enum Outcome {
 
 pub struct App {
     pub hosts: Vec<Host>,
+    /// Defined sites (groups + optional inherited SSH defaults).
+    pub sites: Vec<Site>,
     pub state: FrecencyState,
     pub config: Config,
     pub paths: Paths,
@@ -68,6 +71,8 @@ pub struct App {
     pub wizard: Option<Wizard>,
     pub confirm: Option<ConfirmDelete>,
     pub settings: Option<Settings>,
+    /// The sites manager (F3), when open.
+    pub sites_manager: Option<SitesManager>,
     /// The dual-pane file-transfer screen, when open.
     pub transfer: Option<transfer::TransferScreen>,
     /// Transient status line (cleared on next keypress).
@@ -78,10 +83,17 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(hosts: Vec<Host>, state: FrecencyState, config: Config, paths: Paths) -> Self {
+    pub fn new(
+        hosts: Vec<Host>,
+        sites: Vec<Site>,
+        state: FrecencyState,
+        config: Config,
+        paths: Paths,
+    ) -> Self {
         let hosts_path = config.hosts_path(&paths);
         let mut app = App {
             hosts,
+            sites,
             state,
             config,
             paths,
@@ -93,6 +105,7 @@ impl App {
             wizard: None,
             confirm: None,
             settings: None,
+            sites_manager: None,
             transfer: None,
             status: None,
             should_quit: false,
@@ -102,15 +115,22 @@ impl App {
         app
     }
 
-    /// Re-rank the host list for the current query and clamp the selection.
+    /// Re-rank the host list for the current query and clamp the selection. When the query is
+    /// empty (idle) the order is grouped into site sections; while filtering it's the flat
+    /// ranked order (`order` always holds host indices — section headers are render-only).
     pub fn recompute(&mut self) {
-        self.order = search::rank(
+        let ranked = search::rank(
             &self.hosts,
             &self.query,
             &self.state,
             self.config.decay_rate,
             self.config.default_sort,
         );
+        self.order = if self.query.is_empty() {
+            group_order(&self.hosts, &ranked)
+        } else {
+            ranked
+        };
         if self.selected >= self.order.len() {
             self.selected = self.order.len().saturating_sub(1);
         }
@@ -125,9 +145,15 @@ impl App {
         self.order.get(self.selected).copied()
     }
 
+    /// The defined site names, for the wizard's site chooser.
+    fn site_names(&self) -> Vec<String> {
+        self.sites.iter().map(|s| s.name.clone()).collect()
+    }
+
     fn persist_hosts(&self) -> Result<()> {
         let file = HostsFile {
             format_version: CURRENT_FORMAT_VERSION,
+            sites: self.sites.clone(),
             hosts: self.hosts.clone(),
         };
         store::save_hosts(&self.hosts_path, &file)
@@ -154,6 +180,10 @@ impl App {
         }
         if self.settings.is_some() {
             self.on_key_settings(key);
+            return Outcome::Continue;
+        }
+        if self.sites_manager.is_some() {
+            self.on_key_sites(key);
             return Outcome::Continue;
         }
         match self.screen {
@@ -193,9 +223,15 @@ impl App {
                     return Outcome::Transfer(i);
                 }
             }
-            (KeyCode::Char('a'), true) => self.wizard = Some(Wizard::new_add()),
+            (KeyCode::Char('a'), true) => {
+                let names = self.site_names();
+                self.wizard = Some(Wizard::new_add(&names));
+            }
             (KeyCode::Char('e'), true) => match self.current() {
-                Some(i) => self.wizard = Some(Wizard::from_host(&self.hosts[i])),
+                Some(i) => {
+                    let names = self.site_names();
+                    self.wizard = Some(Wizard::from_host(&self.hosts[i], &names));
+                }
                 None => self.set_status("no host selected"),
             },
             (KeyCode::Char('d'), true) => {
@@ -212,6 +248,7 @@ impl App {
             (KeyCode::Up, false) | (KeyCode::Char('p'), true) => self.move_up(),
             (KeyCode::F(1), _) => self.screen = Screen::Help,
             (KeyCode::F(2), _) => self.open_settings(),
+            (KeyCode::F(3), _) => self.open_sites(),
             (KeyCode::Backspace, _) => {
                 self.query.pop();
                 self.selected = 0;
@@ -277,6 +314,51 @@ impl App {
         ));
     }
 
+    fn open_sites(&mut self) {
+        self.sites_manager = Some(SitesManager::new(self.sites.clone()));
+    }
+
+    fn on_key_sites(&mut self, key: KeyEvent) {
+        let outcome = match self.sites_manager.as_mut() {
+            Some(m) => m.handle_key(key),
+            None => return,
+        };
+        match outcome {
+            SitesOutcome::Continue => {}
+            SitesOutcome::Cancel => self.sites_manager = None,
+            SitesOutcome::Save { sites, renames } => {
+                self.sites_manager = None;
+                // Apply name changes to member hosts, then clear any host whose site no longer
+                // exists (so deletes self-heal — see decisions.md D-020).
+                for (old, new) in &renames {
+                    for h in &mut self.hosts {
+                        if h.site
+                            .as_deref()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(old))
+                        {
+                            h.site = Some(new.clone());
+                        }
+                    }
+                }
+                let defined: std::collections::HashSet<String> =
+                    sites.iter().map(|s| s.name.to_lowercase()).collect();
+                for h in &mut self.hosts {
+                    if let Some(s) = &h.site
+                        && !defined.contains(&s.to_lowercase())
+                    {
+                        h.site = None;
+                    }
+                }
+                self.sites = sites;
+                match self.persist_hosts() {
+                    Ok(()) => self.set_status("sites saved"),
+                    Err(e) => self.set_status(format!("save failed: {e}")),
+                }
+                self.recompute();
+            }
+        }
+    }
+
     fn on_key_settings(&mut self, key: KeyEvent) {
         let outcome = match self.settings.as_mut() {
             Some(s) => s.handle_key(key),
@@ -309,6 +391,7 @@ impl App {
                     match store::load_hosts(&new_path) {
                         Ok(file) => {
                             self.hosts = file.hosts;
+                            self.sites = file.sites;
                             Ok(format!("using existing hosts at {}", new_path.display()))
                         }
                         Err(e) => Err(format!("could not read {}: {e}", new_path.display())),
@@ -316,6 +399,7 @@ impl App {
                 } else {
                     let file = HostsFile {
                         format_version: CURRENT_FORMAT_VERSION,
+                        sites: self.sites.clone(),
                         hosts: self.hosts.clone(),
                     };
                     match store::save_hosts(&new_path, &file) {
@@ -406,7 +490,9 @@ impl App {
     /// event loop calls this so the side effects (a worker thread, a secrets lookup) stay out
     /// of the testable `on_key`.
     fn open_transfer(&mut self, idx: usize) {
-        let host = self.hosts[idx].clone();
+        // Resolve the host's site defaults so transfers ride the site's bastion / use its
+        // default user; `id` is preserved so the secrets lookup below is unaffected.
+        let host = self.hosts[idx].with_site_defaults(&self.sites);
         let has_secret = secrets::get_password(&self.paths.vault_file(), &host.id)
             .ok()
             .flatten()
@@ -432,6 +518,29 @@ impl App {
     }
 }
 
+/// Reorder ranked host indices into site sections: distinct sites in case-insensitive name
+/// order, the "(no site)" group last; within a section the hosts keep their ranked
+/// (frecency/name) order. Returns host indices only — the renderer adds the section headers.
+fn group_order(hosts: &[Host], ranked: &[usize]) -> Vec<usize> {
+    let mut keys: Vec<String> = ranked
+        .iter()
+        .filter_map(|&i| hosts[i].site.as_deref().map(str::to_lowercase))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut out = Vec::with_capacity(ranked.len());
+    for key in &keys {
+        out.extend(ranked.iter().copied().filter(|&i| {
+            hosts[i]
+                .site
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(key))
+        }));
+    }
+    out.extend(ranked.iter().copied().filter(|&i| hosts[i].site.is_none()));
+    out
+}
+
 /// Set up the terminal, run the loop, restore the terminal, then (if a host was chosen)
 /// perform the `exec()` handoff into ssh.
 pub fn run() -> Result<()> {
@@ -448,11 +557,12 @@ fn run_with(start_add: bool) -> Result<()> {
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let config = Config::load(&paths.config_file())?;
-    let hosts = store::load_hosts(&config.hosts_path(&paths))?.hosts;
+    let file = store::load_hosts(&config.hosts_path(&paths))?;
     let state = FrecencyState::load(&paths.state_file())?;
-    let mut app = App::new(hosts, state, config, paths);
+    let mut app = App::new(file.hosts, file.sites, state, config, paths);
     if start_add {
-        app.wizard = Some(Wizard::new_add());
+        let names = app.site_names();
+        app.wizard = Some(Wizard::new_add(&names));
     }
 
     let mut terminal = ratatui::init();
@@ -461,7 +571,8 @@ fn run_with(start_add: bool) -> Result<()> {
     loop_result?;
 
     if let Some(idx) = app.pending_connect {
-        let host = app.hosts[idx].clone();
+        // Resolve the host's site defaults (bastion/user/port/identity) for the real connect.
+        let host = app.hosts[idx].with_site_defaults(&app.sites);
         // Persist usage BEFORE exec() — nothing runs after a successful exec.
         app.state.record_use(&host.id);
         if let Err(e) = app.state.save(&app.paths.state_file()) {
@@ -509,7 +620,7 @@ fn dispatch(app: &mut App, key: KeyEvent) {
             app.should_quit = true;
         }
         Outcome::Yank(idx) => {
-            let cmd = ssh::command_string(&app.hosts[idx]);
+            let cmd = ssh::command_string(&app.hosts[idx].with_site_defaults(&app.sites));
             if ssh::copy_to_clipboard(&cmd) {
                 app.set_status(format!("copied: {cmd}"));
             } else {
@@ -546,7 +657,59 @@ mod tests {
             data_dir: dir,
             config_file_override: None,
         };
-        App::new(hosts, FrecencyState::default(), Config::default(), paths)
+        App::new(
+            hosts,
+            Vec::new(),
+            FrecencyState::default(),
+            Config::default(),
+            paths,
+        )
+    }
+
+    #[test]
+    fn group_order_sections_sites_alpha_then_no_site() {
+        let mut a = Host::new("a", "h");
+        a.site = Some("zeta".into());
+        let mut b = Host::new("b", "h");
+        b.site = Some("alpha".into());
+        let mut c = Host::new("c", "h");
+        c.site = Some("ALPHA".into()); // same section as b (case-insensitive)
+        let d = Host::new("d", "h"); // no site
+        let hosts = vec![a, b, c, d];
+        // ranked order is [0,1,2,3]; group_order keeps that order within each section.
+        let order = group_order(&hosts, &[0, 1, 2, 3]);
+        let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
+        // alpha section (b, c), then zeta (a), then the (no site) group (d).
+        assert_eq!(names, vec!["b", "c", "a", "d"]);
+    }
+
+    #[test]
+    fn sites_manager_rename_cascades_and_delete_orphans() {
+        let mut app = test_app();
+        app.sites = vec![Site::new("dc1"), Site::new("dc2")];
+        app.hosts[0].site = Some("dc1".into());
+        app.hosts[1].site = Some("dc2".into());
+
+        app.on_key(key(KeyCode::F(3))); // open the sites manager
+        assert!(app.sites_manager.is_some());
+        app.on_key(key(KeyCode::Enter)); // edit dc1
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        for c in "prod".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(ctrl(KeyCode::Char('s'))); // commit form: rename dc1 -> prod
+        app.on_key(key(KeyCode::Down)); // select dc2
+        app.on_key(key(KeyCode::Char('d'))); // confirm-delete prompt
+        app.on_key(key(KeyCode::Char('y'))); // delete dc2
+        app.on_key(ctrl(KeyCode::Char('s'))); // save the manager
+
+        assert!(app.sites_manager.is_none());
+        assert_eq!(app.sites.len(), 1);
+        assert_eq!(app.sites[0].name, "prod");
+        assert_eq!(app.hosts[0].site.as_deref(), Some("prod")); // rename cascaded
+        assert_eq!(app.hosts[1].site, None); // dc2 deleted -> host orphaned
     }
 
     #[test]
@@ -697,6 +860,7 @@ mod tests {
         let new_path = dir.join("hosts.toml");
         let existing = HostsFile {
             format_version: CURRENT_FORMAT_VERSION,
+            sites: Vec::new(),
             hosts: vec![Host::new("fromdisk", "9.9.9.9")],
         };
         store::save_hosts(&new_path, &existing).unwrap();

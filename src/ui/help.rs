@@ -9,7 +9,7 @@ use super::centered;
 use crate::app::App;
 
 pub fn render(frame: &mut Frame, _app: &App) {
-    let area = centered(frame.area(), 58, 18);
+    let area = centered(frame.area(), 58, 21);
     frame.render_widget(Clear, area);
 
     let lines = vec![
@@ -20,13 +20,16 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from(""),
         Line::from("  type            filter the list (fuzzy)"),
         Line::from("  tag:NAME        filter by tag (combine with text)"),
+        Line::from("  site:NAME       filter by site"),
         Line::from("  ↑ / ↓  ^p / ^n  move selection"),
         Line::from("  ↵               connect"),
         Line::from("  ^a / ^e / ^d    add / edit / delete host"),
         Line::from("  ^y              yank the ssh command"),
+        Line::from("  ^t              transfer files (SFTP)"),
         Line::from("  ^o              import from ~/.ssh/config"),
         Line::from("  F1              this help"),
         Line::from("  F2              settings (config & hosts file)"),
+        Line::from("  F3              manage sites"),
         Line::from("  esc             clear query, then quit"),
         Line::from("  ^c              quit"),
         Line::from(""),
