@@ -39,6 +39,7 @@ enum Field {
     Secret,
     JumpHosts,
     Tags,
+    Site,
     ExtraArgs,
 }
 
@@ -60,6 +61,7 @@ impl Field {
             }
             Field::JumpHosts => "Jump hosts",
             Field::Tags => "Tags",
+            Field::Site => "Site",
             Field::ExtraArgs => "Extra args",
         }
     }
@@ -81,6 +83,7 @@ impl Field {
             }
             Field::JumpHosts => "optional · ProxyJump chain, e.g. bastion,host2",
             Field::Tags => "optional · labels, space/comma separated, e.g. prod db",
+            Field::Site => "←/→ choose a site · (none) = no site · manage with F3",
             Field::ExtraArgs => "optional · extra ssh flags, e.g. -o BatchMode=yes",
         }
     }
@@ -149,6 +152,63 @@ impl KeyPicker {
     }
 }
 
+/// The "no site" sentinel shown first in the [`SitePicker`].
+const NO_SITE: &str = "(none)";
+
+/// A chooser over `(none)` + the defined site names (cycled with ←/→).
+struct SitePicker {
+    options: Vec<String>, // options[0] is the NO_SITE sentinel
+    idx: usize,
+}
+
+impl SitePicker {
+    fn new(site_names: &[String], preselect: Option<&str>) -> Self {
+        let mut options = vec![NO_SITE.to_string()];
+        options.extend(site_names.iter().cloned());
+        // Editing a host whose site isn't (or no longer is) in the defined set: keep it as an
+        // option so saving doesn't silently drop the assignment.
+        if let Some(p) = preselect
+            && !p.is_empty()
+            && !options.iter().any(|o| o.eq_ignore_ascii_case(p))
+        {
+            options.push(p.to_string());
+        }
+        let idx = preselect
+            .filter(|p| !p.is_empty())
+            .and_then(|p| options.iter().position(|o| o.eq_ignore_ascii_case(p)))
+            .unwrap_or(0);
+        SitePicker { options, idx }
+    }
+
+    /// The chosen site name, or `None` for "(none)".
+    fn selected(&self) -> Option<&str> {
+        match self.options.get(self.idx).map(String::as_str) {
+            Some(NO_SITE) => None,
+            other => other,
+        }
+    }
+
+    fn prev(&mut self) {
+        if !self.options.is_empty() {
+            self.idx = (self.idx + self.options.len() - 1) % self.options.len();
+        }
+    }
+    fn next(&mut self) {
+        if !self.options.is_empty() {
+            self.idx = (self.idx + 1) % self.options.len();
+        }
+    }
+
+    fn display(&self) -> String {
+        let cur = self
+            .options
+            .get(self.idx)
+            .map(String::as_str)
+            .unwrap_or(NO_SITE);
+        format!("< {cur} >    ({}/{})", self.idx + 1, self.options.len())
+    }
+}
+
 // Save carries a Host (large) while the others are unit variants; this enum is a transient
 // return value, never stored, so the size difference is fine.
 #[allow(clippy::large_enum_variant)]
@@ -179,6 +239,7 @@ pub struct Wizard {
     secret: TextField,
     jump: TextField,
     tags: TextField,
+    site: SitePicker,
     extra: TextField,
     /// File browser modal, open when the user is picking a key file.
     browser: Option<FileBrowser>,
@@ -186,16 +247,23 @@ pub struct Wizard {
 }
 
 impl Wizard {
-    pub fn new_add() -> Self {
-        Self::build(None, AuthMethod::Agent, discover_ssh_keys(), None)
+    pub fn new_add(site_names: &[String]) -> Self {
+        Self::build(
+            None,
+            AuthMethod::Agent,
+            discover_ssh_keys(),
+            None,
+            site_names,
+        )
     }
 
-    pub fn from_host(h: &Host) -> Self {
+    pub fn from_host(h: &Host, site_names: &[String]) -> Self {
         let mut w = Self::build(
             Some(h.id.clone()),
             h.auth,
             discover_ssh_keys(),
             h.identity_files.first().map(String::as_str),
+            site_names,
         );
         w.name = TextField::with(&h.name);
         w.hostname = TextField::with(&h.hostname);
@@ -203,6 +271,7 @@ impl Wizard {
         w.port = TextField::with(h.port.map(|p| p.to_string()).unwrap_or_default());
         w.jump = TextField::with(h.jump_hosts.join(", "));
         w.tags = TextField::with(h.tags.join(", "));
+        w.site = SitePicker::new(site_names, h.site.as_deref());
         w.extra = TextField::with(h.extra_args.clone().unwrap_or_default());
         w.extra_identities = h.identity_files.iter().skip(1).cloned().collect();
         // secret stays blank on edit (blank = keep existing)
@@ -214,6 +283,7 @@ impl Wizard {
         auth: AuthMethod,
         keys: Vec<String>,
         preselect: Option<&str>,
+        site_names: &[String],
     ) -> Self {
         Wizard {
             editing_id,
@@ -228,6 +298,7 @@ impl Wizard {
             secret: TextField::new(),
             jump: TextField::new(),
             tags: TextField::new(),
+            site: SitePicker::new(site_names, None),
             extra: TextField::new(),
             browser: None,
             error: None,
@@ -255,7 +326,7 @@ impl Wizard {
             AuthMethod::Password => v.push(Field::Secret),
             AuthMethod::Agent => {}
         }
-        v.extend([Field::JumpHosts, Field::Tags, Field::ExtraArgs]);
+        v.extend([Field::JumpHosts, Field::Tags, Field::Site, Field::ExtraArgs]);
         v
     }
 
@@ -269,7 +340,7 @@ impl Wizard {
             Field::JumpHosts => Some(&mut self.jump),
             Field::Tags => Some(&mut self.tags),
             Field::ExtraArgs => Some(&mut self.extra),
-            Field::Auth | Field::Identity => None,
+            Field::Auth | Field::Identity | Field::Site => None,
         }
     }
 
@@ -283,7 +354,7 @@ impl Wizard {
             Field::JumpHosts => Some(&self.jump),
             Field::Tags => Some(&self.tags),
             Field::ExtraArgs => Some(&self.extra),
-            Field::Auth | Field::Identity => None,
+            Field::Auth | Field::Identity | Field::Site => None,
         }
     }
 
@@ -331,6 +402,11 @@ impl Wizard {
                 Field::Identity => match code {
                     KeyCode::Left => self.identity.prev(),
                     KeyCode::Right | KeyCode::Char(' ') => self.identity.next(),
+                    _ => {}
+                },
+                Field::Site => match code {
+                    KeyCode::Left => self.site.prev(),
+                    KeyCode::Right | KeyCode::Char(' ') => self.site.next(),
                     _ => {}
                 },
                 f => {
@@ -410,6 +486,7 @@ impl Wizard {
         };
         h.jump_hosts = split_list(&self.jump.value);
         h.tags = split_tags(&self.tags.value);
+        h.site = self.site.selected().map(str::to_string);
         let extra = self.extra.value.trim();
         h.extra_args = (!extra.is_empty()).then(|| extra.to_string());
 
@@ -619,6 +696,7 @@ fn field_value(w: &Wizard, field: Field) -> (String, bool) {
             false,
         ),
         Field::Identity => (w.identity.display(), w.identity.selected().is_none()),
+        Field::Site => (w.site.display(), w.site.selected().is_none()),
         Field::Secret => {
             let n = w.secret.value.chars().count();
             if n == 0 {
@@ -653,6 +731,7 @@ mod tests {
             AuthMethod::Agent,
             keys.iter().map(|s| s.to_string()).collect(),
             None,
+            &[],
         )
     }
 
@@ -749,6 +828,30 @@ mod tests {
     }
 
     #[test]
+    fn site_chooser_selects_and_saves() {
+        let sites = vec!["prod-dc".to_string(), "staging".to_string()];
+        let mut w = Wizard::build(None, AuthMethod::Agent, vec![], None, &sites);
+        type_str(&mut w, "n");
+        goto(&mut w, Field::Hostname);
+        type_str(&mut w, "h");
+        goto(&mut w, Field::Site);
+        w.handle_key(k(KeyCode::Right)); // (none) -> prod-dc
+        match w.try_save() {
+            WizardOutcome::Save { host, .. } => assert_eq!(host.site.as_deref(), Some("prod-dc")),
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn from_host_preselects_the_site() {
+        let sites = vec!["prod-dc".to_string()];
+        let mut h = Host::new("web", "h");
+        h.site = Some("prod-dc".into());
+        let w = Wizard::from_host(&h, &sites);
+        assert_eq!(w.site.selected(), Some("prod-dc"));
+    }
+
+    #[test]
     fn requires_name_and_hostname() {
         let mut w = with_keys(&[]);
         assert!(matches!(w.try_save(), WizardOutcome::Continue));
@@ -771,7 +874,7 @@ mod tests {
         let mut h = Host::new("multi", "host");
         h.auth = AuthMethod::Key;
         h.identity_files = vec!["/keys/a".into(), "/keys/b".into()];
-        let mut w = Wizard::from_host(&h);
+        let mut w = Wizard::from_host(&h, &[]);
         // Don't touch the picker; just save.
         match w.try_save() {
             WizardOutcome::Save { host, .. } => {
@@ -788,7 +891,7 @@ mod tests {
     fn edit_preserves_id() {
         let mut h = Host::new("old", "host");
         h.user = Some("me".into());
-        let mut w = Wizard::from_host(&h);
+        let mut w = Wizard::from_host(&h, &[]);
         match w.try_save() {
             WizardOutcome::Save { host, .. } => {
                 assert_eq!(host.id, h.id);

@@ -25,6 +25,7 @@ use crate::store;
 use crate::transfer::{self, TransferOutcome};
 use crate::ui;
 use crate::ui::settings::{Settings, SettingsOutcome};
+use crate::ui::sites::{SitesManager, SitesOutcome};
 use crate::ui::wizard::{Wizard, WizardOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +71,8 @@ pub struct App {
     pub wizard: Option<Wizard>,
     pub confirm: Option<ConfirmDelete>,
     pub settings: Option<Settings>,
+    /// The sites manager (F3), when open.
+    pub sites_manager: Option<SitesManager>,
     /// The dual-pane file-transfer screen, when open.
     pub transfer: Option<transfer::TransferScreen>,
     /// Transient status line (cleared on next keypress).
@@ -102,6 +105,7 @@ impl App {
             wizard: None,
             confirm: None,
             settings: None,
+            sites_manager: None,
             transfer: None,
             status: None,
             should_quit: false,
@@ -141,6 +145,11 @@ impl App {
         self.order.get(self.selected).copied()
     }
 
+    /// The defined site names, for the wizard's site chooser.
+    fn site_names(&self) -> Vec<String> {
+        self.sites.iter().map(|s| s.name.clone()).collect()
+    }
+
     fn persist_hosts(&self) -> Result<()> {
         let file = HostsFile {
             format_version: CURRENT_FORMAT_VERSION,
@@ -171,6 +180,10 @@ impl App {
         }
         if self.settings.is_some() {
             self.on_key_settings(key);
+            return Outcome::Continue;
+        }
+        if self.sites_manager.is_some() {
+            self.on_key_sites(key);
             return Outcome::Continue;
         }
         match self.screen {
@@ -210,9 +223,15 @@ impl App {
                     return Outcome::Transfer(i);
                 }
             }
-            (KeyCode::Char('a'), true) => self.wizard = Some(Wizard::new_add()),
+            (KeyCode::Char('a'), true) => {
+                let names = self.site_names();
+                self.wizard = Some(Wizard::new_add(&names));
+            }
             (KeyCode::Char('e'), true) => match self.current() {
-                Some(i) => self.wizard = Some(Wizard::from_host(&self.hosts[i])),
+                Some(i) => {
+                    let names = self.site_names();
+                    self.wizard = Some(Wizard::from_host(&self.hosts[i], &names));
+                }
                 None => self.set_status("no host selected"),
             },
             (KeyCode::Char('d'), true) => {
@@ -229,6 +248,7 @@ impl App {
             (KeyCode::Up, false) | (KeyCode::Char('p'), true) => self.move_up(),
             (KeyCode::F(1), _) => self.screen = Screen::Help,
             (KeyCode::F(2), _) => self.open_settings(),
+            (KeyCode::F(3), _) => self.open_sites(),
             (KeyCode::Backspace, _) => {
                 self.query.pop();
                 self.selected = 0;
@@ -292,6 +312,51 @@ impl App {
             self.config.hosts_file.clone(),
             self.paths.default_hosts_display(),
         ));
+    }
+
+    fn open_sites(&mut self) {
+        self.sites_manager = Some(SitesManager::new(self.sites.clone()));
+    }
+
+    fn on_key_sites(&mut self, key: KeyEvent) {
+        let outcome = match self.sites_manager.as_mut() {
+            Some(m) => m.handle_key(key),
+            None => return,
+        };
+        match outcome {
+            SitesOutcome::Continue => {}
+            SitesOutcome::Cancel => self.sites_manager = None,
+            SitesOutcome::Save { sites, renames } => {
+                self.sites_manager = None;
+                // Apply name changes to member hosts, then clear any host whose site no longer
+                // exists (so deletes self-heal — see decisions.md D-020).
+                for (old, new) in &renames {
+                    for h in &mut self.hosts {
+                        if h.site
+                            .as_deref()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(old))
+                        {
+                            h.site = Some(new.clone());
+                        }
+                    }
+                }
+                let defined: std::collections::HashSet<String> =
+                    sites.iter().map(|s| s.name.to_lowercase()).collect();
+                for h in &mut self.hosts {
+                    if let Some(s) = &h.site
+                        && !defined.contains(&s.to_lowercase())
+                    {
+                        h.site = None;
+                    }
+                }
+                self.sites = sites;
+                match self.persist_hosts() {
+                    Ok(()) => self.set_status("sites saved"),
+                    Err(e) => self.set_status(format!("save failed: {e}")),
+                }
+                self.recompute();
+            }
+        }
     }
 
     fn on_key_settings(&mut self, key: KeyEvent) {
@@ -496,7 +561,8 @@ fn run_with(start_add: bool) -> Result<()> {
     let state = FrecencyState::load(&paths.state_file())?;
     let mut app = App::new(file.hosts, file.sites, state, config, paths);
     if start_add {
-        app.wizard = Some(Wizard::new_add());
+        let names = app.site_names();
+        app.wizard = Some(Wizard::new_add(&names));
     }
 
     let mut terminal = ratatui::init();
@@ -615,6 +681,35 @@ mod tests {
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         // alpha section (b, c), then zeta (a), then the (no site) group (d).
         assert_eq!(names, vec!["b", "c", "a", "d"]);
+    }
+
+    #[test]
+    fn sites_manager_rename_cascades_and_delete_orphans() {
+        let mut app = test_app();
+        app.sites = vec![Site::new("dc1"), Site::new("dc2")];
+        app.hosts[0].site = Some("dc1".into());
+        app.hosts[1].site = Some("dc2".into());
+
+        app.on_key(key(KeyCode::F(3))); // open the sites manager
+        assert!(app.sites_manager.is_some());
+        app.on_key(key(KeyCode::Enter)); // edit dc1
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        for c in "prod".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(ctrl(KeyCode::Char('s'))); // commit form: rename dc1 -> prod
+        app.on_key(key(KeyCode::Down)); // select dc2
+        app.on_key(key(KeyCode::Char('d'))); // confirm-delete prompt
+        app.on_key(key(KeyCode::Char('y'))); // delete dc2
+        app.on_key(ctrl(KeyCode::Char('s'))); // save the manager
+
+        assert!(app.sites_manager.is_none());
+        assert_eq!(app.sites.len(), 1);
+        assert_eq!(app.sites[0].name, "prod");
+        assert_eq!(app.hosts[0].site.as_deref(), Some("prod")); // rename cascaded
+        assert_eq!(app.hosts[1].site, None); // dc2 deleted -> host orphaned
     }
 
     #[test]

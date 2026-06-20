@@ -8,6 +8,21 @@ Reverse-chronological. Newest entry on top. Every change to the project adds an 
 
 ---
 
+## 2026-06-17 — Sites: wizard chooser + F3 manager (M3)
+
+- The add/edit form gains a **Site** chooser (←/→ over the defined sites + "(none)"); editing a
+  host preselects its site.
+- New **F3 sites manager** (`ui/sites.rs`): a list of sites with add / edit / delete and an
+  inline form for each site's optional defaults (user/port/jump/identity, with name-uniqueness +
+  port validation). Name edits are tracked as renames; on save the app rewrites member hosts'
+  `site` and clears any host whose site was deleted (orphans self-heal). Help overlay + list hint
+  updated (`F3`, `site:`, and the previously-missing `^t`).
+- Tests: wizard chooser + preselect; manager add/edit/rename/delete/duplicate-reject; an
+  app-level F3 rename-cascade + delete-orphan end to end. 143 tests; clippy + fmt clean.
+- Next: CLI (`add --site`, `sites`/`sites add`, list column, completion), then docs.
+
+---
+
 ## 2026-06-17 — Sites: grouped/flat host list (M2)
 
 - The host list now **groups by site** when idle (`── {site} ({n}) ──` section headers, sites
