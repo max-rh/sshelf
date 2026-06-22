@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-06-22
+
 ### Added
 - **Background port forwarding** (`Ctrl-f` on a host): a popup to start a **Local** (`-L`),
   **Remote** (`-R`) or **Dynamic** (`-D` SOCKS) SSH tunnel, reusing the host's auth exactly as
@@ -107,7 +109,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/max-rh/sshelf/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/max-rh/sshelf/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/max-rh/sshelf/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/max-rh/sshelf/compare/v0.3.0...v0.4.0
