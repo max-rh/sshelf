@@ -47,10 +47,12 @@ list. Actions therefore use **Ctrl** (or function keys) to avoid being typed int
 | `Ctrl-d` | delete selected host (confirm) — M4 |
 | `Ctrl-y` | yank — copy/print the generated `ssh` command without connecting — M3 |
 | `Ctrl-t` | open the dual-pane **file-transfer** screen for the selected host |
+| `Ctrl-f` | open the **port-forward** popup for the selected host (runs in the background) |
 | `Ctrl-o` | import from `~/.ssh/config` (read-only) — M7 |
 | `F1` | help overlay |
 | `F2` | settings (config & hosts-file locations) |
 | `F3` | manage sites (create/edit/delete groups + their shared defaults) |
+| `F4` | manage **port forwards** (list all active, stop any) |
 | `Esc` | clear the query if non-empty, otherwise quit |
 | `Ctrl-c` | quit |
 
@@ -172,6 +174,31 @@ On failure the status line shows the underlying `sftp` error. For more detail, r
 `sshelf --transfer-log <FILE>` (or `$SSHELF_TRANSFER_LOG=<FILE>`): the worker appends every
 `ssh`/`sftp` command and its full stderr to that file. The log holds no secrets — the password
 reaches `ssh` via `SSH_ASKPASS`, never the command line.
+
+## Port forwarding (`Ctrl-f` / `F4`)
+
+`Ctrl-f` on a host opens a small popup to start an SSH port forward that **keeps running in the
+background even after you quit sshelf**. Pick a kind (cycle with ←/→):
+
+- **Local** (`-L`, the default) — open a local port that tunnels to a host reachable from the
+  server (e.g. expose a remote DB at `127.0.0.1:8080`).
+- **Remote** (`-R`) — open a port *on the server* that tunnels back to a host reachable from here.
+- **Dynamic** (`-D`) — a local SOCKS proxy that routes through the server.
+
+Fill in the ports/host (defaults: bind `127.0.0.1`, target host `localhost`) and `Ctrl-s` to
+start. sshelf spawns a detached `ssh -N …`, reusing the host's auth exactly as connect does
+(keys/agent/ProxyJump or the stored password via `SSH_ASKPASS`, plus any site defaults), and
+waits briefly to confirm it bound — a failure (port already in use, a privileged `<1024` port,
+the server refusing a remote bind, or an auth failure) is shown in the popup so you can fix a
+field and retry. On success the TUI returns to the list and the tunnel runs on its own.
+
+`F4` opens the **forwards manager**: every active forward across all hosts, with its host, an
+`L`/`R`/`D` summary (`L  127.0.0.1:8080 → db:3306`), pid and age. `d` (or `k`) → `y` stops the
+selected one. The list refreshes live, so a forward that ends — stopped here, `kill`ed from
+another terminal, or dropped on its own (sleep / network) — disappears within a moment. Forwards
+**survive sshelf exiting** (each is a detached process in its own process group) and the ledger
+(`forwards.json`) is reconciled against the running processes on every launch, so you only ever
+see forwards that are still actually running. See [`decisions.md`](decisions.md) D-021.
 
 ## CLI (outside the TUI)
 

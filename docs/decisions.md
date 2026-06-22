@@ -5,6 +5,36 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-021 · Port forwards are detached `ssh -N` processes tracked by PID
+Background port forwards (`Ctrl-f` popup, `F4` manager) must keep running after sshelf exits.
+Each forward is **one detached `ssh -N -L|-R|-D <spec>` process**, reusing `ssh::build_args` +
+`ssh::configure_askpass` (so keys/agent/ProxyJump/stored-password and site defaults all work as
+connect does). It is spawned with `std::os::unix::process::CommandExt::process_group(0)` (std,
+**no new dep**) and null stdin/stdout, which makes it survive both sshelf exiting (orphaned →
+reparented to init) and the terminal closing (its own process group never receives the shell's
+SIGHUP). **Nothing kills a forward on `Drop` or app shutdown** — that is what keeps it alive.
+Validated by an M0 spike: a `process_group(0)` child with null stdio outlives its spawner
+(PPID→1) in its own process group, and `kill -TERM` stops it.
+
+There is no daemon. The running processes are the source of truth; `forwards.json` (mirrors
+`state.json`: `#[serde(transparent)]` over a `Vec`, `atomic_write` `0600`) is just a remembered
+list of PIDs. `reconcile` re-validates each PID via `ps -ww -o state=,command=`: a forward stays
+only if the process exists, isn't a zombie (`state != Z` — so a dead-but-unreaped child we
+spawned this session is correctly seen as gone), **and** its command line still matches our
+`ssh … <spec>` (a **PID-reuse guard** — a recycled pid is never counted alive or signalled).
+Reconcile runs on startup, on opening the manager, and on the ~100ms event-loop tick while it's
+open. Readiness/errors: `-o ExitOnForwardFailure=yes` makes ssh exit non-zero on a bind failure;
+spawn polls `try_wait` for ~2.5s and, on an early exit, maps the stderr (captured to a temp file,
+not a pipe, so a long-lived ssh never gets SIGPIPE) to a friendly message (port in use,
+privileged port, server refused, auth failed). A third kind, **Dynamic** (`-D` SOCKS), was added
+alongside Local/Remote. Rejected: a worker thread per forward (the transfer model — unneeded, a
+forward has no ongoing protocol to service, just liveness); holding the `Child` for `try_wait`
+(can't track forwards from a previous session, and splits liveness into two code paths); `ssh -f`
+(clean daemonize but hides the real PID, breaking the reuse guard and individual kill);
+`libc::setsid`/`nix::kill` (a new dep the project avoids — `process_group(0)` + shelling to
+`ps`/`kill`, as we already shell to `ssh`/`sftp`, is dep-free); kill-only for v1 (restart of a
+dropped forward is deferred — the spec is persisted, so it's an easy fast-follow).
+
 ### D-020 · Sites: one-per-host grouping with optional inherited SSH defaults
 Hosts can belong to a **Site** (a data center / project), distinct from many-valued free-form
 `tags`. A site is **one per host** and may carry **optional** shared SSH defaults — `user`,

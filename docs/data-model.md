@@ -11,6 +11,7 @@ config hand-editable instead of buried in macOS `~/Library`.
 | `hosts.toml` | `~/.config/sshelf/hosts.toml` | user | The host database. Human-editable. |
 | `config.toml` | `~/.config/sshelf/config.toml` | user | Preferences (theme, `decay_rate`, sort, keybinds). |
 | `state.json` | `~/.local/share/sshelf/state.json` | app | Frecency counters, keyed by host id. Churns; not for hand-editing. |
+| `forwards.json` | `~/.local/share/sshelf/forwards.json` | app | Ledger of active background port-forwards (PIDs). Reconciled against the OS on launch. Mode `0600`. |
 | `vault.age` | `~/.local/share/sshelf/vault.age` | app | **Fallback** encrypted secret store (only when no OS keyring). Mode `0600`. |
 
 Directories are created on first run (`0700`). **Secrets are never written to `hosts.toml`.**
@@ -72,6 +73,30 @@ deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
 - Kept separate from `hosts.toml` so the user-owned host file stays stable and diff-friendly.
 - Score: `use_count * exp(-decay_rate * days_since_last_used)` (`decay_rate` default `0.2`).
   See [`ux.md`](./ux.md) for how it combines with fuzzy ranking.
+
+## Port-forward ledger (`forwards.json`)
+
+```json
+[
+  {
+    "id": "01J…",                       // ULID; also names the forward's stderr log
+    "host_id": "01J…",                  // originating host id
+    "host_name": "prod-db",             // snapshot for display
+    "kind": "local",                    // "local" | "remote" | "dynamic"
+    "spec": { "listen_port": 8080, "target_host": "db", "target_port": 3306 },
+    "display": "L  127.0.0.1:8080 → db:3306",
+    "pid": 41234,                       // the detached `ssh -N` process
+    "started_at": 1718900000
+  }
+]
+```
+
+- App-owned; written atomically (`0600`). The running `ssh` processes are authoritative — this
+  file is only a remembered list of PIDs, **reconciled** against the OS (`ps`) on startup, on
+  opening the manager, and each tick while it's open. A forward leaves the ledger the moment its
+  process is gone, however it ended. See [`decisions.md`](./decisions.md) D-021.
+- `spec` omits empty fields (`bind` defaults to `127.0.0.1`, `target_host` to `localhost`);
+  Dynamic forwards carry only `listen_port`.
 
 ## Secrets
 

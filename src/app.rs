@@ -14,6 +14,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::config::Config;
+use crate::forwards::{self, ForwardsState};
 use crate::import;
 use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile, Site};
 use crate::paths::Paths;
@@ -24,6 +25,8 @@ use crate::state::FrecencyState;
 use crate::store;
 use crate::transfer::{self, TransferOutcome};
 use crate::ui;
+use crate::ui::forward_popup::{ForwardPopup, ForwardPopupOutcome};
+use crate::ui::forwards::{ForwardsManager, ForwardsOutcome};
 use crate::ui::settings::{Settings, SettingsOutcome};
 use crate::ui::sites::{SitesManager, SitesOutcome};
 use crate::ui::wizard::{Wizard, WizardOutcome};
@@ -50,6 +53,9 @@ pub enum Outcome {
     Yank(usize),
     /// Open the transfer screen for this host (the loop spawns the worker after key handling).
     Transfer(usize),
+    /// Open the new-port-forward popup for this host (the loop opens it after key handling, so
+    /// resolving the host stays out of the testable `on_key`).
+    OpenForwardPopup(usize),
 }
 
 pub struct App {
@@ -73,6 +79,12 @@ pub struct App {
     pub settings: Option<Settings>,
     /// The sites manager (F3), when open.
     pub sites_manager: Option<SitesManager>,
+    /// The new-port-forward popup (Ctrl-f), when open.
+    pub forward_popup: Option<ForwardPopup>,
+    /// The port-forwards manager (F4), when open.
+    pub forwards_manager: Option<ForwardsManager>,
+    /// Active background port-forwards (the `forwards.json` ledger).
+    pub forwards_state: ForwardsState,
     /// The dual-pane file-transfer screen, when open.
     pub transfer: Option<transfer::TransferScreen>,
     /// Transient status line (cleared on next keypress).
@@ -106,6 +118,9 @@ impl App {
             confirm: None,
             settings: None,
             sites_manager: None,
+            forward_popup: None,
+            forwards_manager: None,
+            forwards_state: ForwardsState::default(),
             transfer: None,
             status: None,
             should_quit: false,
@@ -186,6 +201,14 @@ impl App {
             self.on_key_sites(key);
             return Outcome::Continue;
         }
+        if self.forward_popup.is_some() {
+            self.on_key_forward_popup(key);
+            return Outcome::Continue;
+        }
+        if self.forwards_manager.is_some() {
+            self.on_key_forwards(key);
+            return Outcome::Continue;
+        }
         match self.screen {
             Screen::Help => {
                 self.screen = Screen::List;
@@ -223,6 +246,10 @@ impl App {
                     return Outcome::Transfer(i);
                 }
             }
+            (KeyCode::Char('f'), true) => match self.current() {
+                Some(i) => return Outcome::OpenForwardPopup(i),
+                None => self.set_status("no host selected"),
+            },
             (KeyCode::Char('a'), true) => {
                 let names = self.site_names();
                 self.wizard = Some(Wizard::new_add(&names));
@@ -249,6 +276,7 @@ impl App {
             (KeyCode::F(1), _) => self.screen = Screen::Help,
             (KeyCode::F(2), _) => self.open_settings(),
             (KeyCode::F(3), _) => self.open_sites(),
+            (KeyCode::F(4), _) => self.open_forwards(),
             (KeyCode::Backspace, _) => {
                 self.query.pop();
                 self.selected = 0;
@@ -507,6 +535,99 @@ impl App {
         }
     }
 
+    /// Open the new-port-forward popup for `idx`. Called from the loop (mirrors `open_transfer`).
+    fn open_forward_popup(&mut self, idx: usize) {
+        self.forward_popup = Some(ForwardPopup::new(idx, self.hosts[idx].name.clone()));
+    }
+
+    fn on_key_forward_popup(&mut self, key: KeyEvent) {
+        let outcome = match self.forward_popup.as_mut() {
+            Some(p) => p.handle_key(key),
+            None => return,
+        };
+        match outcome {
+            ForwardPopupOutcome::Continue => {}
+            ForwardPopupOutcome::Cancel => self.forward_popup = None,
+            ForwardPopupOutcome::Create { kind, spec } => {
+                let Some(idx) = self.forward_popup.as_ref().map(ForwardPopup::host_idx) else {
+                    return;
+                };
+                // Resolve site defaults (bastion/user/port/identity) before building the ssh
+                // command; secrets/frecency still key on the original `host.id`.
+                let host = self.hosts[idx].with_site_defaults(&self.sites);
+                let has_secret = secrets::get_password(&self.paths.vault_file(), &host.id)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                // Spawning blocks briefly (~2.5s) to catch a bind/auth failure; see forwards.rs.
+                match forwards::spawn_forward(&host, &self.hosts[idx].name, has_secret, kind, spec)
+                {
+                    Ok(entry) => {
+                        let display = entry.display.clone();
+                        self.forwards_state.forwards.push(entry);
+                        if let Err(e) = self.forwards_state.save(&self.paths.forwards_file()) {
+                            self.set_status(format!("forward up, but not saved: {e}"));
+                        } else {
+                            self.set_status(format!("forward up · {display}"));
+                        }
+                        self.forward_popup = None;
+                    }
+                    Err(e) => {
+                        if let Some(p) = self.forward_popup.as_mut() {
+                            p.set_error(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Open the port-forwards manager (F4). Reconciles first so it opens showing only forwards
+    /// that are still actually running.
+    fn open_forwards(&mut self) {
+        self.reconcile_forwards();
+        self.forwards_manager = Some(ForwardsManager::new(self.forwards_state.forwards.clone()));
+    }
+
+    fn on_key_forwards(&mut self, key: KeyEvent) {
+        let outcome = match self.forwards_manager.as_mut() {
+            Some(m) => m.handle_key(key),
+            None => return,
+        };
+        match outcome {
+            ForwardsOutcome::Continue => {}
+            ForwardsOutcome::Close => self.forwards_manager = None,
+            ForwardsOutcome::Kill(id) => {
+                if let Some(entry) = self.forwards_state.forwards.iter().find(|e| e.id == id) {
+                    forwards::kill(entry);
+                }
+                self.forwards_state.forwards.retain(|e| e.id != id);
+                let _ = self.forwards_state.save(&self.paths.forwards_file());
+                self.refresh_forwards_manager();
+                self.set_status("forward stopped");
+            }
+        }
+    }
+
+    /// Drop ledger entries whose process has ended; persist if anything changed.
+    fn reconcile_forwards(&mut self) {
+        if !forwards::reconcile(&mut self.forwards_state).is_empty() {
+            let _ = self.forwards_state.save(&self.paths.forwards_file());
+        }
+    }
+
+    /// While the manager is open, reconcile and refresh its snapshot (called each tick, so a
+    /// forward that ends — externally or on its own — disappears within ~100ms without a keypress).
+    pub fn refresh_forwards_manager(&mut self) {
+        if self.forwards_manager.is_none() {
+            return;
+        }
+        self.reconcile_forwards();
+        if let Some(m) = self.forwards_manager.as_mut() {
+            m.set_forwards(self.forwards_state.forwards.clone());
+        }
+    }
+
     fn move_down(&mut self) {
         if !self.order.is_empty() && self.selected + 1 < self.order.len() {
             self.selected += 1;
@@ -560,6 +681,15 @@ fn run_with(start_add: bool) -> Result<()> {
     let file = store::load_hosts(&config.hosts_path(&paths))?;
     let state = FrecencyState::load(&paths.state_file())?;
     let mut app = App::new(file.hosts, file.sites, state, config, paths);
+    // Load the active-forward ledger and reconcile it against reality (drop any that ended while
+    // sshelf was closed), so the user sees only forwards that are still actually running.
+    match ForwardsState::load(&app.paths.forwards_file()) {
+        Ok(fs) => {
+            app.forwards_state = fs;
+            app.reconcile_forwards();
+        }
+        Err(e) => eprintln!("sshelf: warning: could not load forwards: {e:#}"),
+    }
     if start_add {
         let names = app.site_names();
         app.wizard = Some(Wizard::new_add(&names));
@@ -593,9 +723,9 @@ fn run_with(start_add: bool) -> Result<()> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
-        if app.transfer.is_some() {
-            // The transfer screen is live: poll so worker events and progress animate without a
-            // keypress, then drain whatever the worker produced this tick.
+        // The transfer screen and the forwards manager are "live": poll so worker events /
+        // progress animate and a forward that dies disappears, both without needing a keypress.
+        if app.transfer.is_some() || app.forwards_manager.is_some() {
             if event::poll(Duration::from_millis(100))?
                 && let Event::Key(key) = event::read()?
             {
@@ -604,6 +734,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
             if let Some(screen) = app.transfer.as_mut() {
                 screen.drain_events();
             }
+            app.refresh_forwards_manager();
         } else if let Event::Key(key) = event::read()? {
             dispatch(app, key);
         }
@@ -628,6 +759,7 @@ fn dispatch(app: &mut App, key: KeyEvent) {
             }
         }
         Outcome::Transfer(idx) => app.open_transfer(idx),
+        Outcome::OpenForwardPopup(idx) => app.open_forward_popup(idx),
         Outcome::Continue => {}
     }
 }
@@ -765,6 +897,70 @@ mod tests {
         assert_eq!(
             app.on_key(ctrl(KeyCode::Char('t'))),
             Outcome::Transfer(expected)
+        );
+    }
+
+    #[test]
+    fn ctrl_f_opens_forward_popup_for_selected() {
+        let mut app = test_app();
+        let expected = app.order[app.selected];
+        assert_eq!(
+            app.on_key(ctrl(KeyCode::Char('f'))),
+            Outcome::OpenForwardPopup(expected)
+        );
+    }
+
+    #[test]
+    fn forward_popup_captures_keys() {
+        let mut app = test_app();
+        app.open_forward_popup(0);
+        assert!(app.forward_popup.is_some());
+        // typing now goes to the popup, not the query
+        app.on_key(key(KeyCode::Char('z')));
+        assert!(app.query.is_empty());
+        assert!(app.forward_popup.is_some());
+        // esc closes it
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.forward_popup.is_none());
+    }
+
+    #[test]
+    fn f4_opens_forwards_manager() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::F(4)));
+        assert!(app.forwards_manager.is_some());
+        // typing routes to the manager, not the query
+        app.on_key(key(KeyCode::Char('z')));
+        assert!(app.query.is_empty());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.forwards_manager.is_none());
+    }
+
+    #[test]
+    fn opening_the_manager_reconciles_dead_forwards() {
+        use crate::forwards::{ForwardEntry, ForwardKind, ForwardSpec};
+        let mut app = test_app();
+        // A ledger entry pointing at a pid that is not our forward (here, pid 1 = launchd):
+        // reconcile must drop it when the manager opens.
+        app.forwards_state.forwards.push(ForwardEntry {
+            id: "bogus".into(),
+            host_id: "h".into(),
+            host_name: "web".into(),
+            kind: ForwardKind::Local,
+            spec: ForwardSpec {
+                bind: None,
+                listen_port: 8080,
+                target_host: Some("db".into()),
+                target_port: Some(3306),
+            },
+            display: "L  127.0.0.1:8080 → db:3306".into(),
+            pid: 1,
+            started_at: 0,
+        });
+        app.on_key(key(KeyCode::F(4)));
+        assert!(
+            app.forwards_state.forwards.is_empty(),
+            "dead forward should be reconciled away"
         );
     }
 

@@ -31,6 +31,9 @@ your editor, and adds things plain SSH config can't express as nicely:
 - **Dual-pane file transfer** (`Ctrl-t`) — a two-pane browser to copy files and folders to and
   from a host over SFTP/SCP, with fuzzy search on both sides and live progress. It authenticates
   once (reusing the host's keys/agent or stored password) and never touches `~/.ssh/config`.
+- **Background port forwarding** (`Ctrl-f`) — start a Local (`-L`), Remote (`-R`) or Dynamic
+  (`-D` SOCKS) SSH tunnel that **keeps running after you quit sshelf**. A manager screen (`F4`)
+  lists every active forward and stops any; they're reconciled against the OS on each launch.
 - **Guided add/edit form** — hostname, user, port, auth, jump hosts, tags, site, extra args.
 - **Sites** (`F3`) — group hosts (one per host, e.g. a data center) and optionally give the site
   a **shared bastion + default user/port/key** that members inherit at connect time. The list
@@ -99,7 +102,8 @@ echo "$PASS" | sshelf set-password <name>   # store a password (scriptable / hea
 
 **Keys:** type to filter · `tag:NAME` / `site:NAME` to filter · `↑/↓` move · `Enter` connect ·
 `Ctrl-a` add · `Ctrl-e` edit · `Ctrl-d` delete · `Ctrl-y` yank the `ssh` command · `Ctrl-t`
-transfer files · `Ctrl-o` import · `F1` help · `F2` settings · `F3` sites · `Esc`/`Ctrl-c` quit.
+transfer files · `Ctrl-f` port-forward · `Ctrl-o` import · `F1` help · `F2` settings · `F3` sites ·
+`F4` forwards · `Esc`/`Ctrl-c` quit.
 
 In the **add/edit** form the Key field picks an identity: `←/→` cycles keys found in `~/.ssh`
 (including `.pem`), and `Enter` opens a file browser (type to fuzzy-filter) to choose a key

@@ -5,6 +5,17 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+- **Background port forwarding** (`Ctrl-f` on a host): a popup to start a **Local** (`-L`),
+  **Remote** (`-R`) or **Dynamic** (`-D` SOCKS) SSH tunnel, reusing the host's auth exactly as
+  connect does (keys / agent / ProxyJump / stored password, plus site defaults). The forward runs
+  as a detached background process that **keeps running after you quit sshelf**, and a bind/auth
+  failure (port in use, privileged port, server refused) is reported in the popup. A new
+  **forwards manager** (`F4`) lists every active forward across hosts with its pid and age and
+  stops any (`d`/`k` → `y`); the list refreshes live and is reconciled against the running
+  processes on each launch, so it only ever shows forwards that are still actually running.
+  Tracked in `forwards.json`. No new dependencies.
+
 ## [0.6.0] — 2026-06-20
 
 ### Added
