@@ -2,9 +2,10 @@
 
 > Keep this in sync with the actual tree (the docs-in-sync rule).
 >
-> **All modules present:** `main`, `app`, `askpass`, `config`, `import`, `model`, `paths`,
-> `search`, `secrets`, `ssh`, `state`, `store`, `transfer/{mod,worker,pane,screen}`, `vault`,
-> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer}`.
+> **All modules present:** `main`, `app`, `askpass`, `config`, `forwards`, `import`, `model`,
+> `paths`, `search`, `secrets`, `ssh`, `state`, `store`, `transfer/{mod,worker,pane,screen,e2e}`,
+> `testsupport` (test-only), `vault`,
+> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards}`.
 > (`error.rs` was removed — the codebase uses `anyhow` throughout.)
 
 ## Repository
@@ -30,6 +31,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `model.rs` | `Host` + `Site` structs (+ `AuthMethod`); `Host::with_site_defaults`/`find_site` (site inheritance); serde derives. |
 | `store.rs` | Load/save `hosts.toml` with atomic write (temp + rename); load `config.toml`. |
 | `state.rs` | Frecency state (`use_count`, `last_used`) load/save (`state.json`); score computation. |
+| `forwards.rs` | Background port-forwards: the `ForwardSpec`/`ForwardEntry` model, the `-L/-R/-D` argv builder, spawn (detached `ssh -N` + readiness/error mapping), PID liveness/kill via `ps`/`kill`, reconcile, and `forwards.json` load/save. |
 | `secrets.rs` | `SecretStore` trait → keyring backend + `age`-vault fallback; `zeroize` on secrets. |
 | `ssh.rs` | Build `ssh` argv from a `Host`; terminal teardown + `exec()` handoff; askpass env wiring. |
 | `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer only password prompts via `secrets`. |
@@ -47,6 +49,8 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `ui/browse.rs` | File-browser modal (fuzzy-filtered) for picking a key file anywhere on disk. |
 | `ui/settings.rs` | Settings screen (F2): config-file display + editable hosts-file location. |
 | `ui/sites.rs` | Sites manager (F3): list + add/edit/delete sites and their optional defaults; emits renames for the app to cascade. |
+| `ui/forward_popup.rs` | New-port-forward popup (Ctrl-f): kind chooser (Local/Remote/Dynamic) + ports/host fields + validation; emits a `ForwardSpec` for the app to spawn. |
+| `ui/forwards.rs` | Port-forwards manager (F4): lists all active forwards from a live snapshot; emits a kill request for the app to act on. |
 | `ui/help.rs` | Help overlay. |
 | `ui/widgets.rs` | Shared widgets: single-line text input (hand-rolled), keybind hint bar, confirm modal. |
 

@@ -9,7 +9,7 @@ use super::centered;
 use crate::app::App;
 
 pub fn render(frame: &mut Frame, _app: &App) {
-    let area = centered(frame.area(), 58, 21);
+    let area = centered(frame.area(), 58, 23);
     frame.render_widget(Clear, area);
 
     let lines = vec![
@@ -26,10 +26,12 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  ^a / ^e / ^d    add / edit / delete host"),
         Line::from("  ^y              yank the ssh command"),
         Line::from("  ^t              transfer files (SFTP)"),
+        Line::from("  ^f              port forward (runs in the background)"),
         Line::from("  ^o              import from ~/.ssh/config"),
         Line::from("  F1              this help"),
         Line::from("  F2              settings (config & hosts file)"),
         Line::from("  F3              manage sites"),
+        Line::from("  F4              manage port forwards"),
         Line::from("  esc             clear query, then quit"),
         Line::from("  ^c              quit"),
         Line::from(""),

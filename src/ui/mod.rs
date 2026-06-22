@@ -2,6 +2,8 @@
 //! ratatui's `TestBackend` (no real terminal needed).
 
 mod browse;
+pub(crate) mod forward_popup;
+pub(crate) mod forwards;
 mod help;
 mod list;
 pub(crate) mod settings;
@@ -85,6 +87,14 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if let Some(m) = &app.sites_manager {
         sites::render(frame, m);
+        return;
+    }
+    if let Some(p) = &app.forward_popup {
+        forward_popup::render(frame, p);
+        return;
+    }
+    if let Some(m) = &app.forwards_manager {
+        forwards::render(frame, m);
         return;
     }
     list::render(frame, app);

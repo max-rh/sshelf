@@ -3,8 +3,27 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Sites — group hosts with optional inherited SSH defaults, targeting
-**v0.6.0**. v1 acceptance gates closed.
+**Current milestone:** Port forwarding — background SSH tunnels that outlive sshelf, targeting
+**v0.7.0**. (Sites shipped in v0.6.0.)
+
+---
+
+## 2026-06-21 — Port forwarding: background SSH tunnels (M0–M4)
+
+- New feature: **background port forwards** that survive sshelf exiting. `Ctrl-f` on a host opens
+  a popup (Local `-L` / Remote `-R` / Dynamic `-D` SOCKS); `F4` opens a manager that lists every
+  active forward and stops any.
+- Each forward is a detached `ssh -N` process in its own process group (std `process_group(0)`,
+  no new dep), tracked by PID in `forwards.json` and reconciled against the OS (`ps`) on launch,
+  on opening the manager, and each tick while it's open — with a zombie filter and a PID-reuse
+  guard. `ExitOnForwardFailure=yes` + a brief readiness poll surfaces bind/auth errors in the
+  popup. An M0 spike confirmed detached survival (PPID→1, own process group); an `#[ignore]` e2e
+  drives a real `-L` through a localhost sshd (bind → traffic → busy-port failure → kill).
+- New modules `forwards.rs`, `ui/forward_popup.rs`, `ui/forwards.rs`; the sshd e2e helper was
+  extracted into a shared `testsupport` module (transfer e2e now uses it too). Docs synced
+  (decisions D-021, data-model `forwards.json`, ux, structure, README, CHANGELOG). 168 tests +
+  2 e2e; clippy `-D warnings` + fmt clean. Targets **v0.7.0** via `feat/port-forward` → PR →
+  cut-release.
 
 ---
 

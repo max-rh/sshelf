@@ -8,6 +8,7 @@
 mod app;
 mod askpass;
 mod config;
+mod forwards;
 mod import;
 mod model;
 mod paths;
@@ -16,6 +17,8 @@ mod secrets;
 mod ssh;
 mod state;
 mod store;
+#[cfg(test)]
+mod testsupport;
 mod transfer;
 mod ui;
 mod vault;

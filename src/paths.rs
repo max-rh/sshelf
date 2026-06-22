@@ -62,6 +62,11 @@ impl Paths {
         self.data_dir.join("state.json")
     }
 
+    /// App-owned ledger of active background port-forwards.
+    pub fn forwards_file(&self) -> PathBuf {
+        self.data_dir.join("forwards.json")
+    }
+
     /// Encrypted secret vault (fallback when no OS keyring is available).
     #[allow(dead_code)] // used by the vault backend (M5)
     pub fn vault_file(&self) -> PathBuf {
