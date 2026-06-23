@@ -29,6 +29,7 @@ use crate::ui::forward_popup::{ForwardPopup, ForwardPopupOutcome};
 use crate::ui::forwards::{ForwardsManager, ForwardsOutcome};
 use crate::ui::settings::{Settings, SettingsOutcome};
 use crate::ui::sites::{SitesManager, SitesOutcome};
+use crate::ui::two_factor::{TwoFactorOutcome, TwoFactorPopup};
 use crate::ui::wizard::{Wizard, WizardOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +86,10 @@ pub struct App {
     pub forwards_manager: Option<ForwardsManager>,
     /// Active background port-forwards (the `forwards.json` ledger).
     pub forwards_state: ForwardsState,
+    /// The 2FA verification-code popup, shown before connecting to a `requires_2fa` host.
+    pub two_factor: Option<TwoFactorPopup>,
+    /// A one-time 2FA code collected for the pending connect; passed to `ssh` after teardown.
+    pub pending_2fa_code: Option<String>,
     /// The dual-pane file-transfer screen, when open.
     pub transfer: Option<transfer::TransferScreen>,
     /// Transient status line (cleared on next keypress).
@@ -121,6 +126,8 @@ impl App {
             forward_popup: None,
             forwards_manager: None,
             forwards_state: ForwardsState::default(),
+            two_factor: None,
+            pending_2fa_code: None,
             transfer: None,
             status: None,
             should_quit: false,
@@ -207,6 +214,10 @@ impl App {
         }
         if self.forwards_manager.is_some() {
             self.on_key_forwards(key);
+            return Outcome::Continue;
+        }
+        if self.two_factor.is_some() {
+            self.on_key_two_factor(key);
             return Outcome::Continue;
         }
         match self.screen {
@@ -535,6 +546,32 @@ impl App {
         }
     }
 
+    /// Open the 2FA code popup for `idx` (a `requires_2fa` host). On submit it queues the code +
+    /// the pending connect and quits, so the real `exec()` happens after terminal restore.
+    fn open_two_factor(&mut self, idx: usize) {
+        self.two_factor = Some(TwoFactorPopup::new(idx, self.hosts[idx].name.clone()));
+    }
+
+    fn on_key_two_factor(&mut self, key: KeyEvent) {
+        let outcome = match self.two_factor.as_mut() {
+            Some(p) => p.handle_key(key),
+            None => return,
+        };
+        match outcome {
+            TwoFactorOutcome::Continue => {}
+            TwoFactorOutcome::Cancel => self.two_factor = None,
+            TwoFactorOutcome::Submit(code) => {
+                let idx = self.two_factor.as_ref().map(TwoFactorPopup::host_idx);
+                self.two_factor = None;
+                if let Some(idx) = idx {
+                    self.pending_2fa_code = Some(code);
+                    self.pending_connect = Some(idx);
+                    self.should_quit = true;
+                }
+            }
+        }
+    }
+
     /// Open the new-port-forward popup for `idx`. Called from the loop (mirrors `open_transfer`).
     fn open_forward_popup(&mut self, idx: usize) {
         self.forward_popup = Some(ForwardPopup::new(idx, self.hosts[idx].name.clone()));
@@ -714,8 +751,10 @@ fn run_with(start_add: bool) -> Result<()> {
             .ok()
             .flatten()
             .is_some();
-        // Replaces this process on success; returns only on failure.
-        return Err(ssh::exec_connect(&host, has_secret));
+        // Replaces this process on success; returns only on failure. A 2FA code, if the user
+        // entered one in the popup, rides through the askpass helper.
+        let two_fa = app.pending_2fa_code.as_deref();
+        return Err(ssh::exec_connect(&host, has_secret, two_fa));
     }
     Ok(())
 }
@@ -747,8 +786,13 @@ fn dispatch(app: &mut App, key: KeyEvent) {
     match app.on_key(key) {
         Outcome::Quit => app.should_quit = true,
         Outcome::Connect(idx) => {
-            app.pending_connect = Some(idx);
-            app.should_quit = true;
+            if app.hosts[idx].requires_2fa {
+                // Collect the verification code first; the connect happens on the popup's submit.
+                app.open_two_factor(idx);
+            } else {
+                app.pending_connect = Some(idx);
+                app.should_quit = true;
+            }
         }
         Outcome::Yank(idx) => {
             let cmd = ssh::command_string(&app.hosts[idx].with_site_defaults(&app.sites));
@@ -898,6 +942,53 @@ mod tests {
             app.on_key(ctrl(KeyCode::Char('t'))),
             Outcome::Transfer(expected)
         );
+    }
+
+    #[test]
+    fn connecting_to_2fa_host_opens_code_popup_instead() {
+        let mut app = test_app();
+        let sel = app.order[app.selected];
+        app.hosts[sel].requires_2fa = true;
+        dispatch(&mut app, key(KeyCode::Enter));
+        assert!(
+            app.two_factor.is_some(),
+            "a 2FA host should open the code popup"
+        );
+        assert!(!app.should_quit);
+        assert!(app.pending_connect.is_none());
+    }
+
+    #[test]
+    fn connecting_to_normal_host_skips_the_popup() {
+        let mut app = test_app();
+        dispatch(&mut app, key(KeyCode::Enter));
+        assert!(app.two_factor.is_none());
+        assert!(app.should_quit);
+        assert!(app.pending_connect.is_some());
+    }
+
+    #[test]
+    fn two_factor_submit_queues_code_and_connects() {
+        let mut app = test_app();
+        app.open_two_factor(1);
+        for c in "654321".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.two_factor.is_none());
+        assert_eq!(app.pending_connect, Some(1));
+        assert_eq!(app.pending_2fa_code.as_deref(), Some("654321"));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn two_factor_esc_cancels_without_connecting() {
+        let mut app = test_app();
+        app.open_two_factor(0);
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.two_factor.is_none());
+        assert!(app.pending_connect.is_none());
+        assert!(app.pending_2fa_code.is_none());
     }
 
     #[test]

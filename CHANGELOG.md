@@ -5,6 +5,15 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+- **Two-factor (2FA) hosts** — flag a host (add/edit form, or `sshelf add … --2fa`) whose login
+  needs an interactive verification code (TOTP / keyboard-interactive). On connect, sshelf shows a
+  popup to enter the current code and supplies it to the prompt through the same `SSH_ASKPASS`
+  helper that supplies a stored password — fixing connects that previously failed, because a
+  stored-secret connect runs with `SSH_ASKPASS_REQUIRE=force` (which routes the code prompt to the
+  helper with no terminal fallback). `sshelf <host>` from the CLI prompts on the terminal. Manual
+  entry only — no TOTP seeds are stored. No new dependencies.
+
 ## [0.7.0] — 2026-06-22
 
 ### Added

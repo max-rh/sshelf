@@ -193,7 +193,7 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
 fn open_master(host: &Host, has_secret: bool, socket: &Path) -> std::io::Result<Child> {
     let mut cmd = Command::new("ssh");
     cmd.args(master_args(host, socket));
-    ssh::configure_askpass(&mut cmd, host, has_secret);
+    ssh::configure_askpass(&mut cmd, host, has_secret, None);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped()); // kept so a failed handshake can explain itself

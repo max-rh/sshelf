@@ -174,6 +174,9 @@ struct AddArgs {
     /// keeping the secret out of argv and shell history. Implies `--auth password`.
     #[arg(long)]
     password_stdin: bool,
+    /// The host's login needs an interactive verification code (2FA): connect prompts for it.
+    #[arg(long = "2fa")]
+    requires_2fa: bool,
 }
 
 /// CLI spelling of the auth method, kept separate from `model::AuthMethod` so the model stays
@@ -210,6 +213,7 @@ impl AddArgs {
             || self.site.is_some()
             || self.extra_args.is_some()
             || self.password_stdin
+            || self.requires_2fa
     }
 
     /// Effective auth method, with inference from --identity / --password-stdin.
@@ -240,6 +244,7 @@ impl AddArgs {
         host.tags = self.tags;
         host.site = self.site;
         host.extra_args = self.extra_args;
+        host.requires_2fa = self.requires_2fa;
         Ok(host)
     }
 }
@@ -667,7 +672,27 @@ fn connect(host: &Host, paths: &Paths) -> Result<()> {
         .flatten()
         .is_some();
     // Replaces this process on success; returns only on failure.
-    Err(ssh::exec_connect(host, has_secret))
+    let code = prompt_2fa_code(host);
+    Err(ssh::exec_connect(host, has_secret, code.as_deref()))
+}
+
+/// For a host flagged `requires_2fa`, prompt on the terminal for the one-time code before the
+/// `exec()` handoff (the CLI has no TUI popup). Returns `None` for non-2FA hosts or on read error.
+fn prompt_2fa_code(host: &Host) -> Option<String> {
+    if !host.requires_2fa {
+        return None;
+    }
+    use std::io::Write;
+    eprint!("Verification code for {}: ", host.name);
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(n) if n > 0 => {
+            let code = line.trim().to_string();
+            (!code.is_empty()).then_some(code)
+        }
+        _ => None,
+    }
 }
 
 /// Find a host by exact name or id.
