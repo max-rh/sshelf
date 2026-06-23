@@ -100,6 +100,16 @@ pub struct Host {
     /// inherited defaults; an undefined name degrades to pure grouping (no inheritance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
+    /// The login needs an interactive second factor (a keyboard-interactive verification code,
+    /// e.g. TOTP). When set, connect prompts for the code first and supplies it to `ssh` via the
+    /// askpass helper. Required because a connect that auto-supplies a stored secret runs with
+    /// `SSH_ASKPASS_REQUIRE=force`, which otherwise can't answer the code prompt. See D-022.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub requires_2fa: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Host {
@@ -117,6 +127,7 @@ impl Host {
             tags: Vec::new(),
             extra_args: None,
             site: None,
+            requires_2fa: false,
         }
     }
 

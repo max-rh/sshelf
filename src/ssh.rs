@@ -79,44 +79,58 @@ pub fn command_string(host: &Host) -> String {
 /// error only if the exec itself fails (e.g. `ssh` not found). The caller must have already
 /// restored the terminal.
 #[cfg(unix)]
-pub fn exec_connect(host: &Host, wire_askpass: bool) -> anyhow::Error {
+pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) -> anyhow::Error {
     use std::os::unix::process::CommandExt;
     let args = build_args(host, true);
     let mut cmd = std::process::Command::new("ssh");
     cmd.args(&args);
-    configure_askpass(&mut cmd, host, wire_askpass);
+    configure_askpass(&mut cmd, host, wire_askpass, two_fa_code);
     // exec() returns only on failure.
     anyhow::anyhow!("failed to launch ssh: {}", cmd.exec())
 }
 
 #[cfg(not(unix))]
-pub fn exec_connect(host: &Host, wire_askpass: bool) -> anyhow::Error {
+pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) -> anyhow::Error {
     // No process-replacement on non-unix; spawn + wait, then mirror the exit code.
     let args = build_args(host, true);
     let mut cmd = std::process::Command::new("ssh");
     cmd.args(&args);
-    configure_askpass(&mut cmd, host, wire_askpass);
+    configure_askpass(&mut cmd, host, wire_askpass, two_fa_code);
     match cmd.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(e) => anyhow::anyhow!("failed to launch ssh: {e}"),
     }
 }
 
-/// Wire our own binary as the `SSH_ASKPASS` helper so the stored secret (a login password OR
-/// a key passphrase) is supplied automatically. Only when `wire_askpass` is set (a secret
-/// exists); otherwise clear any inherited askpass so ssh prompts / uses the agent normally.
+/// Wire our own binary as the `SSH_ASKPASS` helper so the stored secret (a login password OR a
+/// key passphrase) and/or a queued one-time 2FA code are supplied automatically. The helper is
+/// wired (with `SSH_ASKPASS_REQUIRE=force`) when there's a secret to supply (`wire_askpass`) OR a
+/// `two_fa_code` to inject; otherwise any inherited askpass is cleared so ssh prompts / uses the
+/// agent normally.
 ///
-/// Reused by the transfer worker to authenticate the ControlMaster exactly as connect does.
-pub(crate) fn configure_askpass(cmd: &mut std::process::Command, host: &Host, wire_askpass: bool) {
+/// Reused by the transfer worker + the port-forward spawner to authenticate exactly as connect
+/// does (they pass `two_fa_code: None`).
+pub(crate) fn configure_askpass(
+    cmd: &mut std::process::Command,
+    host: &Host,
+    wire_askpass: bool,
+    two_fa_code: Option<&str>,
+) {
     cmd.env_remove("SSH_ASKPASS")
-        .env_remove("SSH_ASKPASS_REQUIRE");
+        .env_remove("SSH_ASKPASS_REQUIRE")
+        .env_remove(crate::askpass::CODE_ENV);
     if !wire_askpass {
-        // No stored secret → the askpass helper never runs, so the exec'd ssh has no
-        // business inheriting the vault master passphrase (it may be exported in the
-        // shell for headless use). In the wired case it must stay: the helper runs as
-        // ssh's child and reads it to unlock the vault (see docs/ssh-command.md).
+        // No stored secret → the exec'd ssh (and our helper) has no business inheriting the
+        // vault master passphrase (it may be exported in the shell for headless use). In the
+        // wired case it must stay: the helper runs as ssh's child and reads it to unlock the
+        // vault (see docs/ssh-command.md). A 2FA-only wire still scrubs it (no secret lookup).
         cmd.env_remove(crate::secrets::VAULT_PASS_ENV);
+    }
+    if !wire_askpass && two_fa_code.is_none() {
         return;
+    }
+    if let Some(code) = two_fa_code {
+        cmd.env(crate::askpass::CODE_ENV, code);
     }
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("SSH_ASKPASS", exe)
@@ -225,7 +239,7 @@ mod tests {
     fn vault_env_scrubbed_when_askpass_not_wired() {
         let h = Host::new("a", "h");
         let mut cmd = std::process::Command::new("ssh");
-        configure_askpass(&mut cmd, &h, false);
+        configure_askpass(&mut cmd, &h, false, None);
         // env_remove shows up as (key, None) in get_envs()
         let scrubbed = cmd
             .get_envs()
@@ -234,13 +248,18 @@ mod tests {
             scrubbed,
             "vault passphrase must not leak into a no-askpass ssh"
         );
+        // And no askpass is wired.
+        assert!(
+            !cmd.get_envs()
+                .any(|(k, v)| k == std::ffi::OsStr::new("SSHELF_ASKPASS") && v.is_some())
+        );
     }
 
     #[test]
     fn vault_env_kept_when_askpass_wired() {
         let h = Host::new("a", "h");
         let mut cmd = std::process::Command::new("ssh");
-        configure_askpass(&mut cmd, &h, true);
+        configure_askpass(&mut cmd, &h, true, None);
         // Wired: the helper (ssh's child) needs the env var to unlock the vault.
         let scrubbed = cmd
             .get_envs()
@@ -250,5 +269,30 @@ mod tests {
             .get_envs()
             .any(|(k, v)| k == std::ffi::OsStr::new("SSHELF_ASKPASS") && v.is_some());
         assert!(wired);
+    }
+
+    #[test]
+    fn two_fa_code_wires_askpass_and_sets_code_env() {
+        let h = Host::new("a", "h");
+        let mut cmd = std::process::Command::new("ssh");
+        // No stored secret, but a 2FA code is queued (e.g. a key+2FA host).
+        configure_askpass(&mut cmd, &h, false, Some("123456"));
+        // The helper is wired so it can answer the verification-code prompt…
+        assert!(
+            cmd.get_envs()
+                .any(|(k, v)| k == std::ffi::OsStr::new("SSHELF_ASKPASS") && v.is_some())
+        );
+        // …the code rides in SSHELF_2FA_CODE…
+        assert!(
+            cmd.get_envs()
+                .any(|(k, v)| k == std::ffi::OsStr::new(crate::askpass::CODE_ENV)
+                    && v == Some(std::ffi::OsStr::new("123456")))
+        );
+        // …and with no stored secret the vault passphrase is still scrubbed.
+        assert!(
+            cmd.get_envs()
+                .any(|(k, v)| v.is_none()
+                    && k == std::ffi::OsStr::new(crate::secrets::VAULT_PASS_ENV))
+        );
     }
 }

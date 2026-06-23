@@ -5,6 +5,28 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-022 · Interactive 2FA: collect the code before connect, inject it via the askpass helper
+A connect that auto-supplies a stored secret runs `ssh` with `SSH_ASKPASS_REQUIRE=force`, which
+routes **every** interactive prompt — including a server's keyboard-interactive verification-code
+step — to our askpass helper; the helper declined it, and a spike confirmed `force` gives **no
+terminal fallback**, so the code prompt was answered empty and auth failed (a real user hit this).
+A during-session popup is impossible (connect `exec()`s into `ssh`), and a PTY screen-scraper was
+already rejected (D-019). So 2FA is handled the same way the password is: a per-host
+**`requires_2fa`** flag makes connect show a small code popup *before* the `exec()` (while the TUI
+is alive); the entered one-time code is passed to `ssh` via `SSHELF_2FA_CODE` (like the vault
+passphrase already rides env), and the helper answers the **non-secret** prompt with it. The
+helper's routing: a password/passphrase-shaped prompt → the stored secret (unchanged, anti-phish
+guard intact); any other prompt → the queued code; else decline. `configure_askpass` therefore
+force-wires the helper when a secret exists **or** a code is queued (so key+2FA hosts work too).
+The CLI direct-connect path (`sshelf <host>` / `-`), which has no TUI, prompts for the code on the
+terminal before handoff. Rejected: storing the TOTP **seed** and generating the code ourselves
+(puts the second factor in the same vault as the first, and needs a TOTP dep the project avoids);
+auto-detecting 2FA with no flag (we can't probe the server's auth methods without a separate
+non-`exec` connection). Note: a host with **no** stored secret already prompts for the code inline
+after handoff (no askpass forced), so the flag/popup mainly fixes the stored-secret case; an
+encrypted key with no stored passphrase + 2FA should use an agent (else `force` askpass can't
+answer the passphrase prompt either). v1 is manual entry only.
+
 ### D-021 · Port forwards are detached `ssh -N` processes tracked by PID
 Background port forwards (`Ctrl-f` popup, `F4` manager) must keep running after sshelf exits.
 Each forward is **one detached `ssh -N -L|-R|-D <spec>` process**, reusing `ssh::build_args` +

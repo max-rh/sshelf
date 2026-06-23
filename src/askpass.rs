@@ -1,21 +1,63 @@
 //! Headless `SSH_ASKPASS` helper mode.
 //!
-//! `ssh` invokes us as `sshelf "<prompt>"` (with `SSHELF_ASKPASS=1` in the environment). We
-//! answer **only** password prompts — fetching the secret for `SSHELF_HOST_ID` — and decline
-//! everything else (host-key `yes/no`, key passphrases, OTP) by exiting non-zero, so ssh
-//! handles those itself. This split is mandatory because `SSH_ASKPASS_REQUIRE=force` routes
-//! *every* prompt here (proven by the M0 spike — see docs/ssh-command.md).
+//! `ssh` invokes us as `sshelf "<prompt>"` (with `SSHELF_ASKPASS=1` in the environment). Because
+//! a connect that auto-supplies a stored secret runs with `SSH_ASKPASS_REQUIRE=force`, *every*
+//! interactive prompt is routed here (proven by the M0 spikes — see docs/ssh-command.md), and a
+//! prompt we decline is NOT retried on the terminal — it simply fails. So we answer:
+//!   - **password/passphrase** prompts → the stored secret for `SSHELF_HOST_ID`;
+//!   - any **other** prompt → the one-time 2FA code in `SSHELF_2FA_CODE`, if one was queued for
+//!     this connection (the user entered it just before connecting);
+//!   - otherwise we decline (exit non-zero) — e.g. an unexpected prompt with no code queued.
 
 use crate::paths::Paths;
 use crate::secrets;
 
 const HOST_ID_ENV: &str = "SSHELF_HOST_ID";
+/// Env var carrying a one-time verification code the user entered for this connection.
+pub(crate) const CODE_ENV: &str = "SSHELF_2FA_CODE";
+
+/// What a given prompt should be answered with (decided without IO, so it's unit-testable).
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    /// The stored login password / key passphrase.
+    Secret,
+    /// The queued one-time 2FA code.
+    Code,
+    /// Nothing — decline.
+    Decline,
+}
+
+/// Decide how to answer `prompt`. A password/passphrase prompt always takes the stored secret;
+/// any other prompt takes the queued code when one is present (the user opted into 2FA for this
+/// connection, so a non-secret prompt is the verification step). Host-key prompts never reach
+/// here in practice — connect passes `StrictHostKeyChecking=accept-new`.
+fn classify(prompt: &str, has_code: bool) -> Answer {
+    if is_secret_prompt(prompt) {
+        Answer::Secret
+    } else if has_code {
+        Answer::Code
+    } else {
+        Answer::Decline
+    }
+}
 
 /// Run askpass mode for the given prompt; returns the process exit code.
 pub fn run(prompt: &str) -> i32 {
-    if !is_secret_prompt(prompt) {
-        return 1; // decline; let ssh handle it
+    let code = std::env::var(CODE_ENV).ok().filter(|c| !c.is_empty());
+    match classify(prompt, code.is_some()) {
+        Answer::Secret => supply_secret(),
+        Answer::Code => {
+            let code = zeroize::Zeroizing::new(code.unwrap_or_default());
+            // ssh reads one line and strips the trailing newline.
+            println!("{}", code.as_str());
+            0
+        }
+        Answer::Decline => 1,
     }
+}
+
+/// Look up and print the stored secret for `SSHELF_HOST_ID`; exit code per success.
+fn supply_secret() -> i32 {
     let Ok(id) = std::env::var(HOST_ID_ENV) else {
         return 1;
     };
@@ -28,7 +70,6 @@ pub fn run(prompt: &str) -> i32 {
     match secrets::get_password(&paths.vault_file(), &id) {
         Ok(Some(pw)) => {
             let pw = zeroize::Zeroizing::new(pw);
-            // ssh reads one line and strips the trailing newline.
             println!("{}", pw.as_str());
             0
         }
@@ -76,5 +117,21 @@ mod tests {
             "Please confirm your password for this operation:"
         ));
         assert!(!is_secret_prompt("Type your password to continue:"));
+    }
+
+    #[test]
+    fn classify_routes_password_code_and_decline() {
+        // A password/passphrase prompt always takes the stored secret, code queued or not.
+        assert_eq!(classify("tester@host's password: ", true), Answer::Secret);
+        assert_eq!(
+            classify("Enter passphrase for key '/k': ", false),
+            Answer::Secret
+        );
+        // The 2FA verification prompt takes the queued code…
+        assert_eq!(classify("Verification code: ", true), Answer::Code);
+        // …but with no code queued, a non-secret prompt is declined (the old behavior).
+        assert_eq!(classify("Verification code: ", false), Answer::Decline);
+        // A second/unknown prompt during a 2FA connect still gets the (one) queued code.
+        assert_eq!(classify("One-time password (OATH): ", true), Answer::Code);
     }
 }

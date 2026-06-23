@@ -5,7 +5,7 @@
 > **All modules present:** `main`, `app`, `askpass`, `config`, `forwards`, `import`, `model`,
 > `paths`, `search`, `secrets`, `ssh`, `state`, `store`, `transfer/{mod,worker,pane,screen,e2e}`,
 > `testsupport` (test-only), `vault`,
-> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards}`.
+> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards,two_factor}`.
 > (`error.rs` was removed — the codebase uses `anyhow` throughout.)
 
 ## Repository
@@ -34,7 +34,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `forwards.rs` | Background port-forwards: the `ForwardSpec`/`ForwardEntry` model, the `-L/-R/-D` argv builder, spawn (detached `ssh -N` + readiness/error mapping), PID liveness/kill via `ps`/`kill`, reconcile, and `forwards.json` load/save. |
 | `secrets.rs` | `SecretStore` trait → keyring backend + `age`-vault fallback; `zeroize` on secrets. |
 | `ssh.rs` | Build `ssh` argv from a `Host`; terminal teardown + `exec()` handoff; askpass env wiring. |
-| `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer only password prompts via `secrets`. |
+| `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer password prompts via `secrets`, or a queued 2FA code (`SSHELF_2FA_CODE`) for the verification prompt; else decline. |
 | `search.rs` | Fuzzy filter (`nucleo-matcher`) + frecency ranking + per-row match indices for highlight. |
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
@@ -51,6 +51,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `ui/sites.rs` | Sites manager (F3): list + add/edit/delete sites and their optional defaults; emits renames for the app to cascade. |
 | `ui/forward_popup.rs` | New-port-forward popup (Ctrl-f): kind chooser (Local/Remote/Dynamic) + ports/host fields + validation; emits a `ForwardSpec` for the app to spawn. |
 | `ui/forwards.rs` | Port-forwards manager (F4): lists all active forwards from a live snapshot; emits a kill request for the app to act on. |
+| `ui/two_factor.rs` | 2FA code popup shown before connecting to a `requires_2fa` host; emits the entered code for the app to queue + supply via askpass. |
 | `ui/help.rs` | Help overlay. |
 | `ui/widgets.rs` | Shared widgets: single-line text input (hand-rolled), keybind hint bar, confirm modal. |
 

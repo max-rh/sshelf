@@ -258,7 +258,7 @@ pub fn spawn_forward(
 
     let mut cmd = Command::new("ssh");
     cmd.args(build_forward_command(host, kind, &spec));
-    ssh::configure_askpass(&mut cmd, host, has_secret);
+    ssh::configure_askpass(&mut cmd, host, has_secret, None);
     cmd.process_group(0) // own process group → survives terminal close
         .stdin(Stdio::null())
         .stdout(Stdio::null())

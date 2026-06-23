@@ -67,7 +67,8 @@ A single full-screen form (`Ctrl-a` add, `Ctrl-e` edit selected). Every field sh
 to the chosen Auth method, so the rest don't clutter the screen.
 
 Always shown: **Name** (required), **Hostname** (required), **User** (defaults `$USER`),
-**Port** (defaults 22), **Auth**, **Jump hosts**, **Tags**, **Extra args** (raw flags escape hatch).
+**Port** (defaults 22), **Auth**, **Jump hosts**, **Tags**, **Site**, **2FA** (`←`/`→` yes/no —
+prompt for a verification code on connect), **Extra args** (raw flags escape hatch).
 
 Auth-specific fields:
 
@@ -199,6 +200,22 @@ another terminal, or dropped on its own (sleep / network) — disappears within 
 **survive sshelf exiting** (each is a detached process in its own process group) and the ledger
 (`forwards.json`) is reconciled against the running processes on every launch, so you only ever
 see forwards that are still actually running. See [`decisions.md`](decisions.md) D-021.
+
+## Two-factor (2FA) hosts
+
+Some servers want an interactive verification code (TOTP / keyboard-interactive) on top of your
+key or password. Mark such a host with **2FA = yes** in the add/edit form (or `sshelf add …
+--2fa`). On connect, sshelf shows a small popup to enter the current code **before** handing off
+to `ssh`, and supplies it to the verification prompt through the same askpass helper that supplies
+your stored password — sshelf never proxies the live session.
+
+The flag is needed because a connect that auto-supplies a stored secret runs `ssh` with
+`SSH_ASKPASS_REQUIRE=force`, which routes the code prompt to the helper with no terminal fallback —
+so without it the connect would simply fail. (A host with **no** stored secret already prompts for
+the code inline after handoff, so the flag mainly matters for stored-secret hosts; a host using an
+encrypted key with no stored passphrase should use an agent.) `sshelf <host>` from the CLI (no TUI)
+prompts for the code on the terminal instead. v1 is manual entry — sshelf does **not** store TOTP
+seeds. See [`decisions.md`](decisions.md) D-022.
 
 ## CLI (outside the TUI)
 

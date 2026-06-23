@@ -34,12 +34,15 @@ your editor, and adds things plain SSH config can't express as nicely:
 - **Background port forwarding** (`Ctrl-f`) — start a Local (`-L`), Remote (`-R`) or Dynamic
   (`-D` SOCKS) SSH tunnel that **keeps running after you quit sshelf**. A manager screen (`F4`)
   lists every active forward and stops any; they're reconciled against the OS on each launch.
-- **Guided add/edit form** — hostname, user, port, auth, jump hosts, tags, site, extra args.
+- **Guided add/edit form** — hostname, user, port, auth, jump hosts, tags, site, 2FA, extra args.
 - **Sites** (`F3`) — group hosts (one per host, e.g. a data center) and optionally give the site
   a **shared bastion + default user/port/key** that members inherit at connect time. The list
   groups by site; `site:NAME` filters. Distinct from the many-valued, free-form tags.
 - **Auto-supplied passwords** for password-auth hosts (via `SSH_ASKPASS`; no `sshpass`, the
   secret never appears in `ps`). Stored in your OS keyring, or an encrypted vault.
+- **2FA hosts** — flag a host that wants an interactive verification code (TOTP /
+  keyboard-interactive) and sshelf prompts for it on connect, feeding it through the same askpass
+  channel (manual entry; no stored TOTP seeds).
 - **Jump hosts** (`ProxyJump`), **tags/groups** (`tag:prod`), and **frecency** ordering
   (most-used-recently float to the top).
 - **Read-only import** from `~/.ssh/config` to get started.

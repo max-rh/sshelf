@@ -9,6 +9,7 @@ mod list;
 pub(crate) mod settings;
 pub(crate) mod sites;
 mod transfer;
+pub(crate) mod two_factor;
 mod widgets;
 pub(crate) mod wizard;
 
@@ -95,6 +96,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if let Some(m) = &app.forwards_manager {
         forwards::render(frame, m);
+        return;
+    }
+    if let Some(p) = &app.two_factor {
+        two_factor::render(frame, p);
         return;
     }
     list::render(frame, app);

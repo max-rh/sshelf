@@ -39,6 +39,7 @@ identity_files = ["~/.ssh/infra-key"]   # for auth="key"; repeatable (-i per ent
 jump_hosts = ["bastion.example.com"]    # ProxyJump chain; key/agent auth only in v1
 tags      = ["prod", "db"]    # many-valued, free-form; for filtering/grouping
 site      = "prod-dc"         # optional; one site (by name); groups + inherits its defaults
+requires_2fa = true           # optional (default false); connect prompts for a verification code
 extra_args = "-o ServerAliveInterval=30"  # raw, shlex-split, appended verbatim
 # NOTE: no password field — ever. auth="password" means "look up the secret by id".
 ```
@@ -49,6 +50,9 @@ Notes:
 - `identity_files` / `jump_hosts` / `tags` are `Vec<String>` (empty = absent).
 - `format_version` lets us migrate the schema later without breaking older files. Adding `[[site]]`
   and `host.site` needed **no** bump — old files load with `sites = []` / `site = None`.
+- `requires_2fa` marks a host whose login needs an interactive verification code; connect collects
+  it and passes it to `ssh` via the transient `SSHELF_2FA_CODE` env var (never stored on disk).
+  See [`decisions.md`](./decisions.md) D-022.
 
 ### Sites vs tags, and inheritance
 

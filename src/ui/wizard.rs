@@ -40,6 +40,7 @@ enum Field {
     JumpHosts,
     Tags,
     Site,
+    TwoFactor,
     ExtraArgs,
 }
 
@@ -62,6 +63,7 @@ impl Field {
             Field::JumpHosts => "Jump hosts",
             Field::Tags => "Tags",
             Field::Site => "Site",
+            Field::TwoFactor => "2FA",
             Field::ExtraArgs => "Extra args",
         }
     }
@@ -84,6 +86,7 @@ impl Field {
             Field::JumpHosts => "optional · ProxyJump chain, e.g. bastion,host2",
             Field::Tags => "optional · labels, space/comma separated, e.g. prod db",
             Field::Site => "←/→ choose a site · (none) = no site · manage with F3",
+            Field::TwoFactor => "←/→ · prompt for a verification code on connect (TOTP/2FA)",
             Field::ExtraArgs => "optional · extra ssh flags, e.g. -o BatchMode=yes",
         }
     }
@@ -240,6 +243,8 @@ pub struct Wizard {
     jump: TextField,
     tags: TextField,
     site: SitePicker,
+    /// Whether this host's login requires an interactive verification code (2FA).
+    two_factor: bool,
     extra: TextField,
     /// File browser modal, open when the user is picking a key file.
     browser: Option<FileBrowser>,
@@ -272,6 +277,7 @@ impl Wizard {
         w.jump = TextField::with(h.jump_hosts.join(", "));
         w.tags = TextField::with(h.tags.join(", "));
         w.site = SitePicker::new(site_names, h.site.as_deref());
+        w.two_factor = h.requires_2fa;
         w.extra = TextField::with(h.extra_args.clone().unwrap_or_default());
         w.extra_identities = h.identity_files.iter().skip(1).cloned().collect();
         // secret stays blank on edit (blank = keep existing)
@@ -299,6 +305,7 @@ impl Wizard {
             jump: TextField::new(),
             tags: TextField::new(),
             site: SitePicker::new(site_names, None),
+            two_factor: false,
             extra: TextField::new(),
             browser: None,
             error: None,
@@ -326,7 +333,13 @@ impl Wizard {
             AuthMethod::Password => v.push(Field::Secret),
             AuthMethod::Agent => {}
         }
-        v.extend([Field::JumpHosts, Field::Tags, Field::Site, Field::ExtraArgs]);
+        v.extend([
+            Field::JumpHosts,
+            Field::Tags,
+            Field::Site,
+            Field::TwoFactor,
+            Field::ExtraArgs,
+        ]);
         v
     }
 
@@ -340,7 +353,7 @@ impl Wizard {
             Field::JumpHosts => Some(&mut self.jump),
             Field::Tags => Some(&mut self.tags),
             Field::ExtraArgs => Some(&mut self.extra),
-            Field::Auth | Field::Identity | Field::Site => None,
+            Field::Auth | Field::Identity | Field::Site | Field::TwoFactor => None,
         }
     }
 
@@ -354,7 +367,7 @@ impl Wizard {
             Field::JumpHosts => Some(&self.jump),
             Field::Tags => Some(&self.tags),
             Field::ExtraArgs => Some(&self.extra),
-            Field::Auth | Field::Identity | Field::Site => None,
+            Field::Auth | Field::Identity | Field::Site | Field::TwoFactor => None,
         }
     }
 
@@ -407,6 +420,12 @@ impl Wizard {
                 Field::Site => match code {
                     KeyCode::Left => self.site.prev(),
                     KeyCode::Right | KeyCode::Char(' ') => self.site.next(),
+                    _ => {}
+                },
+                Field::TwoFactor => match code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+                        self.two_factor = !self.two_factor
+                    }
                     _ => {}
                 },
                 f => {
@@ -487,6 +506,7 @@ impl Wizard {
         h.jump_hosts = split_list(&self.jump.value);
         h.tags = split_tags(&self.tags.value);
         h.site = self.site.selected().map(str::to_string);
+        h.requires_2fa = self.two_factor;
         let extra = self.extra.value.trim();
         h.extra_args = (!extra.is_empty()).then(|| extra.to_string());
 
@@ -697,6 +717,13 @@ fn field_value(w: &Wizard, field: Field) -> (String, bool) {
         ),
         Field::Identity => (w.identity.display(), w.identity.selected().is_none()),
         Field::Site => (w.site.display(), w.site.selected().is_none()),
+        Field::TwoFactor => (
+            format!(
+                "< {} >    (no · yes)",
+                if w.two_factor { "yes" } else { "no" }
+            ),
+            false,
+        ),
         Field::Secret => {
             let n = w.secret.value.chars().count();
             if n == 0 {
@@ -840,6 +867,28 @@ mod tests {
             WizardOutcome::Save { host, .. } => assert_eq!(host.site.as_deref(), Some("prod-dc")),
             _ => panic!("expected save"),
         }
+    }
+
+    #[test]
+    fn two_factor_chooser_toggles_and_saves() {
+        let mut w = with_keys(&[]);
+        type_str(&mut w, "n");
+        goto(&mut w, Field::Hostname);
+        type_str(&mut w, "h");
+        goto(&mut w, Field::TwoFactor);
+        w.handle_key(k(KeyCode::Right)); // no -> yes
+        match w.try_save() {
+            WizardOutcome::Save { host, .. } => assert!(host.requires_2fa),
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn from_host_reflects_requires_2fa() {
+        let mut h = Host::new("a", "h");
+        h.requires_2fa = true;
+        let w = Wizard::from_host(&h, &[]);
+        assert!(w.two_factor);
     }
 
     #[test]

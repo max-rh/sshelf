@@ -3,8 +3,26 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Port forwarding — background SSH tunnels that outlive sshelf, targeting
-**v0.7.0**. (Sites shipped in v0.6.0.)
+**Current milestone:** Interactive 2FA — prompt for a verification code on connect and inject it
+via the askpass helper, targeting **v0.8.0**. (Port forwarding shipped in v0.7.0.)
+
+---
+
+## 2026-06-23 — Interactive 2FA support
+
+- New: hosts can be flagged **`requires_2fa`** (add/edit form toggle, or `sshelf add … --2fa`).
+  Connecting to one shows a code popup before the `exec()` handoff; the entered one-time code is
+  passed to `ssh` via `SSHELF_2FA_CODE` and answered by the askpass helper at the verification
+  prompt — the same channel that supplies a stored password.
+- Why: a spike confirmed that a stored-secret connect runs with `SSH_ASKPASS_REQUIRE=force`, which
+  routes the keyboard-interactive code prompt to our helper with **no** terminal fallback, so it
+  failed before. The helper now answers a non-secret prompt with the queued code; `configure_askpass`
+  force-wires the helper when a secret exists **or** a code is queued (so key+2FA works too). The
+  CLI direct-connect path prompts for the code on the terminal.
+- New module `ui/two_factor.rs`; `Host.requires_2fa` (old files load `false`); `exec_connect` /
+  `configure_askpass` take an optional code (transfer + forward spawners pass `None`). Manual entry
+  only — no TOTP seeds stored (rejected: same-vault second factor + a dep). Docs synced (decisions
+  D-022, data-model, ux, structure, README, CHANGELOG). Targets **v0.8.0** via `feat/two-factor`.
 
 ---
 
