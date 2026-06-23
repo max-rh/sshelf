@@ -1,0 +1,74 @@
+# Builds RedHat/Fedora .rpm packages (x86_64 + aarch64) and attaches them to the GitHub Release.
+#
+# The .rpm ships a **static musl** binary so it runs on any RPM distro regardless of glibc
+# (Fedora, RHEL/Rocky/Alma, openSUSE) — sshelf only shells out to the system ssh/sftp, so nothing
+# is distro-specific. Like release-deb, this runs *after* dist's "Release" via workflow_run and
+# only attaches assets (dist owns release creation).
+name: release-rpm
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: write # to attach assets to the Release
+
+jobs:
+  rpm:
+    name: .rpm (${{ matrix.arch }})
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-22.04, target: x86_64-unknown-linux-musl }
+          - { arch: aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl } # native arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }} # the release tag
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl toolchain + cargo-generate-rpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cargo install cargo-generate-rpm --locked
+
+      - name: Build (static musl)
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Generate completions + man page
+        run: |
+          set -euo pipefail
+          bin=target/${{ matrix.target }}/release/sshelf
+          mkdir -p dist-extra
+          "$bin" completions bash > dist-extra/sshelf.bash
+          "$bin" completions zsh  > dist-extra/_sshelf
+          "$bin" completions fish > dist-extra/sshelf.fish
+          "$bin" man              > dist-extra/sshelf.1
+
+      # generate-rpm rewrites the `target/release` asset paths to the per-target dir via --target.
+      - name: Build .rpm
+        run: cargo generate-rpm --target ${{ matrix.target }}
+
+      - name: Locate the .rpm
+        id: rpm
+        run: |
+          set -euo pipefail
+          path=$(find target -name '*.rpm' -print -quit)
+          test -n "$path" || { echo "no .rpm produced"; exit 1; }
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
+      - name: Attach to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.workflow_run.head_branch }}
+          files: ${{ steps.rpm.outputs.path }}

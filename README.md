@@ -71,10 +71,17 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/max-rh/sshelf/releases/
 sudo apt install ./sshelf_*_amd64.deb      # or *_arm64.deb
 ```
 
-**From source** (needs **Rust 1.88+**):
+**Fedora / RHEL / Rocky / openSUSE** — grab the `.rpm` for your architecture from the
+[latest release](https://github.com/max-rh/sshelf/releases/latest), then:
 
 ```sh
-cargo install --git https://github.com/max-rh/sshelf
+sudo dnf install ./sshelf-*.x86_64.rpm     # or .aarch64.rpm
+```
+
+**Cargo** (from [crates.io](https://crates.io/crates/sshelf); needs **Rust 1.88+**):
+
+```sh
+cargo install sshelf
 ```
 
 > Linux uses a pure-Rust Secret Service backend (no `libdbus`/OpenSSL build deps).

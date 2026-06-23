@@ -3,8 +3,23 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Interactive 2FA — prompt for a verification code on connect and inject it
-via the askpass helper, targeting **v0.8.0**. (Port forwarding shipped in v0.7.0.)
+**Current milestone:** Distribution — publish to crates.io and ship `.rpm` packages, plus a leaner
+published crate. (Interactive 2FA shipped in v0.8.0.)
+
+---
+
+## 2026-06-23 — Distribution: crates.io + RPM packaging
+
+- **crates.io:** new `release-crates.yml` (workflow_run after dist's Release → `cargo publish`;
+  needs a `CARGO_REGISTRY_TOKEN` secret, skips cleanly if unset). cargo-dist has no built-in
+  crates.io publish job — `publish-jobs` only knows `homebrew`/`npm`/custom — so it's a companion
+  workflow like the `.deb`.
+- **`.rpm`:** new `release-rpm.yml` + `[package.metadata.generate-rpm]` (x86_64 + aarch64), built
+  as a **static musl** binary so one rpm runs on any RPM distro regardless of glibc. ssh works
+  identically on RHEL/Fedora — sshelf only shells out to system ssh/sftp/ps/kill.
+- `Cargo.toml`: homepage → the Pages docs site, refreshed description + keywords, `readme`, and an
+  `exclude` that trims the published crate 64 → 43 files (drops docs/, .github/, examples/, the
+  gif). Docs synced (packaging.md §4b/§4c, README install, CHANGELOG). Ships in the next release.
 
 ---
 
