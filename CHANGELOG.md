@@ -5,6 +5,12 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+- **Install from [crates.io](https://crates.io/crates/sshelf)** — `cargo install sshelf` (published
+  automatically on each release).
+- **RedHat/Fedora `.rpm` packages** (x86_64 + aarch64) attached to every release, built as a static
+  musl binary so they run on any RPM distro (Fedora, RHEL/Rocky/Alma, openSUSE) regardless of glibc.
+
 ## [0.8.0] — 2026-06-23
 
 ### Added

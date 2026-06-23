@@ -3,12 +3,15 @@ name = "sshelf"
 version = "0.8.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A TUI for managing and connecting to SSH hosts — generates the ssh command, never touches ~/.ssh/config."
+description = "Fast terminal UI for your SSH hosts: fuzzy-search and connect, transfer files over SFTP, and run background port forwards — keeps its own host database and never edits ~/.ssh/config."
 license = "MIT OR Apache-2.0"
-keywords = ["ssh", "tui", "terminal", "fuzzy", "ratatui"]
+readme = "README.md"
+keywords = ["ssh", "tui", "ssh-client", "sftp", "terminal"]
 categories = ["command-line-utilities"]
 repository = "https://github.com/max-rh/sshelf"
-homepage = "https://github.com/max-rh/sshelf"
+homepage = "https://max-rh.github.io/sshelf"
+# Keep the published crate lean: build/docs/CI infrastructure isn't needed to `cargo install`.
+exclude = [".github/", "docs/", "examples/", "book.toml", "dist-workspace.toml"]
 
 [dependencies]
 age = "0.10"
@@ -71,3 +74,27 @@ assets = [
     ["dist-extra/sshelf.fish", "usr/share/fish/vendor_completions.d/sshelf.fish", "644"],
     ["dist-extra/sshelf.1", "usr/share/man/man1/sshelf.1", "644"],
 ]
+
+# RedHat/Fedora .rpm metadata (used by `cargo generate-rpm`). The .rpm is built as a **static
+# musl** binary in .github/workflows/release-rpm.yml so it runs on any RPM distro regardless of
+# glibc; `cargo generate-rpm --target <triple>` rewrites the `target/release` asset paths below to
+# the per-target dir. Completions + man page are generated in CI, same as the .deb.
+[package.metadata.generate-rpm]
+# A static binary has no shared-library deps; don't let auto-req add bogus glibc `Requires`.
+auto-req = "no"
+summary = "Fast terminal UI for managing and connecting to SSH hosts"
+assets = [
+    { source = "target/release/sshelf", dest = "/usr/bin/sshelf", mode = "0755" },
+    { source = "README.md", dest = "/usr/share/doc/sshelf/README.md", mode = "0644", doc = true },
+    { source = "SECURITY.md", dest = "/usr/share/doc/sshelf/SECURITY.md", mode = "0644", doc = true },
+    { source = "LICENSE-MIT", dest = "/usr/share/licenses/sshelf/LICENSE-MIT", mode = "0644", doc = true },
+    { source = "LICENSE-APACHE", dest = "/usr/share/licenses/sshelf/LICENSE-APACHE", mode = "0644", doc = true },
+    { source = "dist-extra/sshelf.bash", dest = "/usr/share/bash-completion/completions/sshelf", mode = "0644" },
+    { source = "dist-extra/_sshelf", dest = "/usr/share/zsh/site-functions/_sshelf", mode = "0644" },
+    { source = "dist-extra/sshelf.fish", dest = "/usr/share/fish/vendor_completions.d/sshelf.fish", mode = "0644" },
+    { source = "dist-extra/sshelf.1", dest = "/usr/share/man/man1/sshelf.1", mode = "0644" },
+]
+
+# We exec ssh; everything else (Secret Service, age vault) is bundled or optional.
+[package.metadata.generate-rpm.requires]
+openssh-clients = "*"

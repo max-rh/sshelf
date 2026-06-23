@@ -1,16 +1,21 @@
 # Packaging & distribution
 
-How `sshelf` ships to **Homebrew** (macOS + Linux) and **Debian/Ubuntu** (`.deb` / apt), for
-**x86_64 *and* arm64** on both OSes. Releases are driven from GitHub Actions on a `vX.Y.Z` tag.
+How `sshelf` ships to **Homebrew** (macOS + Linux), **Debian/Ubuntu** (`.deb`), **RedHat/Fedora**
+(`.rpm`), and **crates.io**, for **x86_64 *and* arm64**. Releases are driven from GitHub Actions on
+a `vX.Y.Z` tag.
 
 **Chosen stack:**
 - **[`dist`](https://opensource.axo.dev/cargo-dist/) (cargo-dist)** builds the binaries for all
   targets, makes the GitHub Release (tarballs + checksums), generates the **Homebrew formula**
   and pushes it to your tap, and emits a curl-able shell installer.
-- A hand-written **`.deb` companion workflow** (`.github/workflows/release-deb.yml`) builds the
-  Debian/Ubuntu packages dist doesn't, and attaches them to the same Release.
+- Hand-written **companion workflows** attach what dist doesn't build to the same Release, each
+  triggered via `workflow_run` *after* dist's "Release" completes (so they never race to create
+  it): `release-deb.yml` (`.deb`, via `cargo deb`), `release-rpm.yml` (`.rpm`, via
+  `cargo generate-rpm`, built as a **static musl** binary), and `release-crates.yml`
+  (`cargo publish` to crates.io).
 - **clap** generates shell completions + a man page (via `sshelf completions` / `sshelf man`).
-- **No crates.io** (by choice).
+- **crates.io:** cargo-dist has no built-in crates.io publish job, so `release-crates.yml` runs
+  `cargo publish` (needs a `CARGO_REGISTRY_TOKEN` repo secret; skips cleanly if it's unset).
 
 GitHub user is **`max-rh`**; the repo is `github.com/max-rh/sshelf`; the Homebrew tap is
 `max-rh/homebrew-tap`.
@@ -36,8 +41,9 @@ Set in `Cargo.toml` before the first release:
 [package]
 # ...existing fields...
 repository = "https://github.com/max-rh/sshelf"
-homepage   = "https://github.com/max-rh/sshelf"
+homepage   = "https://max-rh.github.io/sshelf"   # the GitHub Pages docs site
 readme     = "README.md"
+# `exclude` keeps the published crate lean (drops docs/, .github/, examples/, the gif, etc.).
 # `authors` is optional (cargo no longer auto-fills it) — omit it, or use a project ALIAS,
 # never your personal email: this file is public on GitHub and copied into every .deb.
 ```
@@ -69,7 +75,7 @@ Conventions / facts that matter:
 | macOS Intel | `x86_64-apple-darwin` | dist (cross on the arm64 runner) |
 | Linux x86_64 (Debian/Ubuntu amd64) | `x86_64-unknown-linux-gnu` | dist + `.deb` on `ubuntu-22.04` |
 | Linux arm64 (Debian/Ubuntu arm64) | `aarch64-unknown-linux-gnu` | dist + `.deb` on `ubuntu-24.04-arm` |
-| Linux x86_64/arm64 static (portable tarball) | `*-unknown-linux-musl` | optional in dist |
+| Linux x86_64/arm64 static (the `.rpm`) | `*-unknown-linux-musl` | `release-rpm.yml` (`cargo generate-rpm`) |
 
 - **GitHub's free arm64 Linux runners** (`ubuntu-24.04-arm`, GA for *public* repos since Aug
   2025) build arm64 **natively** — no QEMU. (They aren't available to private repos on the free tier.)
@@ -225,6 +231,51 @@ most users.
 
 ---
 
+## 4b. RedHat/Fedora `.rpm` (static musl)
+
+Same shape as the `.deb`, with two differences. The package metadata is in `Cargo.toml`
+(`[package.metadata.generate-rpm]`, built by [`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm)),
+and the binary is built **static musl** (`*-unknown-linux-musl`) so one `.rpm` runs on any RPM
+distro — Fedora, RHEL/Rocky/Alma, openSUSE — **regardless of glibc version**. (sshelf is
+distro-agnostic at runtime: it only shells out to the system `ssh`/`sftp`/`ps`/`kill`, all OpenSSH/
+procps, and the Linux keyring is the pure-Rust Secret Service with the `age`-vault fallback — none
+of it is Debian- or RPM-specific.) `auto-req = "no"` stops rpm from adding bogus shared-lib
+`Requires` to a static binary; we declare `openssh-clients` explicitly.
+
+[`.github/workflows/release-rpm.yml`](../.github/workflows/release-rpm.yml) mirrors the `.deb`
+workflow: `workflow_run` after dist's Release, a matrix of `x86_64` (`ubuntu-22.04`) and `aarch64`
+(`ubuntu-24.04-arm`, native), `rustup target add <musl>`, `cargo build --target <musl>`, generate
+completions/man, then `cargo generate-rpm --target <musl>` (which rewrites the `target/release`
+asset paths to the per-target dir) and attaches the `.rpm`. Users install with:
+
+```sh
+sudo dnf install ./sshelf-0.8.0-1.x86_64.rpm     # or .aarch64.rpm
+```
+
+> **Why musl, not glibc like the `.deb`:** a glibc binary built on the CI runner only runs on
+> distros with an equal-or-newer glibc, which excludes older RHEL. Static musl sidesteps that
+> entirely. (The `.deb` keeps glibc since Debian/Ubuntu users build/run on a known-recent glibc.)
+
+---
+
+## 4c. crates.io (`cargo install sshelf`)
+
+cargo-dist has **no built-in crates.io publish job** (`publish-jobs` only knows `homebrew`/`npm`/
+custom `./jobs`), so publishing is a separate companion workflow,
+[`release-crates.yml`](../.github/workflows/release-crates.yml): `workflow_run` after the Release,
+then `cargo publish --locked`. It needs a **`CARGO_REGISTRY_TOKEN`** repo secret (a crates.io API
+token, ideally scoped to the `sshelf` crate); the step skips cleanly if the secret is unset, so the
+workflow stays green before it's added. The crate's `Cargo.toml` carries the required metadata
+(`description`, `license`, `keywords`, `categories`, `repository`, `homepage`) and an `exclude`
+that drops `docs/`/`.github/`/`examples/` from the published tarball. `cargo publish` builds from
+the tag's source, so it's independent of the release binaries.
+
+```sh
+cargo install sshelf      # once published
+```
+
+---
+
 ## 5. Shell completions & man page
 
 `sshelf` generates these itself (clap), so packaging needs no extra tooling:
@@ -351,6 +402,8 @@ is fine for Homebrew; ship a stapled `.pkg` for offline direct downloads.)
    real-TTY acceptance check in `docs/progress.md`):
    - `brew install max-rh/tap/sshelf`
    - `sudo apt install ./sshelf_*_amd64.deb`
+   - `sudo dnf install ./sshelf-*.x86_64.rpm`
+   - `cargo install sshelf` (after the crates.io publish lands)
 
 ---
 
