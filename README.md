@@ -61,8 +61,10 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/max-rh/sshelf/releases/
 ```sh
 sudo apt install ./sshelf_*_amd64.deb      # or *_arm64.deb
 ```
+**Gentoo** — via the community-maintained Masterwolf overlay
+(unofficial; thanks to @masterwolf-git):
 
-**Gentoo** — add Masterwolf repository `eselect repository enable masterwolf`, then:
+add Masterwolf repository `eselect repository enable masterwolf`, then:
 
 ```sh
 emerge --sync   # if needed
