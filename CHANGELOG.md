@@ -5,6 +5,11 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Changed
+- Docs: [the site](https://max-rh.github.io/sshelf/) now opens with a full user guide —
+  install, quickstart, per-feature pages, CLI reference, configuration, FAQ — and the README
+  is a shorter landing page that links into it. No behavior changes.
+
 ## [0.9.0] — 2026-06-23
 
 ### Added

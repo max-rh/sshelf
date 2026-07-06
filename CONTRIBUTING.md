@@ -21,7 +21,10 @@ same change, and add a dated entry to `docs/progress.md`.**
 - Touched `ssh.rs`/argv logic → update `docs/ssh-command.md`.
 - Changed the data schema or file locations → update `docs/data-model.md`.
 - Added/moved a module → update `docs/structure.md`.
-- Changed a keybinding/screen/wizard step → update `docs/ux.md`.
+- Changed user-facing behavior (a keybinding, screen, CLI command, config key) → update the
+  relevant **Guide** page under `docs/` (install, quickstart, hosts, search-connect, transfer,
+  port-forwarding, sites-tags, passwords-2fa, import, cli, configuration, faq); UI design
+  rationale lives in `docs/ux.md`.
 - Made a non-trivial design choice → add an entry to `docs/decisions.md`.
 - Anything security-relevant (secrets, askpass, perms) → update `docs/security.md`.
 - **Always** append what you did + what's next to `docs/progress.md`.

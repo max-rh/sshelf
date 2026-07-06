@@ -3,8 +3,29 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Distribution — publish to crates.io and ship `.rpm` packages, plus a leaner
-published crate. (Interactive 2FA shipped in v0.8.0.)
+**Current milestone:** Docs — the site now opens with a user guide; the README is a landing
+page. (crates.io + `.rpm` shipped in v0.9.0.)
+
+---
+
+## 2026-07-06 — Docs: user guide split from internals; slim README
+
+- The mdBook site now leads with a **Guide** for users: install, quickstart, adding/editing
+  hosts, searching & connecting, file transfer, port forwarding, sites & tags,
+  passwords/keys/2FA, import, a full CLI reference, configuration, and an FAQ. Content that
+  previously lived only in the README (CLI flag table, completions setup, config reference) or
+  inside `ux.md` moved into these pages; `index.md` is a product landing page instead of a doc
+  inventory, and `SUMMARY.md` is reorganized into Guide / Understanding sshelf / Development.
+- `ux.md` slimmed to **UI design notes** (visual model, ranking, form design, modality,
+  theming) — stale milestone markers removed; behavior and keybindings are documented in the
+  Guide pages, which the docs-in-sync rule in `CONTRIBUTING.md` now points at.
+- README cut from ~230 to ~140 lines: pitch, install (secondary channels folded into a
+  `<details>`), a "first five minutes" block, and links into the site; added crates.io/CI/
+  license badges and an explicit no-telemetry / no-account / no-cloud line. Everything removed
+  now lives on the site.
+- Why: the README had become the user manual because the site didn't have one, while the site
+  led with contributor docs — and the site is the crates.io homepage, so a real guide is what
+  visitors should land on. Docs-only change; no code touched.
 
 ---
 
