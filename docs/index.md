@@ -1,29 +1,51 @@
-# `sshelf` documentation
+# sshelf
 
-`sshelf` is a TUI for managing and connecting to SSH hosts. It keeps its own host database
-and generates the correct `ssh` command for each node — it never edits `~/.ssh/config`.
+A fast terminal UI for managing and connecting to SSH hosts. Save each node once, then
+fuzzy-search and connect in two keystrokes.
 
-> **Docs-in-sync rule:** every code/behavior change updates the relevant doc here in the same
-> change, and appends to [`progress.md`](./progress.md). See [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+![sshelf — fuzzy-search your SSH hosts and connect in two keystrokes](./sshelf-readme.gif)
 
-## Contents
+**sshelf keeps its own host database and generates the correct `ssh` command for you — it
+never reads or edits `~/.ssh/config`** (except an explicit, read-only import). No account, no
+cloud, no telemetry: your hosts live in a human-readable TOML file on your disk, secrets live
+in your OS keyring, and the only network activity is the `ssh` it hands your terminal to.
 
-| Doc | What it covers |
-|---|---|
-| [progress.md](./progress.md) | Living log — current milestone, what changed, what's next. **Start here.** |
-| [architecture.md](./architecture.md) | How the pieces fit: launcher/`exec()` model, askpass flow, secret store, data flow. |
-| [structure.md](./structure.md) | Module/file map and responsibilities. |
-| [data-model.md](./data-model.md) | `Host` schema, config/state files, on-disk locations & formats. |
-| [ssh-command.md](./ssh-command.md) | Flag mapping (`-i`/`-p`/`-J`/extra-args) and the `SSH_ASKPASS` password mechanism. |
-| [ux.md](./ux.md) | Screens, keybindings, wizard flow, theming. |
-| [decisions.md](./decisions.md) | Decision log (ADR-style) with rationale. |
-| [security.md](./security.md) | Threat model for stored secrets (mirrors the shipped `SECURITY.md`). |
-| [packaging.md](./packaging.md) | Shipping to Homebrew, Debian/Ubuntu (`.deb`/apt), and crates.io — multi-arch (x86 + arm). |
+## Get started
 
-## Quick orientation
+```sh
+brew install max-rh/tap/sshelf     # macOS or Linux
+sshelf                             # launch the TUI
+```
 
-- **What it is:** a fast, atuin-style fuzzy launcher for SSH. Save a host once, connect with `Enter`.
-- **What it is NOT:** it does not edit `~/.ssh/config`, is not a terminal emulator, and does
-  not proxy/tunnel traffic itself — it builds the `ssh` invocation and hands the terminal to `ssh`.
-- **Platforms:** macOS + Linux (v1). **Toolchain:** Rust 1.88+.
-- **Status:** see [progress.md](./progress.md).
+- **[Install](install.md)** — Homebrew, shell installer, `.deb`, `.rpm`, Gentoo, or cargo.
+- **[Quickstart](quickstart.md)** — the first five minutes: add or import hosts, connect.
+- **[FAQ & troubleshooting](faq.md)** — common questions, quick answers.
+
+## What's in the box
+
+- An atuin-style **fuzzy launcher** with frecency ordering — [Searching & connecting](search-connect.md)
+- A dual-pane **SFTP file browser** (`Ctrl-t`) — [Transferring files](transfer.md)
+- Background **port forwards** that survive quitting (`Ctrl-f` / `F4`) — [Port forwarding](port-forwarding.md)
+- **Sites** with a shared bastion + defaults, plus free-form tags (`F3`) — [Sites & tags](sites-tags.md)
+- Stored **passwords/passphrases** auto-supplied at connect, and **2FA** code prompts —
+  [Passwords, keys & 2FA](passwords-2fa.md)
+- A scriptable **CLI** (`sshelf add`, `list --json`, `print-command`, …) — [CLI reference](cli.md)
+
+Platforms: **macOS + Linux**, x86_64 and arm64. Runtime: **OpenSSH 8.4+** for password
+auto-supply.
+
+## How it's built
+
+Deciding whether to trust it — or just curious how the pieces fit?
+
+- [Security & threat model](security.md) — exactly what stored secrets are protected
+  against, and what they are not.
+- [How the ssh command is built](ssh-command.md) — argv generation and the `SSH_ASKPASS`
+  mechanism that supplies passwords without `sshpass`.
+
+## Contributing
+
+Start with [`CONTRIBUTING.md`](https://github.com/max-rh/sshelf/blob/master/CONTRIBUTING.md),
+then the **Development** section in the sidebar: architecture, module map, data model, and the
+decision log. Docs follow the docs-in-sync rule — every behavior change updates the relevant
+page here in the same change, with a dated entry in the [progress log](progress.md).

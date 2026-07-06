@@ -26,7 +26,7 @@ GitHub user is **`max-rh`**; the repo is `github.com/max-rh/sshelf`; the Homebre
 3. [Homebrew + tarballs via dist](#3-homebrew--tarballs-via-dist)
 4. [Debian/Ubuntu `.deb`](#4-debianubuntu-deb)
 5. [Shell completions & man page (clap)](#5-shell-completions--man-page)
-6. [macOS code signing & notarization](#6-macos-code-signing--notarization)
+6. [macOS signing — no Apple program needed](#6-macos-signing--and-why-you-dont-need-the-99-apple-program)
 7. [Cross-compilation reference](#7-cross-compilation-reference)
 8. [Release checklist](#8-release-checklist)
 9. [Appendix: manual Homebrew formula & APT repo](#9-appendix)
