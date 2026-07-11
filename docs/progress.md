@@ -3,8 +3,33 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Docs — the site now opens with a user guide; the README is a landing
-page. (crates.io + `.rpm` shipped in v0.9.0.)
+**Current milestone:** Interop — `sshelf export` projects the database out to plain ssh via an
+`Include` fragment. Targets v0.10.0. (Docs overhaul + v0.9.0 distribution shipped.)
+
+---
+
+## 2026-07-12 — `sshelf export`: an ssh_config Include fragment
+
+- New `export.rs` + `sshelf export [--stdout]`: renders every host (site defaults resolved,
+  name-sorted, deterministic — no timestamps) as ssh_config `Host` blocks into
+  `~/.config/sshelf/ssh_config`, and prints the one `Include` line for the user to add to
+  `~/.ssh/config` — which sshelf still never writes (it only *reads* it, to drop the hint once
+  the Include is already present). After that, plain ssh/scp/sftp, rsync, git, and SSH-config
+  pickers (VS Code Remote-SSH) resolve sshelf hosts by name.
+- Rendering mirrors `build_args` minus sshelf-only plumbing: no
+  `StrictHostKeyChecking=accept-new` (an askpass necessity, not the user's choice) and no
+  askpass wiring. Exact `-o Key=Value` extras translate to directives; other flags become an
+  in-block comment. Names that can't be a safe `Host` pattern (glob/negation/comment/quote
+  chars) are skipped with a comment; all values are control-char-sanitized so nothing can
+  inject extra directives.
+- **Auto-refresh:** once the file exists (creating it = opt-in), every hosts save rewrites it —
+  TUI `persist_hosts`, `sshelf add`, `import`, `sites add`, and the settings hosts-file adopt
+  path — best-effort, so a refresh failure never blocks a save. Deleting the file opts out.
+- Verified end-to-end: `ssh -G -F` through a real `Include` resolves hostname/user/port/
+  ProxyJump (incl. a site-inherited bastion) and the translated option; auto-refresh observed
+  live on `sshelf add`. 14 new unit tests (195 pass, clippy clean). Docs synced: new guide page
+  `export.md`, D-023, data-model, structure, cli, import, faq, index, README, CHANGELOG.
+  Targets **v0.10.0** via `feat/export`.
 
 ---
 

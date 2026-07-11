@@ -21,3 +21,6 @@ Import brings everything in at once (there's no per-host picker); curate afterwa
 `Ctrl-e` / `Ctrl-d`, and organize with tags or [sites](sites-tags.md). Your `~/.ssh/config`
 keeps working exactly as before — sshelf's database is independent of it by design (the
 [FAQ](faq.md#why-doesnt-sshelf-just-use-my-ssh-config) explains why).
+
+The reverse direction exists too: [**export**](export.md) projects your sshelf hosts back out
+as an `Include` fragment, so plain `ssh`/`scp` can use them by name.

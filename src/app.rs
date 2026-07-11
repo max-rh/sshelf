@@ -178,7 +178,11 @@ impl App {
             sites: self.sites.clone(),
             hosts: self.hosts.clone(),
         };
-        store::save_hosts(&self.hosts_path, &file)
+        store::save_hosts(&self.hosts_path, &file)?;
+        // Best-effort: the ssh_config export is derived data — a refresh failure must never
+        // block saving hosts (the next `sshelf export` run reports it).
+        let _ = crate::export::refresh_if_exported(&self.paths, &file);
+        Ok(())
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Outcome {
@@ -453,6 +457,14 @@ impl App {
                         self.config.hosts_file = hosts_file;
                         self.hosts_path = new_path;
                         self.recompute();
+                        // Adopting an existing file swapped the host set — keep the ssh_config
+                        // export (if enabled) in step with it. Best-effort, like persist_hosts.
+                        let file = HostsFile {
+                            format_version: CURRENT_FORMAT_VERSION,
+                            sites: self.sites.clone(),
+                            hosts: self.hosts.clone(),
+                        };
+                        let _ = crate::export::refresh_if_exported(&self.paths, &file);
                         match self.config.save(&self.paths.config_file()) {
                             Ok(()) => self.set_status(format!("settings saved · {msg}")),
                             Err(e) => {

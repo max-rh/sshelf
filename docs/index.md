@@ -29,6 +29,8 @@ sshelf                             # launch the TUI
 - **Sites** with a shared bastion + defaults, plus free-form tags (`F3`) — [Sites & tags](sites-tags.md)
 - Stored **passwords/passphrases** auto-supplied at connect, and **2FA** code prompts —
   [Passwords, keys & 2FA](passwords-2fa.md)
+- **SSH-config export** — one `Include` line and plain `ssh`/`scp`, rsync, and VS Code Remote
+  see your hosts — [Exporting to SSH config](export.md)
 - A scriptable **CLI** (`sshelf add`, `list --json`, `print-command`, …) — [CLI reference](cli.md)
 
 Platforms: **macOS + Linux**, x86_64 and arm64. Runtime: **OpenSSH 8.4+** for password

@@ -5,6 +5,29 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-023 · Export writes our own ssh_config fragment; the user adds the Include line
+`sshelf export` projects the database into ssh_config format so native tools (ssh/scp/sftp,
+rsync, git, editor remote extensions) resolve sshelf hosts by name — the standing objection to
+a tool with its own database is lock-in, and this removes it. The fragment is written to
+**sshelf's config dir** (`ssh_config`, next to `hosts.toml`), never under `~/.ssh`; the user
+adds the one `Include` line themselves, which keeps the "never edits `~/.ssh/config`" promise
+literal (we still only ever *read* it — to skip the hint when the Include is already there).
+Rendering mirrors `ssh::build_args` (site defaults resolved, `-i` gated on key auth, port 22
+omitted) **minus sshelf-only plumbing**: no `StrictHostKeyChecking=accept-new` (that exists to
+keep the host-key prompt away from the askpass helper; plain ssh should keep the user's
+defaults) and no askpass wiring (exported password hosts prompt on the tty). `extra_args` are
+CLI flags, not config keywords, so only exact `-o Key=Value` pairs translate; the rest is
+preserved as an in-block comment rather than guessed at. Output is deterministic (name-sorted,
+no timestamps) so the file churns only when the database changes. **Once the file exists,
+every hosts save refreshes it** (best-effort — derived data never blocks a save); creating it
+is the opt-in, deleting it opts out. Host names that can't be a safe `Host` pattern (glob/
+negation/comment/quote characters) are skipped with a comment — exporting them would match
+*other* names; values are control-char-stripped so a crafted field can't inject directives.
+Rejected: writing into `~/.ssh/` (even a new file — the promise is that sshelf never touches
+that directory); auto-appending the Include (mutates the user's config, the one hard no);
+translating arbitrary flags to directives (lossy guessing); a config key for the export path
+(existence-as-opt-in needs one well-known location).
+
 ### D-022 · Interactive 2FA: collect the code before connect, inject it via the askpass helper
 A connect that auto-supplies a stored secret runs `ssh` with `SSH_ASKPASS_REQUIRE=force`, which
 routes **every** interactive prompt — including a server's keyboard-interactive verification-code

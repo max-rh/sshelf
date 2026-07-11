@@ -37,6 +37,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer password prompts via `secrets`, or a queued 2FA code (`SSHELF_2FA_CODE`) for the verification prompt; else decline. |
 | `search.rs` | Fuzzy filter (`nucleo-matcher`) + frecency ranking + per-row match indices for highlight. |
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. |
+| `export.rs` | Render the database as an ssh_config `Include` fragment (site defaults resolved, `-o` extras translated); write to `ssh_config` in the config dir; auto-refresh on hosts saves once the file exists. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color; writes a commented default on first run. |
 | `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |

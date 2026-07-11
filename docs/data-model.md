@@ -12,6 +12,7 @@ config hand-editable instead of buried in macOS `~/Library`.
 | `config.toml` | `~/.config/sshelf/config.toml` | user | Preferences (theme, `decay_rate`, sort, keybinds). |
 | `state.json` | `~/.local/share/sshelf/state.json` | app | Frecency counters, keyed by host id. Churns; not for hand-editing. |
 | `forwards.json` | `~/.local/share/sshelf/forwards.json` | app | Ledger of active background port-forwards (PIDs). Reconciled against the OS on launch. Mode `0600`. |
+| `ssh_config` | `~/.config/sshelf/ssh_config` | app | Exported ssh_config `Include` fragment (`sshelf export`) — derived from `hosts.toml`, refreshed on every hosts save once present. Mode `0600`. |
 | `vault.age` | `~/.local/share/sshelf/vault.age` | app | **Fallback** encrypted secret store (only when no OS keyring). Mode `0600`. |
 
 Directories are created on first run (`0700`). **Secrets are never written to `hosts.toml`.**
