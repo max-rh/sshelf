@@ -5,6 +5,17 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+- **`sshelf export`** — project the host database as an ssh_config fragment, written to
+  `~/.config/sshelf/ssh_config`; add one `Include` line to `~/.ssh/config` yourself (sshelf
+  still never edits it, or anything under `~/.ssh`). Plain `ssh`/`scp`/`sftp`, rsync, git, and
+  anything that reads SSH config — VS Code Remote-SSH, JetBrains Gateway — then resolve sshelf
+  hosts by name, with users, ports, identities, jump hosts, and inherited site defaults
+  included. Exact `-o Key=Value` extra-args translate to real directives; other raw flags stay
+  visible as a comment. Once the file exists it refreshes automatically on every hosts change
+  (add/edit/delete, import, site changes); output is deterministic and diff-friendly.
+  `--stdout` prints the fragment instead of writing. No new dependencies.
+
 ### Changed
 - Docs: [the site](https://max-rh.github.io/sshelf/) now opens with a full user guide —
   install, quickstart, per-feature pages, CLI reference, configuration, FAQ — and the README

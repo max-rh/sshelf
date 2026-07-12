@@ -73,6 +73,12 @@ impl Paths {
         self.data_dir.join("vault.age")
     }
 
+    /// The exported ssh_config `Include` fragment (`sshelf export`). Lives next to the config,
+    /// not under `~/.ssh` — the user references it from their own config with one Include line.
+    pub fn ssh_config_file(&self) -> PathBuf {
+        self.config_dir.join("ssh_config")
+    }
+
     /// The default hosts-file path as a display string (for the settings placeholder).
     pub fn default_hosts_display(&self) -> String {
         self.hosts_file().display().to_string()

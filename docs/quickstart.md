@@ -50,4 +50,6 @@ keyring or an encrypted vault ([Passwords, keys & 2FA](passwords-2fa.md)).
   the generated command.
 - [Transferring files](transfer.md) — the dual-pane SFTP browser (`Ctrl-t`).
 - [Port forwarding](port-forwarding.md) — background tunnels that outlive the TUI (`Ctrl-f`).
+- [Exporting to SSH config](export.md) — let plain `ssh`/`scp` and VS Code Remote use your
+  hosts by name.
 - [CLI reference](cli.md) — scripting: `add`, `list --json`, `print-command`, completions.

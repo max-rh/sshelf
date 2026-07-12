@@ -15,6 +15,7 @@ Everything sshelf does without opening the TUI.
 | `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
 | `sshelf sites add NAME [-u/-p/-J/-i]` | Define a [site](sites-tags.md) (settings optional; edit later with `F3`). |
 | `sshelf import [--dry-run]` | [Read-only import](import.md) from `~/.ssh/config`. |
+| `sshelf export [--stdout]` | [Export](export.md) the database as an ssh_config `Include` fragment, written next to sshelf's config (`--stdout` prints it instead). Once the file exists, it refreshes on every hosts change. |
 | `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. |
 | `sshelf completions <shell>` | Print static shell completions. |
 | `sshelf man` | Print the man page. |

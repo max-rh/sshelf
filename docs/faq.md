@@ -7,7 +7,9 @@ your editor's remote mode all read it — and a tool that rewrites it can corrup
 sshelf keeps an **independent database** and builds `ssh` commands from it with plain flags;
 its only contact with your SSH config is the explicit, [read-only import](import.md). (ssh
 itself still *reads* your config normally when sshelf launches it — sshelf just never writes
-it.)
+it.) It isn't a one-way street either: [`sshelf export`](export.md) generates an `Include`
+file so plain `ssh`/`scp` — and anything that reads SSH config, like VS Code Remote — can use
+your sshelf hosts by name.
 
 ## What does sshelf need at runtime?
 

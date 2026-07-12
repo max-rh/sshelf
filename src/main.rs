@@ -8,6 +8,7 @@
 mod app;
 mod askpass;
 mod config;
+mod export;
 mod forwards;
 mod import;
 mod model;
@@ -79,6 +80,14 @@ enum Command {
         /// Show what would be imported without writing.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Export hosts as an ssh_config fragment, written next to sshelf's config. Add one
+    /// `Include` line to ~/.ssh/config yourself (sshelf never edits it) and plain ssh/scp/sftp
+    /// resolve these hosts by name. Once the file exists, it refreshes on every hosts change.
+    Export {
+        /// Print the fragment to stdout instead of writing the file.
+        #[arg(long)]
+        stdout: bool,
     },
     /// Store a password (read from stdin) for a host, by name or id.
     SetPassword {
@@ -286,6 +295,7 @@ fn main() -> Result<()> {
             }
         }
         Some(Command::Import { dry_run }) => cmd_import(dry_run),
+        Some(Command::Export { stdout }) => cmd_export(stdout),
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
         Some(Command::Print { host }) => cmd_print_command(&host),
         Some(Command::Sites { action }) => cmd_sites(action),
@@ -345,8 +355,69 @@ fn cmd_import(dry_run: bool) -> Result<()> {
     }
     file.hosts.extend(to_add);
     store::save_hosts(&hosts_path, &file)?;
+    warn_export_refresh(export::refresh_if_exported(&paths, &file));
     println!("Imported into {}", hosts_path.display());
     Ok(())
+}
+
+/// Export the host database as an ssh_config fragment (the reverse of `import`, into our own
+/// file — never `~/.ssh/config`).
+fn cmd_export(stdout: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
+    let path = paths.ssh_config_file();
+    let display = path.display().to_string();
+
+    if stdout {
+        print!("{}", export::render(&file, &display));
+        return Ok(());
+    }
+
+    export::write(&paths, &file)?;
+    let skipped = export::unexportable_names(&file);
+    println!(
+        "Exported {} host(s) to {}",
+        file.hosts.len() - skipped.len(),
+        display
+    );
+    for name in &skipped {
+        println!("  skipped {name:?} — the name can't be an ssh_config Host pattern");
+    }
+    if file.hosts.is_empty() {
+        println!("(no hosts yet — `sshelf add` or `sshelf import` first)");
+    }
+
+    // Read-only peek at ~/.ssh/config, only to drop the hint once it's already wired up.
+    let mut candidates = vec![display.clone()];
+    if let Ok(home) = std::env::var("HOME")
+        && let Some(rest) = display.strip_prefix(&home)
+    {
+        candidates.push(format!("~{rest}"));
+    }
+    let included = std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".ssh").join("config"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|text| export::already_included(&text, &candidates));
+    if included {
+        println!("Your ~/.ssh/config already includes it — ssh/scp/sftp see these hosts.");
+    } else {
+        println!("To use it, add this line to your ~/.ssh/config (sshelf never edits that file):");
+        println!("  Include {display}");
+    }
+    println!("The file now refreshes automatically whenever your hosts change.");
+    Ok(())
+}
+
+/// Print an advisory warning when refreshing the exported fragment fails. Never fatal: the
+/// fragment is derived data and must not block whatever just changed the hosts.
+fn warn_export_refresh(outcome: Option<Result<()>>) {
+    if let Some(Err(e)) = outcome {
+        eprintln!("sshelf: warning: could not refresh the ssh_config export: {e:#}");
+    }
 }
 
 fn cmd_set_password(host_ref: &str) -> Result<()> {
@@ -508,6 +579,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
     let name = host.name.clone();
     file.hosts.push(host);
     store::save_hosts(&hosts_path, &file)?;
+    warn_export_refresh(export::refresh_if_exported(&paths, &file));
     if let Some(s) = &secret {
         secrets::store_password(&paths.vault_file(), &id, s)?;
     }
@@ -608,6 +680,8 @@ fn cmd_sites_add(
         identity_files,
     });
     store::save_hosts(&hosts_path, &file)?;
+    // Site defaults are resolved into the exported blocks, so a new site refreshes it too.
+    warn_export_refresh(export::refresh_if_exported(&paths, &file));
     println!("added site '{name}'");
     Ok(())
 }
@@ -804,6 +878,14 @@ mod tests {
             Some(Command::Print { host }) => assert_eq!(host, "prod-web"),
             _ => panic!("expected the print-command subcommand"),
         }
+    }
+
+    #[test]
+    fn export_parses_with_and_without_stdout() {
+        let c = Cli::try_parse_from(["sshelf", "export"]).unwrap();
+        assert!(matches!(c.command, Some(Command::Export { stdout: false })));
+        let c = Cli::try_parse_from(["sshelf", "export", "--stdout"]).unwrap();
+        assert!(matches!(c.command, Some(Command::Export { stdout: true })));
     }
 
     #[test]
