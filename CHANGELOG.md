@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-13
+
 ## [0.10.0] — 2026-07-12
 
 ### Added
@@ -147,6 +149,7 @@ Initial public release.
   Linux).
 
 [Unreleased]: https://github.com/max-rh/sshelf/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0
 [0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/max-rh/sshelf/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/max-rh/sshelf/compare/v0.7.0...v0.8.0
