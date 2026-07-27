@@ -33,11 +33,16 @@ tailnet. Targets v0.11.0. (v0.10.0 export shipped.)
   and an existing `NAS` host + differently-cased site are reused, not duplicated. A
   pre-created export fragment refreshed to the imported hosts; without one, nothing was
   created. Each failure mode gives one message and exit 1: backend not running, unparseable
-  JSON, a bogus `$SSHELF_TAILSCALE_BIN`. The macOS app-bundle fallback was exercised against
-  the **real** client (which reported `NeedsLogin` → the friendly "run `tailscale up`" error);
-  no logged-in tailnet on this machine, so a live import is still unverified. `~/.ssh` was
-  byte-identical throughout, and the ssh-config import path was re-checked through the shared
-  tail. 18 new tests (213 pass), clippy + `fmt --check` clean.
+  JSON, a bogus `$SSHELF_TAILSCALE_BIN`. `~/.ssh` was byte-identical throughout (content
+  hashes, not a directory listing), and the ssh-config import path was re-checked through the
+  shared tail. 18 new tests (213 pass), clippy + `fmt --check` clean.
+- **Live tailnet run:** on a real 6-peer tailnet — MagicDNS **disabled**, so the IPv4 fallback
+  took the real path — the binary resolved itself from the macOS app bundle and imported the 2
+  peers with valid node keys (`100.x` addresses, site from `CurrentTailnet.Name`), excluding 4
+  with expired keys and this machine (`Self`); a re-run added 0, and `list --json` /
+  `print-command` produced usable `ssh` commands. Earlier, before login, the same client
+  reported `NeedsLogin` → the friendly "run `tailscale up`" error, so both live states are
+  covered.
 - Docs synced: `import.md` (now "Importing hosts", with the mapping table and the opt-in/
   no-network posture), cli reference (flag + `$SSHELF_TAILSCALE_BIN`), FAQ, structure, index,
   README, CHANGELOG (also collapsed a duplicated `0.10.0` heading + link line). Ships in
