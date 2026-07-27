@@ -25,6 +25,9 @@ sshelf import --dry-run    # preview what would be imported
 sshelf import              # do it (or press Ctrl-o in the TUI)
 ```
 
+On a **Tailscale** tailnet, `sshelf import --tailscale` brings in every machine in one go —
+same rules, [same read-only, add-only promise](import.md#from-tailscale).
+
 ## 3. Connect
 
 Type a few characters to fuzzy-filter, `Enter` to connect. sshelf records your usage and then
