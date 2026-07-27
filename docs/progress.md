@@ -3,8 +3,45 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Interop — `sshelf export` projects the database out to plain ssh via an
-`Include` fragment. Targets v0.10.0. (Docs overhaul + v0.9.0 distribution shipped.)
+**Current milestone:** Inventory import — `sshelf import --tailscale` fills the database from a
+tailnet. Targets v0.11.0. (v0.10.0 export shipped.)
+
+---
+
+## 2026-07-27 — `sshelf import --tailscale`: the tailnet as an inventory source
+
+- New `tailscale.rs` + a `--tailscale` flag on `import`: runs the **user's own** `tailscale
+  status --json` and maps every eligible peer to a host — MagicDNS first label → `name`, the
+  MagicDNS FQDN → `hostname` (Tailscale IP, IPv4 first, when MagicDNS is off for the tailnet),
+  the tailnet → a `site`, ACL tags minus the `tag:` prefix → `tags`, auth `agent`. Eligibility
+  is one rule — the peer's `DNSName` must sit under the tailnet's own `MagicDNSSuffix` — which
+  drops Mullvad exit nodes and shared-in nodes without special cases; expired peers are
+  skipped, offline ones are **not** (an asleep laptop is still a host). Binary resolution:
+  `$SSHELF_TAILSCALE_BIN` → `PATH` → the macOS app bundle, with an error that names all three.
+- **Add-only, in both directions:** existing hosts and sites are never updated or deleted
+  (case-insensitive match), so a re-run converges to "0 added" and a byte-identical
+  `hosts.toml`. Nothing tailscale-specific (node IDs, keys) is stored. The no-network posture
+  stands — the CLI runs only from this subcommand, never at startup, on save, on a timer, or
+  from the TUI. Rationale + rejected alternatives: **D-024**.
+- Refactor: both import modes now share one tail (`apply_import`) — dedupe, site creation
+  (`import::missing_sites`), save, export refresh — so the D-023 fragment auto-refreshes after
+  a tailnet import exactly as it does after an ssh-config one. The summary gained a
+  duplicates count and a line per created site.
+- **Verified end-to-end** against a stub `tailscale` fed the test fixture, with an isolated
+  config dir: 3 hosts + the site land in `hosts.toml`, counts match (3 parsed, 3 excluded — 2
+  foreign, 1 expired), a second run adds 0 with an identical file, `--dry-run` writes nothing,
+  and an existing `NAS` host + differently-cased site are reused, not duplicated. A
+  pre-created export fragment refreshed to the imported hosts; without one, nothing was
+  created. Each failure mode gives one message and exit 1: backend not running, unparseable
+  JSON, a bogus `$SSHELF_TAILSCALE_BIN`. The macOS app-bundle fallback was exercised against
+  the **real** client (which reported `NeedsLogin` → the friendly "run `tailscale up`" error);
+  no logged-in tailnet on this machine, so a live import is still unverified. `~/.ssh` was
+  byte-identical throughout, and the ssh-config import path was re-checked through the shared
+  tail. 18 new tests (213 pass), clippy + `fmt --check` clean.
+- Docs synced: `import.md` (now "Importing hosts", with the mapping table and the opt-in/
+  no-network posture), cli reference (flag + `$SSHELF_TAILSCALE_BIN`), FAQ, structure, index,
+  README, CHANGELOG (also collapsed a duplicated `0.10.0` heading + link line). Ships in
+  **v0.11.0** via `feat/import-tailscale`. Next: `--hcloud`/`--aws` only if demand shows up.
 
 ---
 

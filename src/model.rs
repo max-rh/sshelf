@@ -48,7 +48,7 @@ pub struct Site {
 }
 
 impl Site {
-    #[allow(dead_code)] // wired into the sites manager + `sshelf sites add` (M3/M4)
+    /// A bare site: name only, no shared defaults (what an import creates).
     pub fn new(name: impl Into<String>) -> Self {
         Site {
             name: name.into(),

@@ -15,6 +15,7 @@ Everything sshelf does without opening the TUI.
 | `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
 | `sshelf sites add NAME [-u/-p/-J/-i]` | Define a [site](sites-tags.md) (settings optional; edit later with `F3`). |
 | `sshelf import [--dry-run]` | [Read-only import](import.md) from `~/.ssh/config`. |
+| `sshelf import --tailscale [--dry-run]` | [Import your Tailscale tailnet](import.md#from-tailscale): runs your own `tailscale status --json` and adds every eligible peer (MagicDNS name → host, tailnet → site, ACL tags → tags). Add-only; re-running adds 0. |
 | `sshelf export [--stdout]` | [Export](export.md) the database as an ssh_config `Include` fragment, written next to sshelf's config (`--stdout` prints it instead). Once the file exists, it refreshes on every hosts change. |
 | `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. |
 | `sshelf completions <shell>` | Print static shell completions. |
@@ -24,6 +25,12 @@ Global flags: **`--config FILE`** — use a specific config file (also `$SSHELF_
 [Configuration](configuration.md). **`--transfer-log FILE`** — append transfer diagnostics,
 no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 [Transferring files](transfer.md#debugging-a-failing-transfer).
+
+Environment: **`$SSHELF_TAILSCALE_BIN`** — the `tailscale` binary `--tailscale` should run,
+for installs that aren't on `PATH` (sshelf otherwise tries `PATH`, then the macOS app bundle
+at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`). **`$SSHELF_VAULT_PASSPHRASE`** —
+use the `age` vault instead of the OS keyring; see
+[Passwords, keys & 2FA](passwords-2fa.md#where-secrets-live).
 
 ## Adding hosts from the CLI
 

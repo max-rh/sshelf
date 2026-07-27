@@ -62,7 +62,8 @@
   [`security.md`](./security.md).
 
 - **Own database, never `~/.ssh/config`.** Hosts live in `hosts.toml` (human-readable, atomic
-  writes). Import from `~/.ssh/config` is read-only. See [`data-model.md`](./data-model.md).
+  writes). Importers (`~/.ssh/config`, a Tailscale tailnet) are read-only towards their source
+  and add-only towards the database. See [`data-model.md`](./data-model.md).
 
 - **Synchronous event loop, component pattern.** No background work needs multiplexing (the
   one long-running thing, the SSH session, happens *after* the TUI is gone). A simple

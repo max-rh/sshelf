@@ -5,7 +5,23 @@ versions follow SemVer.
 
 ## [Unreleased]
 
-## [0.10.0] — 2026-07-13
+### Added
+- **`sshelf import --tailscale`** — import your Tailscale tailnet: every eligible machine
+  becomes a searchable sshelf host in one command. Runs **your own** `tailscale` CLI
+  (`tailscale status --json`) and maps each peer's MagicDNS name to the host name, its FQDN to
+  the hostname (stable across IP churn; the Tailscale IP when MagicDNS is off), your tailnet to
+  a [site](https://max-rh.github.io/sshelf/sites-tags.html), and its ACL tags to sshelf tags.
+  Mullvad exit nodes and machines shared in from other tailnets are left out, expired nodes are
+  skipped, and offline machines are imported (being asleep is temporary). **Add-only:** hosts
+  and sites that already exist are never touched, so re-running adds 0 — and, as ever, nothing
+  under `~/.ssh` is written. sshelf still makes no network calls of its own: the CLI runs only
+  when you type the command, never at startup or in the background. `$SSHELF_TAILSCALE_BIN`
+  points at the binary if it isn't on your `PATH` (the macOS app doesn't add it). No new
+  dependencies.
+
+### Changed
+- `sshelf import` now reports how many parsed hosts were skipped as duplicates, and prints any
+  site it creates.
 
 ## [0.10.0] — 2026-07-12
 
@@ -149,7 +165,6 @@ Initial public release.
   Linux).
 
 [Unreleased]: https://github.com/max-rh/sshelf/compare/v0.10.0...HEAD
-[0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0
 [0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/max-rh/sshelf/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/max-rh/sshelf/compare/v0.7.0...v0.8.0

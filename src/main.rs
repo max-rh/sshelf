@@ -18,6 +18,7 @@ mod secrets;
 mod ssh;
 mod state;
 mod store;
+mod tailscale;
 #[cfg(test)]
 mod testsupport;
 mod transfer;
@@ -75,11 +76,16 @@ enum Command {
     /// Add a host. With no arguments, opens the TUI add form; with arguments, adds it
     /// non-interactively (NAME and --hostname are required).
     Add(AddArgs),
-    /// Import hosts from ~/.ssh/config (read-only).
+    /// Import hosts from ~/.ssh/config (read-only), or from your Tailscale tailnet.
     Import {
         /// Show what would be imported without writing.
         #[arg(long)]
         dry_run: bool,
+        /// Import your Tailscale tailnet instead of ~/.ssh/config: runs your own
+        /// `tailscale status --json` and adds every eligible peer. Set $SSHELF_TAILSCALE_BIN
+        /// if the CLI isn't on your PATH.
+        #[arg(long)]
+        tailscale: bool,
     },
     /// Export hosts as an ssh_config fragment, written next to sshelf's config. Add one
     /// `Include` line to ~/.ssh/config yourself (sshelf never edits it) and plain ssh/scp/sftp
@@ -294,7 +300,7 @@ fn main() -> Result<()> {
                 app::run_add()
             }
         }
-        Some(Command::Import { dry_run }) => cmd_import(dry_run),
+        Some(Command::Import { dry_run, tailscale }) => cmd_import(dry_run, tailscale),
         Some(Command::Export { stdout }) => cmd_export(stdout),
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
         Some(Command::Print { host }) => cmd_print_command(&host),
@@ -316,17 +322,37 @@ fn main() -> Result<()> {
     }
 }
 
-fn cmd_import(dry_run: bool) -> Result<()> {
-    let path = import::default_config_path().context("HOME is not set")?;
-    if !path.exists() {
-        anyhow::bail!("no ssh config at {}", path.display());
-    }
-    let result = import::parse_file(&path)?;
-    println!(
-        "Parsed {} host(s) from {}",
-        result.hosts.len(),
-        path.display()
-    );
+/// `sshelf import` — from `~/.ssh/config` by default, or from the user's Tailscale tailnet
+/// with `--tailscale`. Both sources are read-only and both are **add-only** toward
+/// `hosts.toml`: a re-run converges to "0 added".
+fn cmd_import(dry_run: bool, tailscale: bool) -> Result<()> {
+    let result = if tailscale {
+        let result = tailscale::import_tailnet()?;
+        println!(
+            "Parsed {} host(s) from your Tailscale tailnet",
+            result.hosts.len()
+        );
+        result
+    } else {
+        let path = import::default_config_path().context("HOME is not set")?;
+        if !path.exists() {
+            anyhow::bail!("no ssh config at {}", path.display());
+        }
+        let result = import::parse_file(&path)?;
+        println!(
+            "Parsed {} host(s) from {}",
+            result.hosts.len(),
+            path.display()
+        );
+        result
+    };
+    apply_import(result, dry_run)
+}
+
+/// The shared tail of every import mode: report warnings, skip names that already exist
+/// (case-insensitively — never update or delete one), create any site the parsed hosts
+/// reference, persist, and refresh the exported ssh_config fragment.
+fn apply_import(result: import::ImportResult, dry_run: bool) -> Result<()> {
     for w in &result.warnings {
         println!("  warning: {w}");
     }
@@ -336,27 +362,46 @@ fn cmd_import(dry_run: bool) -> Result<()> {
     let cfg = Config::load(&paths.config_file())?;
     let hosts_path = cfg.hosts_path(&paths);
     let mut file = store::load_hosts(&hosts_path)?;
-    let to_add = import::new_hosts(&result.hosts, &file.hosts)
+    let mut to_add = import::new_hosts(&result.hosts, &file.hosts)
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
+    let duplicates = result.hosts.len() - to_add.len();
 
     if to_add.is_empty() {
-        println!("Nothing new to import (all names already exist).");
+        if duplicates == 0 {
+            println!("Nothing to import.");
+        } else {
+            println!("0 added — {duplicates} name(s) already exist in sshelf.");
+        }
         return Ok(());
     }
+    let new_sites = import::missing_sites(&mut to_add, &file.sites);
+
     println!("{} new host(s):", to_add.len());
     for h in &to_add {
         println!("  {:<20} {}", h.name, h.endpoint());
+    }
+    for s in &new_sites {
+        println!("  + site '{}'", s.name);
     }
     if dry_run {
         println!("(dry run — nothing written)");
         return Ok(());
     }
+    let added = to_add.len();
+    file.sites.extend(new_sites);
     file.hosts.extend(to_add);
     store::save_hosts(&hosts_path, &file)?;
     warn_export_refresh(export::refresh_if_exported(&paths, &file));
-    println!("Imported into {}", hosts_path.display());
+    let skipped = match duplicates {
+        0 => String::new(),
+        n => format!(" ({n} skipped as duplicates)"),
+    };
+    println!(
+        "Imported {added} host(s) into {}{skipped}",
+        hosts_path.display()
+    );
     Ok(())
 }
 
@@ -878,6 +923,26 @@ mod tests {
             Some(Command::Print { host }) => assert_eq!(host, "prod-web"),
             _ => panic!("expected the print-command subcommand"),
         }
+    }
+
+    #[test]
+    fn import_defaults_to_ssh_config_and_opts_into_tailscale() {
+        let c = Cli::try_parse_from(["sshelf", "import"]).unwrap();
+        assert!(matches!(
+            c.command,
+            Some(Command::Import {
+                dry_run: false,
+                tailscale: false
+            })
+        ));
+        let c = Cli::try_parse_from(["sshelf", "import", "--tailscale", "--dry-run"]).unwrap();
+        assert!(matches!(
+            c.command,
+            Some(Command::Import {
+                dry_run: true,
+                tailscale: true
+            })
+        ));
     }
 
     #[test]

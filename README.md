@@ -43,6 +43,9 @@ editor — and it adds what plain SSH config can't express:
 - **2FA hosts** — flag a host and sshelf prompts for the verification code on connect.
 - **SSH-config export** — one generated `Include` file, and plain `ssh`/`scp`/`rsync` — and
   anything that reads SSH config, like VS Code Remote — sees your sshelf hosts by name.
+- **Tailscale import** — `sshelf import --tailscale` turns your whole tailnet into searchable
+  hosts (MagicDNS names, tailnet as a site, ACL tags as tags), by running your own `tailscale`
+  CLI. Add-only, so re-running is safe.
 - **Jump hosts, a guided add/edit form, frecency ordering, read-only import** from `~/.ssh/config`.
 
 **Never:** no telemetry, no account, no cloud — and it will never edit your SSH config.
@@ -94,6 +97,7 @@ Full details + completions setup: **[Install guide](https://max-rh.github.io/ssh
 sshelf                        # launch the TUI — Ctrl-a adds your first host
 sshelf import --dry-run       # preview a read-only import from ~/.ssh/config
 sshelf import                 # …do it
+sshelf import --tailscale     # …or import your whole Tailscale tailnet
 sshelf prod-web               # connect straight to a saved host (skips the TUI)
 sshelf -                      # reconnect to the most recently used host
 sshelf list tag:prod --json   # scriptable listing (fields + generated command)

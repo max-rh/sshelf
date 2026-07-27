@@ -12,7 +12,7 @@
 - [Port forwarding](port-forwarding.md)
 - [Sites & tags](sites-tags.md)
 - [Passwords, keys & 2FA](passwords-2fa.md)
-- [Importing from ~/.ssh/config](import.md)
+- [Importing hosts](import.md)
 - [Exporting to SSH config](export.md)
 - [CLI reference](cli.md)
 - [Configuration](configuration.md)

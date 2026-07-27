@@ -22,6 +22,15 @@ with anything reasonably modern. Platforms: macOS + Linux, x86_64 and arm64.
 No. No telemetry, no account, no network calls of its own — the only network activity is the
 `ssh`/`sftp` it runs for you. See [Security](security.md).
 
+## Then how does the Tailscale import work?
+
+The same way: by running a program you already have.
+[`sshelf import --tailscale`](import.md#from-tailscale) executes **your** `tailscale` CLI
+(`tailscale status --json`) and parses its output — sshelf opens no sockets, holds no API key,
+and talks to no Tailscale server. It only ever runs when you type that command: never at
+startup, on a save, on a timer, or from the TUI. Nothing tailscale-specific (node IDs, keys) is
+written to `hosts.toml`, and the import only ever *adds* hosts.
+
 ## Password auto-supply isn't working
 
 - Check `ssh -V` — you need OpenSSH 8.4+ (see above).
