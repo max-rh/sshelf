@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-27
+
 ### Added
 - **`sshelf import --tailscale`** — import your Tailscale tailnet: every eligible machine
   becomes a searchable sshelf host in one command. Runs **your own** `tailscale` CLI
@@ -164,7 +166,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/max-rh/sshelf/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/max-rh/sshelf/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/max-rh/sshelf/compare/v0.7.0...v0.8.0
