@@ -2,9 +2,9 @@
 
 > Keep this in sync with the actual tree (the docs-in-sync rule).
 >
-> **All modules present:** `main`, `app`, `askpass`, `config`, `forwards`, `import`, `model`,
-> `paths`, `search`, `secrets`, `ssh`, `state`, `store`, `transfer/{mod,worker,pane,screen,e2e}`,
-> `testsupport` (test-only), `vault`,
+> **All modules present:** `main`, `app`, `askpass`, `config`, `export`, `forwards`, `import`,
+> `model`, `paths`, `search`, `secrets`, `ssh`, `state`, `store`, `tailscale`,
+> `transfer/{mod,worker,pane,screen,e2e}`, `testsupport` (test-only), `vault`,
 > `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards,two_factor}`.
 > (`error.rs` was removed — the codebase uses `anyhow` throughout.)
 
@@ -36,7 +36,8 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `ssh.rs` | Build `ssh` argv from a `Host`; terminal teardown + `exec()` handoff; askpass env wiring. |
 | `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer password prompts via `secrets`, or a queued 2FA code (`SSHELF_2FA_CODE`) for the verification prompt; else decline. |
 | `search.rs` | Fuzzy filter (`nucleo-matcher`) + frecency ranking + per-row match indices for highlight. |
-| `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. |
+| `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. Also the shape (`ImportResult`) and add-only plumbing (`new_hosts`, `missing_sites`) every importer shares. |
+| `tailscale.rs` | `sshelf import --tailscale`: locate the user's `tailscale` binary, run `status --json`, map eligible peers → hosts (MagicDNS name/FQDN, tailnet → site, ACL tags). Pure parser over `&str`; the only process spawn is isolated in one function. |
 | `export.rs` | Render the database as an ssh_config `Include` fragment (site defaults resolved, `-o` extras translated); write to `ssh_config` in the config dir; auto-refresh on hosts saves once the file exists. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color; writes a commented default on first run. |

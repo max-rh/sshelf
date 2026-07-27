@@ -31,6 +31,8 @@ sshelf                             # launch the TUI
   [Passwords, keys & 2FA](passwords-2fa.md)
 - **SSH-config export** — one `Include` line and plain `ssh`/`scp`, rsync, and VS Code Remote
   see your hosts — [Exporting to SSH config](export.md)
+- **Import** from `~/.ssh/config` or your whole **Tailscale tailnet** (`--tailscale`) —
+  [Importing hosts](import.md)
 - A scriptable **CLI** (`sshelf add`, `list --json`, `print-command`, …) — [CLI reference](cli.md)
 
 Platforms: **macOS + Linux**, x86_64 and arm64. Runtime: **OpenSSH 8.4+** for password

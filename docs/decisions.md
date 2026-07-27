@@ -5,6 +5,36 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-024 · Tailscale import shells out to the user's CLI; MagicDNS names, suffix eligibility, add-only
+`sshelf import --tailscale` fills the database from a tailnet — the inventory a homelab/small-fleet
+user already curates — without sshelf growing a network client. It **shells out to the user's own
+`tailscale status --json`** and parses stdout. Rejected: the Tailscale HTTP API / an SDK, which
+would mean an API key to store (violating the no-secrets-in-`hosts.toml` rule and the whole
+secret-handling story), an HTTP + async dependency stack, and sshelf making network calls of its
+own; and reading `tailscaled`'s local socket directly (unstable, root-ish, platform-specific).
+Shelling out keeps the **no-network posture intact**: the binary runs only when the user runs the
+subcommand — never at startup, on save, on a timer, or from the TUI. Binary resolution is
+`$SSHELF_TAILSCALE_BIN` → `PATH` → `/Applications/Tailscale.app/Contents/MacOS/Tailscale`,
+because the macOS app doesn't put its CLI on `PATH`.
+
+**`hostname` = the MagicDNS FQDN**, not a Tailscale IP: it survives IP churn, reads better in the
+list, and is what Tailscale SSH expects — with the IP (IPv4 first) as the fallback when MagicDNS
+is disabled for the tailnet. **Eligibility is one rule: the peer's `DNSName` must sit under the
+tailnet's own `MagicDNSSuffix`** — which excludes Mullvad exit nodes and shared-in/foreign nodes
+without special-casing either. Rejected: filtering by `ExitNodeOption`/`OS`/owner (a list of
+special cases that ages badly). Expired peers are skipped; **offline peers are not** — `Online`
+is transient and an asleep laptop is still a real host. The tailnet becomes a **site** (matched
+case-insensitively, created bare when new) and ACL tags become sshelf tags minus the `tag:`
+prefix, so the tailnet's own structure carries over instead of being flattened.
+
+Import is **add-only**: existing hosts and sites are never updated or deleted, so re-running
+converges to "0 added" and the user's own edits (a `user`, a port, a password) are never
+clobbered. Rejected: sync semantics (two-way reconciliation, deletion of departed nodes) — that
+needs a per-host record of provenance, and v1 deliberately stores **nothing** tailscale-specific
+in `hosts.toml`: no node IDs, no keys. The JSON→hosts mapping is a pure function over `&str`
+(mirroring `import::parse_str`), so the whole feature is fixture-tested without the binary,
+a tailnet, or a network.
+
 ### D-023 · Export writes our own ssh_config fragment; the user adds the Include line
 `sshelf export` projects the database into ssh_config format so native tools (ssh/scp/sftp,
 rsync, git, editor remote extensions) resolve sshelf hosts by name — the standing objection to

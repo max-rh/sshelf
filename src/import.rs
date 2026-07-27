@@ -12,8 +12,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ssh2_config::{ParseRule, SshConfig};
 
-use crate::model::{AuthMethod, Host};
+use crate::model::{AuthMethod, Host, Site, find_site};
 
+/// What an importer produces, whatever its source (`~/.ssh/config`, a tailnet, …): the hosts
+/// it mapped, plus what it couldn't map and wants the user to know about.
+#[derive(Debug)]
 pub struct ImportResult {
     pub hosts: Vec<Host>,
     pub warnings: Vec<String>,
@@ -73,6 +76,27 @@ pub fn new_hosts<'a>(parsed: &'a [Host], existing: &[Host]) -> Vec<&'a Host> {
         .iter()
         .filter(|h| !names.contains(&h.name.to_lowercase()))
         .collect()
+}
+
+/// Add-only site handling for imports: point each host at the **existing** spelling of the
+/// site it names (matched case-insensitively) and return the bare sites that still need
+/// creating. Existing sites are never modified — only referenced.
+pub fn missing_sites(hosts: &mut [Host], existing: &[Site]) -> Vec<Site> {
+    let mut fresh: Vec<Site> = Vec::new();
+    for host in hosts.iter_mut() {
+        let Some(name) = host.site.clone() else {
+            continue;
+        };
+        // Clone the matched spelling before touching `fresh` again (it may be borrowed from it).
+        let known = find_site(existing, &name)
+            .or_else(|| find_site(&fresh, &name))
+            .map(|site| site.name.clone());
+        match known {
+            Some(spelling) => host.site = Some(spelling),
+            None => fresh.push(Site::new(name)),
+        }
+    }
+    fresh
 }
 
 fn is_wildcard(pat: &str) -> bool {
@@ -166,6 +190,31 @@ Host behind
     fn warns_about_proxyjump() {
         let r = parse_str(SAMPLE).unwrap();
         assert!(r.warnings.iter().any(|w| w.contains("ProxyJump")));
+    }
+
+    #[test]
+    fn missing_sites_matches_case_insensitively_and_creates_once() {
+        let mut hosts = vec![
+            Host::new("a", "h1"),
+            Host::new("b", "h2"),
+            Host::new("c", "h3"),
+            Host::new("d", "h4"),
+        ];
+        hosts[0].site = Some("TAILNET".into()); // existing, differently cased
+        hosts[1].site = Some("new-net".into()); // to be created
+        hosts[2].site = Some("New-Net".into()); // same new site, differently cased
+        // hosts[3] has no site at all
+
+        let existing = vec![Site::new("Tailnet")];
+        let fresh = missing_sites(&mut hosts, &existing);
+
+        // The existing site is reused with its own spelling, never redefined.
+        assert_eq!(hosts[0].site.as_deref(), Some("Tailnet"));
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0], Site::new("new-net")); // bare: name only, no defaults
+        assert_eq!(hosts[1].site.as_deref(), Some("new-net"));
+        assert_eq!(hosts[2].site.as_deref(), Some("new-net"));
+        assert_eq!(hosts[3].site, None);
     }
 
     #[test]
