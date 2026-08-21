@@ -32,7 +32,7 @@ active**, so plain typing filters the list, and actions use **Ctrl** or function
 | `Ctrl-f` | [port-forward](port-forwarding.md) through the selected host |
 | `Ctrl-o` | [import](import.md) from `~/.ssh/config` (read-only) |
 | `F1` | help overlay — every key, in the TUI itself |
-| `F2` | settings ([Configuration](configuration.md)) |
+| `F2` | settings — hosts file, tmux mode ([Configuration](configuration.md)) |
 | `F3` | manage [sites](sites-tags.md) |
 | `F4` | manage [port forwards](port-forwarding.md#the-forwards-manager-f4) |
 | `Esc` | clear the query if non-empty, otherwise quit |
@@ -46,6 +46,36 @@ and your session, and when the session ends you're back at your shell. The comma
 exactly what `Ctrl-y` (or `sshelf print-command <host>`) shows: plain flags built from the
 host's fields plus any inherited [site defaults](sites-tags.md) — no temporary config files.
 Full mechanics: [How the ssh command is built](ssh-command.md).
+
+## Connecting inside tmux
+
+By default connecting always hands the terminal over, tmux or not. Set `tmux` to `"window"` or
+`"pane"` ([Configuration](configuration.md), or `F2`) and — **when sshelf is itself running
+inside tmux** — `Enter` instead opens the connection in a new tmux window (named after the
+host) or a new pane, and **leaves you in the picker**. That's the point: fire off four hosts in
+a row without reopening sshelf between them. A one-line status confirms each one
+(`opened in tmux window: prod-web`).
+
+Outside tmux, or with `tmux = "off"`, nothing changes: `Enter` is exactly the handoff described
+above.
+
+### Hosts that always connect in place
+
+Three kinds of connection step back to the normal handoff even in tmux mode, and say so on the
+line just before ssh starts:
+
+- **[2FA hosts](passwords-2fa.md#two-factor-2fa-hosts)** — the verification code you typed can
+  only reach a new tmux window through `tmux new-window -e KEY=VALUE`, which is the tmux
+  client's own command line and therefore visible in `ps`. sshelf will not put a one-time code
+  there.
+- **Stored-password hosts in [vault mode](passwords-2fa.md#where-secrets-live)** (with
+  `$SSHELF_VAULT_PASSPHRASE` set) — same reason: the master passphrase would have to cross the
+  same boundary.
+- **tmux older than 3.0**, which has no `-e` at all, for hosts with a stored secret.
+
+Everything else — key, agent, and keyring-backed password hosts — opens in tmux normally. Only
+the askpass *wiring* crosses (including the host's opaque id, which the helper trades for the
+secret); no secret ever does. The reasoning is [D-025](decisions.md).
 
 ## Connecting without the TUI
 

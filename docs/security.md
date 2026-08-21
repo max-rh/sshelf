@@ -35,11 +35,33 @@ prompts — a login password (`…password:`) or a key passphrase (`Enter passph
 and declines host-key confirmations, OTP/verification codes, and arbitrary server text, so a
 keyboard-interactive server can't phish the stored secret by merely mentioning "password".
 
+## The tmux boundary
+
+With `tmux = "window"`/`"pane"` ([Searching & connecting](search-connect.md#connecting-inside-tmux)),
+a connection is opened by a *new tmux window*, which is a child of the tmux **server** — it
+inherits nothing from sshelf's own process. tmux's only channel is `new-window -e KEY=VALUE`, and
+those pairs are the **tmux client's argv**: readable by anyone on the machine with `ps`. That is
+exactly the leak `SSH_ASKPASS` exists to avoid, so the rule is content-based:
+
+- Only the askpass *wiring* ever crosses — `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`,
+  `SSHELF_ASKPASS=1`, and `SSHELF_HOST_ID`. The id is an opaque ULID; the helper trades it for
+  the secret in the keyring, exactly as it does after an `exec()`. No value there is a secret.
+- **`SSHELF_2FA_CODE` and `SSHELF_VAULT_PASSPHRASE` never cross.** A connection that needs
+  either — a 2FA host, or a stored-secret host in vault mode — falls back to the in-place
+  `exec()` handoff, where the environment is passed by `fork`/`exec` and never appears in argv.
+  A unit test asserts neither variable can appear in a generated tmux argv.
+- Key/agent hosts pass no environment at all.
+- The ssh argv is handed to tmux as separate arguments after `--`, so tmux `execvp`s it directly
+  rather than letting a shell re-parse it.
+
+Rationale and rejected alternatives: [D-025](decisions.md).
+
 ## Threat model
 
 ### Protected against
 - **On-disk plaintext exposure** — secrets are in the OS keyring or encrypted at rest in the vault.
-- **Process-listing / argv leakage** — password is delivered via stdin/stdout to `ssh`, not argv.
+- **Process-listing / argv leakage** — password is delivered via stdin/stdout to `ssh`, not argv;
+  the tmux path (above) is held to the same rule, falling back rather than bending it.
 - **Shell-history leakage** — `sshelf` never echoes the command containing a password.
 - **Casual file snooping** — the vault requires the master passphrase (memory-hard KDF).
 - **`hosts.toml` sharing** — it contains no secrets, so it's safe to commit/share/back up.

@@ -5,6 +5,40 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-21
+
+### Added
+- **tmux mode** — set `tmux = "window"` or `"pane"` (in `config.toml`, or on the `F2` settings
+  screen) and, when sshelf is running inside tmux, `Enter` opens the host in a new tmux window
+  (named after it) or a new pane and **leaves you in the picker**, so you can fire off several
+  connections in a row. Outside tmux, or with the default `"off"`, connecting is unchanged:
+  tear down, hand the terminal to `ssh`, exit to your shell. Frecency is recorded before the
+  window opens, exactly as before the `exec()`. Hosts whose authentication would have to travel
+  through tmux's command line — a
+  [2FA](https://max-rh.github.io/sshelf/passwords-2fa.html#two-factor-2fa-hosts) verification
+  code, or a stored secret in vault mode — connect in place instead and say why; only the
+  askpass wiring (never a secret) is ever passed to tmux. No new dependencies: sshelf runs your
+  own `tmux` binary.
+- **Transfer: mark several and send them at once** — `Space` marks the file or folder under the
+  cursor, `Ctrl-a` marks everything the filter shows (again to clear), and `Ctrl-s` sends the
+  whole set — folders recursively — through the one authenticated connection, counting through
+  the batch. An entry the destination already has is skipped and the queue carries on; the
+  summary names what was passed over. `Esc` now clears marks before clearing the filter.
+- **Transfer: create directories with `F7`** (or `Ctrl-f`) on either side — a one-line input at
+  the bottom of the focused pane. It creates exactly one directory in that pane's current
+  directory, never adopts an existing name, and puts the new directory under the cursor.
+
+### Fixed
+- Cancelling a transfer with `Esc` left the transfer screen stuck in its "transfer running"
+  state, ignoring every key but `Esc` and `Ctrl-c`. It now reports the cancellation and returns
+  to browsing.
+
+### Changed
+- The `F1` help overlay documents the transfer screen's keys and the active tmux mode.
+- README, FAQ, and the docs site point at
+  [GitHub Discussions](https://github.com/max-rh/sshelf/discussions) for questions and feature
+  requests.
+
 ## [0.11.0] — 2026-07-27
 
 ### Added
@@ -166,7 +200,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/max-rh/sshelf/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/max-rh/sshelf/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/max-rh/sshelf/compare/v0.8.0...v0.9.0

@@ -24,7 +24,10 @@ sshelf                             # launch the TUI
 ## What's in the box
 
 - An atuin-style **fuzzy launcher** with frecency ordering — [Searching & connecting](search-connect.md)
-- A dual-pane **SFTP file browser** (`Ctrl-t`) — [Transferring files](transfer.md)
+- A dual-pane **SFTP file browser** (`Ctrl-t`) — mark several, send in one go, `F7` to create a
+  directory — [Transferring files](transfer.md)
+- **tmux mode** — `Enter` opens each host in a new window or pane and keeps the picker up —
+  [Connecting inside tmux](search-connect.md#connecting-inside-tmux)
 - Background **port forwards** that survive quitting (`Ctrl-f` / `F4`) — [Port forwarding](port-forwarding.md)
 - **Sites** with a shared bastion + defaults, plus free-form tags (`F3`) — [Sites & tags](sites-tags.md)
 - Stored **passwords/passphrases** auto-supplied at connect, and **2FA** code prompts —
@@ -48,6 +51,9 @@ Deciding whether to trust it — or just curious how the pieces fit?
   mechanism that supplies passwords without `sshpass`.
 
 ## Contributing
+
+Questions, ideas, and feature requests belong in
+[GitHub Discussions](https://github.com/max-rh/sshelf/discussions).
 
 Start with [`CONTRIBUTING.md`](https://github.com/max-rh/sshelf/blob/master/CONTRIBUTING.md),
 then the **Development** section in the sidebar: architecture, module map, data model, and the

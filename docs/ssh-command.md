@@ -46,6 +46,28 @@ On connect:
 
 A RAII guard + panic hook guarantees step 3's teardown also runs on panic/early-exit.
 
+### 2a. The tmux handoff
+
+With `tmux = "window"`/`"pane"` **and** `$TMUX` present, steps 3–4 are replaced by a spawn and
+sshelf keeps running:
+
+```
+tmux new-window|split-window
+  [-e SSH_ASKPASS=<self>] [-e SSH_ASKPASS_REQUIRE=force]
+  [-e SSHELF_ASKPASS=1]   [-e SSHELF_HOST_ID=<id>]      # only when a secret is stored
+  [-n <host name>]                                       # new-window only; split-window has no -n
+  --                                                     # ends tmux's own options
+  ssh <the argv from §1, as separate arguments>
+```
+
+- Frecency is still persisted **first** — the spawn is as much a point of no return as `exec()`.
+- The argv is passed as separate arguments, never one joined string, so tmux `execvp`s it and a
+  path containing a space survives.
+- `-e` pairs land in the tmux client's argv, so only non-secret wiring may ride there. A queued
+  2FA code, a vault master passphrase, or a tmux older than 3.0 (no `-e`) sends the connection
+  back to the `exec()` path above, with the reason printed once the TUI is down. See
+  [`security.md`](./security.md) and D-025.
+
 ## 3. Secret auto-supply — the sharp edges
 
 Applies whenever a **stored secret** exists for the host — a login **password** (password

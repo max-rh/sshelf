@@ -1,6 +1,6 @@
-//! The settings screen (F2): configure sshelf itself. Starts with the hosts-file location;
-//! designed to grow (more fields can be added to the form). The config-file path is shown
-//! read-only because it's chosen *before* the config is read (via `--config` / `$SSHELF_CONFIG`).
+//! The settings screen (F2): configure sshelf itself — the hosts-file location and where tmux
+//! mode opens connections. The config-file path is shown read-only because it's chosen *before*
+//! the config is read (via `--config` / `$SSHELF_CONFIG`).
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,9 +11,13 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::widgets::TextField;
 use super::{accent, centered};
+use crate::config::Tmux;
 
 const VALUE_COL: u16 = 15;
 const LABEL_W: usize = 12;
+/// Screen rows (relative to the box's inner area) each editable field sits on.
+const HOSTS_ROW: u16 = 3;
+const TMUX_ROW: u16 = 5;
 
 pub enum SettingsOutcome {
     Continue,
@@ -21,7 +25,15 @@ pub enum SettingsOutcome {
     /// Save preferences; `hosts_file` is `None` to use the default location.
     Save {
         hosts_file: Option<String>,
+        tmux: Tmux,
     },
+}
+
+/// Which field the cursor is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    HostsFile,
+    Tmux,
 }
 
 pub struct Settings {
@@ -30,14 +42,23 @@ pub struct Settings {
     /// Default hosts path, shown as a placeholder when the field is blank.
     default_hosts: String,
     hosts_file: TextField,
+    tmux: Tmux,
+    focus: Field,
 }
 
 impl Settings {
-    pub fn new(config_path: String, hosts_file: Option<String>, default_hosts: String) -> Self {
+    pub fn new(
+        config_path: String,
+        hosts_file: Option<String>,
+        default_hosts: String,
+        tmux: Tmux,
+    ) -> Self {
         Settings {
             config_path,
             default_hosts,
             hosts_file: TextField::with(hosts_file.unwrap_or_default()),
+            tmux,
+            focus: Field::HostsFile,
         }
     }
 
@@ -46,12 +67,29 @@ impl Settings {
             return self.save();
         }
         match key.code {
-            KeyCode::Esc => SettingsOutcome::Cancel,
-            KeyCode::Enter => self.save(),
-            code => {
-                self.hosts_file.handle(code);
-                SettingsOutcome::Continue
-            }
+            KeyCode::Esc => return SettingsOutcome::Cancel,
+            KeyCode::Enter => return self.save(),
+            KeyCode::Tab | KeyCode::Down => self.focus = self.other_field(),
+            KeyCode::BackTab | KeyCode::Up => self.focus = self.other_field(),
+            code => match self.focus {
+                Field::HostsFile => {
+                    self.hosts_file.handle(code);
+                }
+                // The tmux field is a cycling toggle: it has three states, not free text.
+                Field::Tmux => {
+                    if matches!(code, KeyCode::Char(' ') | KeyCode::Right | KeyCode::Left) {
+                        self.tmux = self.tmux.next();
+                    }
+                }
+            },
+        }
+        SettingsOutcome::Continue
+    }
+
+    fn other_field(&self) -> Field {
+        match self.focus {
+            Field::HostsFile => Field::Tmux,
+            Field::Tmux => Field::HostsFile,
         }
     }
 
@@ -59,6 +97,7 @@ impl Settings {
         let v = self.hosts_file.value.trim();
         SettingsOutcome::Save {
             hosts_file: (!v.is_empty()).then(|| v.to_string()),
+            tmux: self.tmux,
         }
     }
 }
@@ -74,7 +113,7 @@ fn fit_left(s: &str, width: usize) -> String {
 
 pub fn render(frame: &mut Frame, s: &Settings) {
     let width = frame.area().width.saturating_sub(6).clamp(56, 100);
-    let area = centered(frame.area(), width, 11);
+    let area = centered(frame.area(), width, 13);
     frame.render_widget(Clear, area);
     let block = Block::default().borders(Borders::ALL).title(" settings ");
     let inner = block.inner(area);
@@ -104,7 +143,7 @@ pub fn render(frame: &mut Frame, s: &Settings) {
         row(1),
     );
 
-    // Hosts file (the editable field).
+    // Hosts file (editable text).
     let (hosts_val, hosts_style) = if s.hosts_file.value.is_empty() {
         (
             format!(
@@ -117,26 +156,66 @@ pub fn render(frame: &mut Frame, s: &Settings) {
         (s.hosts_file.value.clone(), Style::default())
     };
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("▸ ", acc),
-            Span::styled(format!("{:<LABEL_W$} ", "Hosts file"), acc),
-            Span::styled(hosts_val, hosts_style),
-        ])),
-        row(3),
+        Paragraph::new(field_line(
+            s.focus == Field::HostsFile,
+            "Hosts file",
+            hosts_val,
+            hosts_style,
+            acc,
+        )),
+        row(HOSTS_ROW),
+    );
+
+    // tmux mode (a three-state toggle).
+    frame.render_widget(
+        Paragraph::new(field_line(
+            s.focus == Field::Tmux,
+            "tmux",
+            s.tmux.as_str().to_string(),
+            Style::default(),
+            acc,
+        )),
+        row(TMUX_ROW),
+    );
+    frame.render_widget(
+        Paragraph::new(match s.tmux {
+            Tmux::Off => "    (space cycles — off / window / pane: where Enter opens a connection)",
+            Tmux::Window => "    (space cycles — inside tmux, Enter opens a new window)",
+            Tmux::Pane => "    (space cycles — inside tmux, Enter splits off a new pane)",
+        })
+        .style(dim),
+        row(TMUX_ROW + 1),
     );
 
     frame.render_widget(
-        Paragraph::new("↵ or ^s save · esc cancel").style(dim),
-        row(inner.height.saturating_sub(2)),
-    );
-    frame.render_widget(
-        Paragraph::new("more settings coming soon").style(dim),
+        Paragraph::new("tab next field · ↵ or ^s save · esc cancel").style(dim),
         row(inner.height.saturating_sub(1)),
     );
 
-    // Cursor on the Hosts file field.
-    let cx = inner.x + VALUE_COL + s.hosts_file.cursor as u16;
-    frame.set_cursor_position((cx.min(inner.x + inner.width.saturating_sub(1)), inner.y + 3));
+    // The cursor belongs on the text field only; the toggle has no insertion point.
+    if s.focus == Field::HostsFile {
+        let cx = inner.x + VALUE_COL + s.hosts_file.cursor as u16;
+        frame.set_cursor_position((
+            cx.min(inner.x + inner.width.saturating_sub(1)),
+            inner.y + HOSTS_ROW,
+        ));
+    }
+}
+
+/// One labelled form row: an accent marker + label when focused, dim otherwise.
+fn field_line(
+    focused: bool,
+    label: &str,
+    value: String,
+    value_style: Style,
+    acc: Style,
+) -> Line<'static> {
+    let label_style = if focused { acc } else { Style::default() };
+    Line::from(vec![
+        Span::styled(if focused { "▸ " } else { "  " }, acc),
+        Span::styled(format!("{label:<LABEL_W$} "), label_style),
+        Span::styled(value, value_style),
+    ])
 }
 
 #[cfg(test)]
@@ -156,6 +235,7 @@ mod tests {
             "/home/u/.config/sshelf/config.toml".into(),
             None,
             "/home/u/.config/sshelf/hosts.toml".into(),
+            Tmux::Off,
         )
     }
 
@@ -163,7 +243,10 @@ mod tests {
     fn empty_saves_none() {
         let mut s = new_settings();
         match s.handle_key(k(KeyCode::Enter)) {
-            SettingsOutcome::Save { hosts_file } => assert!(hosts_file.is_none()),
+            SettingsOutcome::Save { hosts_file, tmux } => {
+                assert!(hosts_file.is_none());
+                assert_eq!(tmux, Tmux::Off);
+            }
             _ => panic!("expected save"),
         }
     }
@@ -175,9 +258,43 @@ mod tests {
             s.handle_key(k(KeyCode::Char(c)));
         }
         match s.handle_key(ctrl(KeyCode::Char('s'))) {
-            SettingsOutcome::Save { hosts_file } => {
+            SettingsOutcome::Save { hosts_file, .. } => {
                 assert_eq!(hosts_file.as_deref(), Some("/data/hosts.toml"));
             }
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn tab_reaches_the_tmux_field_and_space_cycles_it() {
+        let mut s = new_settings();
+        s.handle_key(k(KeyCode::Tab));
+        s.handle_key(k(KeyCode::Char(' ')));
+        match s.handle_key(ctrl(KeyCode::Char('s'))) {
+            SettingsOutcome::Save { tmux, .. } => assert_eq!(tmux, Tmux::Window),
+            _ => panic!("expected save"),
+        }
+        // …and it wraps back around to off.
+        let mut s = new_settings();
+        s.handle_key(k(KeyCode::Tab));
+        for _ in 0..3 {
+            s.handle_key(k(KeyCode::Char(' ')));
+        }
+        match s.handle_key(k(KeyCode::Enter)) {
+            SettingsOutcome::Save { tmux, .. } => assert_eq!(tmux, Tmux::Off),
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn typing_on_the_tmux_field_does_not_edit_the_path() {
+        let mut s = new_settings();
+        s.handle_key(k(KeyCode::Tab));
+        for c in "/oops".chars() {
+            s.handle_key(k(KeyCode::Char(c)));
+        }
+        match s.handle_key(k(KeyCode::Enter)) {
+            SettingsOutcome::Save { hosts_file, .. } => assert!(hosts_file.is_none()),
             _ => panic!("expected save"),
         }
     }
@@ -197,7 +314,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let s = new_settings();
-        let mut term = Terminal::new(TestBackend::new(72, 14)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(78, 16)).unwrap();
         term.draw(|f| render(f, &s)).unwrap();
         let buf = term.backend().buffer();
         let width = buf.area.width as usize;
@@ -210,6 +327,7 @@ mod tests {
         assert!(snapshot.contains("settings"));
         assert!(snapshot.contains("Hosts file"));
         assert!(snapshot.contains("Config file"));
+        assert!(snapshot.contains("tmux"));
         if let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") {
             let p = std::path::Path::new(&dir).join("target/settings-snapshot.txt");
             let _ = std::fs::write(p, &snapshot);

@@ -4,6 +4,7 @@
 //! by `ssh` via `exec()`, giving ssh the real TTY. Nothing runs after a successful exec, so
 //! the caller persists frecency state beforehand.
 
+use crate::config::Tmux;
 use crate::model::{AuthMethod, Host};
 
 /// Expand a leading `~` / `~/` to `$HOME`. On the command line the shell normally does this,
@@ -100,6 +101,173 @@ pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) 
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(e) => anyhow::anyhow!("failed to launch ssh: {e}"),
     }
+}
+
+/// Why a connection cannot be handed to tmux and must `exec()` in place instead. Each variant
+/// carries its own explanation, shown to the user before the handoff (see `docs/search-connect.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmuxFallback {
+    /// A one-time 2FA code has to reach `ssh`, and the only way across the tmux boundary is
+    /// `new-window -e KEY=VAL` — i.e. the tmux client's argv, readable by anyone with `ps`.
+    TwoFactor,
+    /// Vault mode: the askpass helper unlocks `vault.age` with `$SSHELF_VAULT_PASSPHRASE`, which
+    /// would have to cross the same argv boundary. Same threat, same answer.
+    VaultPassphrase,
+    /// This tmux predates `-e` on `new-window`/`split-window` (3.0), so the askpass wiring a
+    /// stored-secret host needs cannot be handed to the new window at all.
+    TmuxTooOld,
+}
+
+impl TmuxFallback {
+    /// One line, shown just before the in-place connect so the missing tmux window isn't a
+    /// mystery.
+    pub fn message(self) -> &'static str {
+        match self {
+            TmuxFallback::TwoFactor => {
+                "2FA host — connecting here (a verification code would ride tmux's argv)"
+            }
+            TmuxFallback::VaultPassphrase => {
+                "vault-mode password host — connecting here (the passphrase would ride tmux's argv)"
+            }
+            TmuxFallback::TmuxTooOld => {
+                "tmux is older than 3.0 — connecting here (it can't carry the askpass wiring)"
+            }
+        }
+    }
+}
+
+/// Whether this process is running inside tmux (`$TMUX` is set by the server for its panes).
+pub fn inside_tmux() -> bool {
+    std::env::var_os("TMUX").is_some_and(|v| !v.is_empty())
+}
+
+/// Decide whether a connection can be opened in tmux, given what it needs to authenticate.
+///
+/// `wire_askpass` = a secret is stored for this host, `two_fa_code` = a code was collected in the
+/// TUI. Returns `Err(reason)` when the connection must `exec()` in place instead; see D-025.
+pub fn tmux_fallback(wire_askpass: bool, has_2fa_code: bool) -> Result<(), TmuxFallback> {
+    if has_2fa_code {
+        return Err(TmuxFallback::TwoFactor);
+    }
+    // Only a wired askpass ever reads the vault; a key/agent host needs no env at all.
+    if wire_askpass
+        && std::env::var_os(crate::secrets::VAULT_PASS_ENV).is_some_and(|v| !v.is_empty())
+    {
+        return Err(TmuxFallback::VaultPassphrase);
+    }
+    if wire_askpass && !tmux_supports_env() {
+        return Err(TmuxFallback::TmuxTooOld);
+    }
+    Ok(())
+}
+
+/// True when the user's tmux understands `-e` on `new-window`/`split-window` (added in 3.0).
+/// An unreadable or unparseable `tmux -V` is treated as too old — falling back to `exec()` is
+/// always correct, just less convenient.
+fn tmux_supports_env() -> bool {
+    let out = std::process::Command::new("tmux").arg("-V").output();
+    match out {
+        Ok(o) if o.status.success() => tmux_version_at_least_3(&String::from_utf8_lossy(&o.stdout)),
+        _ => false,
+    }
+}
+
+/// Parse `tmux -V` output (`tmux 3.4`, `tmux 3.2a`, `tmux next-3.6`, `tmux master`) and report
+/// whether it is at least 3.0. `master`/`next-*` are treated as new enough.
+fn tmux_version_at_least_3(output: &str) -> bool {
+    let Some(raw) = output.split_whitespace().nth(1) else {
+        return false;
+    };
+    if raw == "master" {
+        return true;
+    }
+    let raw = raw.strip_prefix("next-").unwrap_or(raw);
+    let major: String = raw.chars().take_while(char::is_ascii_digit).collect();
+    major.parse::<u32>().is_ok_and(|m| m >= 3)
+}
+
+/// The environment pairs that must cross into a tmux pane for `host` to authenticate exactly as
+/// an in-place connect would.
+///
+/// **These land in the tmux client's argv** (`new-window -e KEY=VAL`), so every value here is
+/// public: `SSHELF_HOST_ID` is an opaque id the helper trades for the real secret, and the rest is
+/// plumbing. The stored secret, the 2FA code (`SSHELF_2FA_CODE`) and the vault passphrase are
+/// **never** included — a connection that would need one falls back to `exec()`
+/// ([`tmux_fallback`]). Returns nothing for key/agent hosts: they need no wiring at all.
+pub fn tmux_env(host: &Host, wire_askpass: bool) -> Vec<(String, String)> {
+    if !wire_askpass {
+        return Vec::new();
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    vec![
+        ("SSH_ASKPASS".to_string(), exe.display().to_string()),
+        ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
+        ("SSHELF_ASKPASS".to_string(), "1".to_string()),
+        ("SSHELF_HOST_ID".to_string(), host.id.clone()),
+    ]
+}
+
+/// A tmux window name for `host`: printable characters only, no whitespace, capped in length.
+/// tmux shows this in the status line, so a hostile or empty name can't be allowed through.
+fn window_name(host: &Host) -> String {
+    let cleaned: String = host
+        .name
+        .chars()
+        .map(|c| if c.is_whitespace() { '-' } else { c })
+        .filter(|c| !c.is_control())
+        .take(32)
+        .collect();
+    if cleaned.trim_matches('-').is_empty() {
+        "sshelf".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// The full `tmux` argv (program name excluded) that opens `host` in a new window or pane.
+///
+/// `mode` must not be [`Tmux::Off`] — the caller decides that before getting here. The ssh argv is
+/// passed as separate arguments, not one string, so tmux `execvp`s it directly and no shell
+/// re-parses paths with spaces. `-n` names the window (`split-window` has no such flag — a pane
+/// lives in its parent's window).
+pub fn tmux_connect_args(mode: Tmux, host: &Host, env: &[(String, String)]) -> Vec<String> {
+    let mut a = vec![mode.command().unwrap_or("new-window").to_string()];
+    for (key, value) in env {
+        a.push("-e".to_string());
+        a.push(format!("{key}={value}"));
+    }
+    if mode == Tmux::Window {
+        a.push("-n".to_string());
+        a.push(window_name(host));
+    }
+    a.push("--".to_string());
+    a.push("ssh".to_string());
+    a.extend(build_args(host, true));
+    a
+}
+
+/// Open `host` in a new tmux window/pane and return its name for the status line. sshelf keeps
+/// running — that's the point of the mode. The caller has already persisted frecency (the tmux
+/// spawn is the point of no return for this connection, exactly as `exec()` is).
+pub fn tmux_connect(mode: Tmux, host: &Host, wire_askpass: bool) -> Result<String, String> {
+    let env = tmux_env(host, wire_askpass);
+    let args = tmux_connect_args(mode, host, &env);
+    let out = std::process::Command::new("tmux")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("could not run tmux: {e} — is tmux on your PATH?"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let detail = err
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("tmux reported no reason");
+        return Err(format!("tmux could not open a {}: {detail}", mode.noun()));
+    }
+    Ok(window_name(host))
 }
 
 /// Wire our own binary as the `SSH_ASKPASS` helper so the stored secret (a login password OR a
@@ -269,6 +437,123 @@ mod tests {
             .get_envs()
             .any(|(k, v)| k == std::ffi::OsStr::new("SSHELF_ASKPASS") && v.is_some());
         assert!(wired);
+    }
+
+    #[test]
+    fn tmux_version_gate_accepts_3_and_up() {
+        assert!(tmux_version_at_least_3("tmux 3.0\n"));
+        assert!(tmux_version_at_least_3("tmux 3.2a\n"));
+        assert!(tmux_version_at_least_3("tmux 3.7c\n"));
+        assert!(tmux_version_at_least_3("tmux next-3.6\n"));
+        assert!(tmux_version_at_least_3("tmux master\n"));
+        assert!(!tmux_version_at_least_3("tmux 2.9a\n"));
+        assert!(!tmux_version_at_least_3("tmux 1.8\n"));
+        // Anything we can't read is treated as too old — falling back is always safe.
+        assert!(!tmux_version_at_least_3("tmux\n"));
+        assert!(!tmux_version_at_least_3(""));
+        assert!(!tmux_version_at_least_3("tmux weird\n"));
+    }
+
+    #[test]
+    fn tmux_env_is_empty_for_key_and_agent_hosts() {
+        let h = Host::new("web", "10.0.0.1");
+        assert!(tmux_env(&h, false).is_empty());
+    }
+
+    #[test]
+    fn tmux_env_carries_only_the_askpass_wiring() {
+        let h = Host::new("web", "10.0.0.1");
+        let env = tmux_env(&h, true);
+        let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "SSH_ASKPASS",
+                "SSH_ASKPASS_REQUIRE",
+                "SSHELF_ASKPASS",
+                "SSHELF_HOST_ID"
+            ]
+        );
+        // The host id is opaque (the helper trades it for the secret) — never the secret itself.
+        assert!(env.iter().any(|(k, v)| k == "SSHELF_HOST_ID" && v == &h.id));
+    }
+
+    /// The whole point of D-025: `-e KEY=VAL` is the tmux client's argv, visible in `ps`.
+    #[test]
+    fn no_secret_env_ever_reaches_the_tmux_argv() {
+        let mut h = Host::new("legacy", "10.0.0.9");
+        h.auth = AuthMethod::Password;
+        for wired in [false, true] {
+            let argv = tmux_connect_args(Tmux::Window, &h, &tmux_env(&h, wired));
+            let joined = argv.join(" ");
+            assert!(
+                !joined.contains(crate::askpass::CODE_ENV),
+                "the 2FA code env must never appear in a tmux argv: {joined}"
+            );
+            assert!(
+                !joined.contains(crate::secrets::VAULT_PASS_ENV),
+                "the vault passphrase env must never appear in a tmux argv: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn tmux_window_argv_names_the_window_and_passes_ssh_argv_verbatim() {
+        let mut h = Host::new("prod-web", "10.0.0.1");
+        h.user = Some("deploy".into());
+        let argv = tmux_connect_args(Tmux::Window, &h, &[]);
+        assert_eq!(argv[0], "new-window");
+        let n = argv
+            .iter()
+            .position(|s| s == "-n")
+            .expect("names the window");
+        assert_eq!(argv[n + 1], "prod-web");
+        // `--` ends tmux's own options; the ssh argv follows as separate arguments, so tmux
+        // execs it directly instead of letting a shell re-split paths with spaces.
+        let sep = argv.iter().position(|s| s == "--").unwrap();
+        assert_eq!(argv[sep + 1], "ssh");
+        assert_eq!(argv[sep + 2..], build_args(&h, true)[..]);
+    }
+
+    #[test]
+    fn tmux_pane_argv_splits_and_omits_the_window_name() {
+        // `split-window` has no -n: a pane lives inside its parent's window.
+        let h = Host::new("web", "10.0.0.1");
+        let argv = tmux_connect_args(Tmux::Pane, &h, &[]);
+        assert_eq!(argv[0], "split-window");
+        assert!(!argv.iter().any(|s| s == "-n"));
+    }
+
+    #[test]
+    fn tmux_argv_passes_env_as_e_pairs() {
+        let mut h = Host::new("legacy", "h");
+        h.auth = AuthMethod::Password;
+        let env = vec![("SSHELF_ASKPASS".to_string(), "1".to_string())];
+        let argv = tmux_connect_args(Tmux::Window, &h, &env);
+        assert!(argv.windows(2).any(|w| w == ["-e", "SSHELF_ASKPASS=1"]));
+    }
+
+    #[test]
+    fn window_names_are_sanitized() {
+        let mut h = Host::new("my host", "h");
+        assert_eq!(window_name(&h), "my-host");
+        h.name = "ev\u{1b}[2Jil".into();
+        assert!(!window_name(&h).chars().any(char::is_control));
+        h.name = "   ".into();
+        assert_eq!(window_name(&h), "sshelf");
+        h.name = "x".repeat(80);
+        assert_eq!(window_name(&h).chars().count(), 32);
+    }
+
+    #[test]
+    fn a_queued_2fa_code_always_falls_back_to_exec() {
+        assert_eq!(tmux_fallback(false, true), Err(TmuxFallback::TwoFactor));
+        assert_eq!(tmux_fallback(true, true), Err(TmuxFallback::TwoFactor));
+        assert!(
+            TmuxFallback::TwoFactor
+                .message()
+                .starts_with("2FA host — connecting here")
+        );
     }
 
     #[test]

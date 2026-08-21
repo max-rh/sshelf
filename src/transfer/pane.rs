@@ -7,6 +7,7 @@
 //! behind a synchronous trait, because a remote `list()` would block the UI loop the worker
 //! exists to keep responsive.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::search;
@@ -77,6 +78,10 @@ pub struct Pane {
     query: String,
     /// Selection index into the *visible* (filtered) entries.
     selected: usize,
+    /// Entries marked for a batch send, as indices into `entries`. **Positional**: any listing
+    /// replacement (a directory change or a refresh) drops them, because the indices would no
+    /// longer mean the same files. See D-026.
+    marks: HashSet<usize>,
     /// A listing is in flight (remote pane between request and reply).
     pub loading: bool,
     /// The last listing error, shown in place of entries.
@@ -90,6 +95,7 @@ impl Pane {
             entries: Vec::new(),
             query: String::new(),
             selected: 0,
+            marks: HashSet::new(),
             loading: true,
             error: None,
         }
@@ -102,6 +108,7 @@ impl Pane {
         self.entries.clear();
         self.query.clear();
         self.selected = 0;
+        self.marks.clear();
         self.loading = true;
         self.error = None;
     }
@@ -120,6 +127,8 @@ impl Pane {
         }
         all.extend(entries);
         self.entries = all;
+        // Marks index into the list we just replaced, so they can no longer be trusted.
+        self.marks.clear();
         self.loading = false;
         self.error = None;
         let visible = self.visible().len();
@@ -131,6 +140,7 @@ impl Pane {
     /// Record a listing failure to show in place of entries.
     pub fn set_error(&mut self, message: String) {
         self.entries.clear();
+        self.marks.clear();
         self.loading = false;
         self.error = Some(message);
     }
@@ -164,12 +174,83 @@ impl Pane {
             .any(|e| !e.is_parent() && e.name == name)
     }
 
-    /// Entries to display, in filtered order, paired with their label.
-    pub fn rows(&self) -> Vec<(&PaneEntry, String)> {
+    /// Entries to display, in filtered order, paired with their label and whether they're marked.
+    pub fn rows(&self) -> Vec<(&PaneEntry, String, bool)> {
         self.visible()
             .into_iter()
-            .map(|i| (&self.entries[i], self.entries[i].label()))
+            .map(|i| {
+                (
+                    &self.entries[i],
+                    self.entries[i].label(),
+                    self.marks.contains(&i),
+                )
+            })
             .collect()
+    }
+
+    /// Toggle the mark on the selected entry. The synthetic `..` can't be marked — it isn't a
+    /// file. Returns `false` when there was nothing to toggle.
+    pub fn toggle_mark(&mut self) -> bool {
+        let visible = self.visible();
+        let Some(&i) = visible.get(self.selected) else {
+            return false;
+        };
+        if self.entries[i].is_parent() {
+            return false;
+        }
+        if !self.marks.insert(i) {
+            self.marks.remove(&i);
+        }
+        true
+    }
+
+    /// Mark every entry the filter currently shows — or, if they are all marked already, clear
+    /// every mark (so the same key both selects and deselects all). Returns the resulting count.
+    pub fn toggle_mark_all(&mut self) -> usize {
+        let markable: Vec<usize> = self
+            .visible()
+            .into_iter()
+            .filter(|&i| !self.entries[i].is_parent())
+            .collect();
+        if !markable.is_empty() && markable.iter().all(|i| self.marks.contains(i)) {
+            self.marks.clear();
+        } else {
+            self.marks.extend(markable);
+        }
+        self.marks.len()
+    }
+
+    /// Drop every mark. Returns `false` if there were none (so Esc can fall through).
+    pub fn clear_marks(&mut self) -> bool {
+        if self.marks.is_empty() {
+            return false;
+        }
+        self.marks.clear();
+        true
+    }
+
+    pub fn marked_count(&self) -> usize {
+        self.marks.len()
+    }
+
+    /// The marked entries in listing order (not filter order), so a batch send is deterministic
+    /// no matter what the filter looked like when each mark was set.
+    pub fn marked_entries(&self) -> Vec<&PaneEntry> {
+        let mut idx: Vec<usize> = self.marks.iter().copied().collect();
+        idx.sort_unstable();
+        idx.into_iter().map(|i| &self.entries[i]).collect()
+    }
+
+    /// Put the selection on the entry named `name`, if the filter currently shows it. Used
+    /// after creating a directory, so the new one is under the cursor.
+    pub fn select_name(&mut self, name: &str) {
+        if let Some(pos) = self
+            .visible()
+            .iter()
+            .position(|&i| self.entries[i].name == name)
+        {
+            self.selected = pos;
+        }
     }
 
     pub fn move_sel(&mut self, delta: isize) {
@@ -292,7 +373,7 @@ mod tests {
     fn root_has_no_parent_entry() {
         let mut p = Pane::new(PathBuf::from("/"));
         p.set_entries(entries());
-        assert!(p.rows().iter().all(|(e, _)| !e.is_parent()));
+        assert!(p.rows().iter().all(|(e, ..)| !e.is_parent()));
     }
 
     #[test]
@@ -333,7 +414,7 @@ mod tests {
         p.set_entries(entries());
         p.push_query('a');
         p.push_query('l');
-        let names: Vec<&str> = p.rows().iter().map(|(e, _)| e.name.as_str()).collect();
+        let names: Vec<&str> = p.rows().iter().map(|(e, ..)| e.name.as_str()).collect();
         assert!(names.contains(&"alpha.txt"));
         assert!(!names.contains(&"sub"));
         p.navigate_to(PathBuf::from("/d/sub"));
@@ -360,6 +441,109 @@ mod tests {
         assert!(p.contains("sub"));
         assert!(!p.contains(".."));
         assert!(!p.contains("missing"));
+    }
+
+    #[test]
+    fn marking_toggles_and_skips_the_parent_entry() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries()); // rows: .., sub, alpha.txt
+        // The synthetic `..` is not a file, so it can't be marked.
+        assert!(!p.toggle_mark());
+        assert_eq!(p.marked_count(), 0);
+        p.move_sel(1);
+        assert!(p.toggle_mark());
+        assert_eq!(p.marked_count(), 1);
+        assert_eq!(p.marked_entries()[0].name, "sub");
+        // …and the same key unmarks it.
+        assert!(p.toggle_mark());
+        assert_eq!(p.marked_count(), 0);
+    }
+
+    #[test]
+    fn mark_all_covers_the_filter_then_clears() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries());
+        assert_eq!(p.toggle_mark_all(), 2); // both files; `..` excluded
+        // Pressing it again when everything is marked clears every mark.
+        assert_eq!(p.toggle_mark_all(), 0);
+        // With a filter active it only marks what is visible.
+        p.push_query('a');
+        assert_eq!(p.toggle_mark_all(), 1);
+        assert_eq!(p.marked_entries()[0].name, "alpha.txt");
+    }
+
+    #[test]
+    fn marked_entries_follow_listing_order_not_mark_order() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries());
+        p.move_sel(2); // alpha.txt, listed after sub
+        p.toggle_mark();
+        p.move_sel(-1); // sub
+        p.toggle_mark();
+        let names: Vec<&str> = p.marked_entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["sub", "alpha.txt"]);
+    }
+
+    #[test]
+    fn marks_are_positional_and_die_with_the_listing() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries());
+        p.move_sel(1);
+        p.toggle_mark();
+        assert_eq!(p.marked_count(), 1);
+        // A refresh of the same directory replaces the entries the indices pointed at.
+        p.set_entries(entries());
+        assert_eq!(p.marked_count(), 0);
+        // As does navigating away, or a listing failure.
+        p.set_entries(entries());
+        p.move_sel(1);
+        p.toggle_mark();
+        p.navigate_to(PathBuf::from("/d/sub"));
+        assert_eq!(p.marked_count(), 0);
+        p.set_entries(entries());
+        p.move_sel(1);
+        p.toggle_mark();
+        p.set_error("boom".into());
+        assert_eq!(p.marked_count(), 0);
+    }
+
+    #[test]
+    fn clear_marks_reports_whether_there_were_any() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries());
+        assert!(!p.clear_marks());
+        p.move_sel(1);
+        p.toggle_mark();
+        assert!(p.clear_marks());
+        assert_eq!(p.marked_count(), 0);
+    }
+
+    #[test]
+    fn rows_report_which_entries_are_marked() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries());
+        p.move_sel(1);
+        p.toggle_mark();
+        let marked: Vec<(&str, bool)> = p
+            .rows()
+            .iter()
+            .map(|(e, _, m)| (e.name.as_str(), *m))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![("..", false), ("sub", true), ("alpha.txt", false)]
+        );
+    }
+
+    #[test]
+    fn select_name_moves_the_cursor_to_a_visible_entry() {
+        let mut p = Pane::new(PathBuf::from("/d"));
+        p.set_entries(entries());
+        p.select_name("alpha.txt");
+        assert_eq!(p.selected_entry().unwrap().name, "alpha.txt");
+        // A name that isn't listed leaves the selection alone.
+        p.select_name("nope");
+        assert_eq!(p.selected_entry().unwrap().name, "alpha.txt");
     }
 
     #[test]

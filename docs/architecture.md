@@ -49,6 +49,12 @@
   TTY with zero indirection — the cleanest possible handoff. Consequence: **no code runs
   after `exec()`**, so anything that must persist (frecency) happens *before* it.
 
+- **One exception: tmux mode.** With `tmux = "window"`/`"pane"` and `$TMUX` set, connect spawns
+  `tmux new-window`/`split-window` instead and sshelf stays up, so several hosts can be opened
+  in a row. Frecency is persisted before the spawn for the same reason. Connections whose
+  authentication would have to cross tmux's argv (a 2FA code, a vault passphrase) fall back to
+  the `exec()` path — see [`security.md`](./security.md) and D-025.
+
 - **Password auto-supply via `SSH_ASKPASS`, not `sshpass`.** `ssh` never accepts a password
   on the command line; `sshpass` would expose it in `ps`/argv and is an extra dependency.
   `SSH_ASKPASS` (OpenSSH 8.4+) lets `ssh` call a helper program for the password. We point

@@ -7,6 +7,56 @@ use std::path::{Path, PathBuf};
 
 use crate::paths::Paths;
 
+/// Where `Enter` opens the connection when sshelf is running inside tmux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Tmux {
+    /// Always hand off in place (`exec` into ssh) — the behavior for everyone else.
+    #[default]
+    Off,
+    /// Open the connection in a new tmux window and stay in the picker.
+    Window,
+    /// Open the connection in a new tmux pane and stay in the picker.
+    Pane,
+}
+
+impl Tmux {
+    /// The tmux command that opens a connection in this mode.
+    pub fn command(self) -> Option<&'static str> {
+        match self {
+            Tmux::Off => None,
+            Tmux::Window => Some("new-window"),
+            Tmux::Pane => Some("split-window"),
+        }
+    }
+
+    /// What the mode opens, for status lines ("opened in tmux window: …").
+    pub fn noun(self) -> &'static str {
+        match self {
+            Tmux::Off => "connection",
+            Tmux::Window => "window",
+            Tmux::Pane => "pane",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tmux::Off => "off",
+            Tmux::Window => "window",
+            Tmux::Pane => "pane",
+        }
+    }
+
+    /// Cycle through the modes (the F2 settings field toggles with Space).
+    pub fn next(self) -> Self {
+        match self {
+            Tmux::Off => Tmux::Window,
+            Tmux::Window => Tmux::Pane,
+            Tmux::Pane => Tmux::Off,
+        }
+    }
+}
+
 /// Default sort for the host list when no search query is typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -30,6 +80,9 @@ pub struct Config {
     /// Custom host-database path. `None` = the default under the config dir.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts_file: Option<String>,
+    /// Where `Enter` opens the connection when sshelf itself runs inside tmux.
+    #[serde(default)]
+    pub tmux: Tmux,
 }
 
 impl Default for Config {
@@ -39,6 +92,7 @@ impl Default for Config {
             default_sort: Sort::default(),
             accent: "cyan".to_string(),
             hosts_file: None,
+            tmux: Tmux::default(),
         }
     }
 }
@@ -55,6 +109,10 @@ default_sort = \"frecency\"
 
 # Accent color: black red green yellow blue magenta cyan white gray
 accent = \"cyan\"
+
+# Inside tmux, open connections in a new \"window\" or \"pane\" and stay in the picker.
+# \"off\" (the default) hands the terminal straight to ssh, as outside tmux.
+tmux = \"off\"
 ";
 
 impl Config {

@@ -3,8 +3,64 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Inventory import — `sshelf import --tailscale` fills the database from a
-tailnet. Targets v0.11.0. (v0.10.0 export shipped.)
+**Current milestone:** Day-to-day friction — tmux connect modes and a transfer screen that can
+mark, queue, and create directories. Targets v0.12.0. (v0.11.0 tailnet import shipped.)
+
+---
+
+## 2026-08-21 — tmux connect modes, transfer multi-select + `F7` mkdir
+
+- **tmux mode.** One config key, `tmux = "off" | "window" | "pane"` (default `off`, also on the
+  `F2` settings screen as a `Space`-cycled toggle). With a mode set **and** `$TMUX` present,
+  `Enter` runs `tmux new-window`/`split-window` and sshelf **stays up** — that's the feature:
+  open four hosts without relaunching the picker. Windows are named after the host (sanitized);
+  panes aren't (`split-window` has no `-n`). Everything else is untouched: with the key off, or
+  outside tmux, connect is the same teardown → `exec()` → exit-to-shell path as before. Frecency
+  is persisted before the spawn, for the same reason it is persisted before `exec()`.
+- **What may cross the tmux boundary.** A tmux window is a child of the tmux *server*, so it
+  inherits none of sshelf's environment, and tmux's only channel — `new-window -e KEY=VALUE` —
+  is the tmux client's own argv, i.e. `ps`-visible. So only the askpass *wiring* rides it
+  (`SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE`, `SSHELF_ASKPASS`, and the opaque `SSHELF_HOST_ID` the
+  helper trades for the real secret); a queued 2FA code, a vault master passphrase, or a tmux
+  older than 3.0 sends the connection back to `exec()` with a one-line reason printed after the
+  TUI is down. Rationale: **D-025**. A unit test asserts the code/passphrase variables can never
+  appear in a tmux argv, and the ssh argv is passed as separate arguments after `--` so tmux
+  execs it directly instead of letting a shell re-split a path with spaces.
+- **Transfer multi-select.** `Space` marks the entry under the cursor, `Ctrl-a` marks everything
+  the filter shows (again → clear all), `Ctrl-s` sends the marked set through the existing
+  one-at-a-time worker as a queue, counting `2 of 5  name → dest`. Marks are positional and die
+  with the listing (cd, refresh, error); sending consumes them. A destination that already holds
+  the name is skipped and the queue continues; a real failure stops the rest and says how many
+  were left. `Esc` gained a rung: cancel → clear marks → clear filter → close. **D-026.**
+- **Transfer `F7` mkdir** on both panes (`Ctrl-f` alias for terminals that keep the function
+  keys), through `std::fs::create_dir` locally and `sftp mkdir` remotely — one directory, never
+  `-p`, never adopting an existing name; the new directory lands under the cursor.
+- **Fixed:** cancelling a transfer left the screen permanently stuck in "transfer running" (the
+  worker cancelled silently and never told the UI). It now emits a `Cancelled` event.
+- **Verified end-to-end**, not just in tests: inside a scripted tmux session, `window` mode
+  opened a window named `keybox` running `ssh` with sshelf still live in pane 0 and
+  `state.json` already written; `pane` mode split the window instead; the same config with
+  sshelf launched *outside* tmux exec'd in place (one window, `cmd=ssh`, no note); a 2FA host
+  printed `2FA host — connecting here …` and connected in place; a vault-mode host did the
+  same with its own reason. A **passphrase-protected key host logged in through a tmux window**,
+  proving the askpass wiring crossed — and the recorded tmux argv held only the four wiring
+  vars, with the passphrase, `SSHELF_2FA_CODE` and `SSHELF_VAULT_PASSPHRASE` absent from every
+  real process argv. `~/.ssh` was byte-identical throughout (content hashes, not a listing).
+  Transfers were exercised against a real rootless `sshd` by two new `e2e.rs` tests driving the
+  actual screen: mark-all → send with a pre-existing duplicate mid-queue (`sent 3 of 4 ·
+  skipped dup.txt (already there)`, the duplicate's contents untouched), the same in the
+  download direction, `F7` on both sides, and a repeat `F7` refusing the taken name.
+- 34 new tests (257 pass, 4 `#[ignore]`d e2e), clippy + `fmt --check` clean, **no new
+  dependencies**.
+- Docs synced: `transfer.md` (keys, marks, mkdir), `configuration.md` (the `tmux` key + the F2
+  field), `search-connect.md` (a "Connecting inside tmux" section incl. the fallbacks),
+  `security.md` (the tmux boundary), `ssh-command.md` (§2a, the tmux argv), `architecture.md`,
+  `structure.md`, `faq.md` (three new answers + a Discussions pointer), `index.md`, README,
+  `decisions.md` (D-025, D-026), CHANGELOG. Ships in **v0.12.0**.
+- **Found, not fixed:** `sshelf --config FILE <subcommand>` is rejected by clap
+  (`args_conflicts_with_subcommands` vs. the global flag), and `sshelf --config FILE list` is
+  even read as "connect to a host named `list`". The env var `$SSHELF_CONFIG` works. Logged as
+  follow-up rather than folded into this release.
 
 ---
 

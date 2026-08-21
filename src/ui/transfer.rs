@@ -8,6 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
 
+use super::widgets::TextField;
 use super::{accent, centered, highlight};
 use crate::search;
 use crate::transfer::{Pane, Progress, Side, TransferScreen};
@@ -21,6 +22,8 @@ struct View<'a> {
     connecting: bool,
     status: Option<&'a str>,
     active: Option<(Progress, &'a str)>,
+    /// The inline "new directory" input, shown at the bottom of the focused pane.
+    mkdir: Option<&'a TextField>,
 }
 
 pub fn render(frame: &mut Frame, screen: &TransferScreen) {
@@ -34,6 +37,7 @@ pub fn render(frame: &mut Frame, screen: &TransferScreen) {
             connecting: screen.is_connecting(),
             status: screen.status(),
             active: screen.active(),
+            mkdir: screen.mkdir_input(),
         },
     );
 }
@@ -55,32 +59,38 @@ fn draw(frame: &mut Frame, view: &View) {
 
     let cols =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[0]);
+    let local_focused = view.focus == Side::Local;
     render_pane(
         frame,
         cols[0],
         view.local,
         "local",
-        view.focus == Side::Local,
+        local_focused,
         false,
+        local_focused.then_some(view.mkdir).flatten(),
     );
     render_pane(
         frame,
         cols[1],
         view.remote,
         view.target,
-        view.focus == Side::Remote,
+        !local_focused,
         view.connecting,
+        (!local_focused).then_some(view.mkdir).flatten(),
     );
 
     render_footer(frame, rows[1], view);
 
     frame.render_widget(
-        Paragraph::new("tab switch · ↑↓ move · → open · ^s send · ← up · esc cancel/close")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(
+            "tab switch · space mark · ^a all · ^s send · ^f mkdir · → open · ← up · esc back",
+        )
+        .style(Style::default().fg(Color::DarkGray)),
         rows[2],
     );
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 fn render_pane(
     frame: &mut Frame,
     area: Rect,
@@ -88,6 +98,7 @@ fn render_pane(
     title: &str,
     focused: bool,
     connecting: bool,
+    mkdir: Option<&TextField>,
 ) {
     let border = if focused {
         Style::default().fg(accent())
@@ -99,19 +110,40 @@ fn render_pane(
     } else {
         Style::default().fg(Color::Gray)
     };
+    let marked = pane.marked_count();
+    let heading = if marked > 0 {
+        format!(" {title} · {marked} marked ")
+    } else {
+        format!(" {title} ")
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border)
-        .title(Span::styled(format!(" {title} "), title_style));
+        .title(Span::styled(heading, title_style));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // cwd
-        Constraint::Length(1), // filter
-        Constraint::Min(0),    // listing
+        Constraint::Length(1),                          // cwd
+        Constraint::Length(1),                          // filter
+        Constraint::Min(0),                             // listing
+        Constraint::Length(u16::from(mkdir.is_some())), // new-directory input
     ])
     .split(inner);
+
+    if let Some(field) = mkdir {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("new dir: ", Style::default().fg(accent())),
+                Span::raw(field.value.clone()),
+            ])),
+            rows[3],
+        );
+        frame.set_cursor_position((
+            (rows[3].x + 9 + field.cursor as u16).min(rows[3].right().saturating_sub(1)),
+            rows[3].y,
+        ));
+    }
 
     frame.render_widget(
         Paragraph::new(truncate_left(
@@ -144,8 +176,12 @@ fn render_pane(
     let hl = Style::default().fg(accent()).add_modifier(Modifier::BOLD);
     let items: Vec<ListItem> = listing
         .iter()
-        .map(|(e, label)| {
-            let base = if e.is_symlink {
+        .map(|(e, label, is_marked)| {
+            // Marked rows carry both a gutter glyph and the accent color, so they stand out
+            // whether or not the terminal renders the bullet well.
+            let base = if *is_marked {
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD)
+            } else if e.is_symlink {
                 Style::default().fg(Color::DarkGray)
             } else if e.is_dir {
                 Style::default().add_modifier(Modifier::BOLD)
@@ -153,7 +189,12 @@ fn render_pane(
                 Style::default()
             };
             let idx = search::match_indices(label, pane.query(), &mut matcher);
-            ListItem::new(Line::from(highlight(label, &idx, base, hl)))
+            let mut spans = vec![Span::styled(
+                if *is_marked { "•" } else { " " },
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            )];
+            spans.extend(highlight(label, &idx, base, hl));
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let list = List::new(items)
@@ -280,6 +321,7 @@ mod tests {
             connecting: false,
             status: None,
             active: None,
+            mkdir: None,
         };
         let snap = snapshot(&view, 80, 20);
         assert!(snap.contains("local"));
@@ -307,6 +349,7 @@ mod tests {
                 },
                 "big.iso → deploy@host",
             )),
+            mkdir: None,
         };
         let snap = snapshot(&view, 80, 20);
         assert!(snap.contains("big.iso → deploy@host"));
@@ -325,7 +368,54 @@ mod tests {
             connecting: true,
             status: None,
             active: None,
+            mkdir: None,
         };
         assert!(snapshot(&view, 20, 5).contains("terminal too small"));
+    }
+
+    #[test]
+    fn marked_rows_carry_a_gutter_glyph_and_a_count() {
+        let mut local = pane("/home/me", &[("docs", true), ("readme.md", false)]);
+        local.move_sel(1); // past `..`, onto docs/
+        local.toggle_mark();
+        let remote = pane("/srv", &[]);
+        let view = View {
+            local: &local,
+            remote: &remote,
+            focus: Side::Local,
+            target: "deploy@host",
+            connecting: false,
+            status: None,
+            active: None,
+            mkdir: None,
+        };
+        let snap = snapshot(&view, 80, 20);
+        assert!(
+            snap.contains("•docs/"),
+            "the marked row is flagged:\n{snap}"
+        );
+        assert!(snap.contains("1 marked"), "the pane title counts them");
+        assert!(snap.contains("space mark"), "the hint bar teaches the key");
+    }
+
+    #[test]
+    fn the_new_directory_input_sits_under_the_focused_pane() {
+        let local = pane("/home/me", &[("docs", true)]);
+        let remote = pane("/srv", &[]);
+        let field = TextField::with("releases");
+        let view = View {
+            local: &local,
+            remote: &remote,
+            focus: Side::Local,
+            target: "deploy@host",
+            connecting: false,
+            status: None,
+            active: None,
+            mkdir: Some(&field),
+        };
+        let snap = snapshot(&view, 80, 20);
+        assert!(snap.contains("new dir: releases"), "{snap}");
+        // Only the focused pane shows it — one input, one target directory.
+        assert_eq!(snap.matches("new dir:").count(), 1);
     }
 }

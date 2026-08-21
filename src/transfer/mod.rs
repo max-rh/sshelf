@@ -146,6 +146,8 @@ pub enum WorkerCmd {
     ListRemote(PathBuf),
     /// Run a transfer.
     Transfer(TransferJob),
+    /// Create one remote directory at this absolute path (never its parents — see D-026).
+    Mkdir(PathBuf),
     /// Cancel the in-flight transfer (if any).
     Cancel,
     /// Tear the master down and stop the worker.
@@ -166,8 +168,41 @@ pub enum WorkerEvent {
     Progress(Progress),
     /// The in-flight transfer completed successfully.
     Done,
+    /// The in-flight transfer was cancelled at the UI's request and is fully torn down. The
+    /// screen needs this to leave its "transfer running" state (Esc would otherwise strand it).
+    Cancelled,
+    /// A remote `mkdir` finished — `Ok(path)` names the new directory, `Err(msg)` says why not.
+    MkdirDone(Result<PathBuf, String>),
     /// A listing or transfer failed; message is safe to show to the user.
     Error(String),
+}
+
+/// Validate a name typed into the "new directory" input.
+///
+/// The input creates exactly **one** directory inside the pane's current directory, so a name
+/// carrying a path is a mistake, not a shortcut (D-026). Control characters are refused because
+/// the listing strips them for display — a name you can't see is a name you can't manage.
+pub(crate) fn validate_dir_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("no name typed — enter a directory name, or esc to cancel".to_string());
+    }
+    if name.contains('/') {
+        return Err(format!(
+            "\"{name}\" contains \"/\" — this creates one directory here, not a path"
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(format!(
+            "\"{}\" contains a control character — use plain text",
+            name.chars().filter(|c| !c.is_control()).collect::<String>()
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(format!(
+            "\"{name}\" is this directory's own entry — pick another name"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -261,6 +296,41 @@ mod tests {
             "'/srv/my data/app.log'"
         );
         assert_eq!(shell_quote("/srv/app"), "/srv/app");
+    }
+
+    #[test]
+    fn dir_name_validation_rejects_paths_blanks_and_specials() {
+        assert!(validate_dir_name("releases").is_ok());
+        assert!(validate_dir_name("my notes").is_ok()); // spaces are fine; sftp quoting handles them
+        assert!(validate_dir_name(".hidden").is_ok());
+
+        assert!(validate_dir_name("").unwrap_err().contains("no name typed"));
+        assert!(validate_dir_name("a/b").unwrap_err().contains("not a path"));
+        assert!(
+            validate_dir_name("/abs")
+                .unwrap_err()
+                .contains("not a path")
+        );
+        assert!(
+            validate_dir_name("ev\u{1b}[2Jil")
+                .unwrap_err()
+                .contains("control character")
+        );
+        for dots in [".", ".."] {
+            assert!(
+                validate_dir_name(dots)
+                    .unwrap_err()
+                    .contains("pick another name")
+            );
+        }
+    }
+
+    #[test]
+    fn control_chars_are_stripped_from_the_validation_message() {
+        // The message is shown on the status line; echoing the raw name back would re-arm the
+        // escape sequence the listing is careful to strip.
+        let err = validate_dir_name("ev\u{1b}[2Jil").unwrap_err();
+        assert!(!err.chars().any(char::is_control));
     }
 
     #[test]

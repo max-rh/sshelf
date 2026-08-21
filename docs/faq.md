@@ -49,6 +49,32 @@ env-inheritance tradeoff is documented in [Security](security.md).
 Not currently — jump hosts are key/agent only. The askpass helper holds the *target's* secret
 and can't tell which hop in a chain is prompting.
 
+## Can I open connections in tmux windows instead of leaving the picker?
+
+Yes — set `tmux = "window"` (or `"pane"`) in
+[`config.toml`](configuration.md), or cycle the field on the `F2` settings screen. When sshelf
+is running inside tmux, `Enter` then opens the host in a new window named after it and keeps
+the picker up, so you can fire off several in a row. Outside tmux the setting does nothing.
+
+## Why did my 2FA host not open a tmux window?
+
+Because the verification code would have to travel as `tmux new-window -e KEY=VALUE` — the tmux
+client's own command line, which anyone on the machine can read with `ps`. sshelf refuses to
+put a one-time code there, so those hosts connect in place instead, printing
+`2FA host — connecting here` before the handoff. The same applies to stored-password hosts in
+[vault mode](passwords-2fa.md#where-secrets-live) (the master passphrase would cross the same
+boundary), and to tmux older than 3.0, which has no `-e` at all. Key, agent, and
+keyring-backed password hosts open in tmux normally. Details:
+[Connecting inside tmux](search-connect.md#connecting-inside-tmux).
+
+## Can I send more than one file at a time?
+
+Mark them: `Space` toggles a mark in the
+[transfer screen](transfer.md#marking-and-sending-several-at-once), `Ctrl-a` marks everything
+the filter shows, and `Ctrl-s` sends the lot — folders included, recursively — one at a time
+over the one connection. `F7` (or `Ctrl-f`) creates a directory on either side without leaving
+the screen.
+
 ## My 2FA host fails before I can type the code
 
 Flag it: **2FA = yes** in the edit form (or `--2fa` on `sshelf add`). A stored-secret connect
@@ -86,3 +112,8 @@ recorded on first use (so the prompt can't interfere with automated password sup
 
 Not currently — connect hands off via Unix `exec()`, and the askpass/process plumbing is
 Unix-specific. macOS + Linux for now.
+
+## My question isn't here
+
+Ask in [GitHub Discussions](https://github.com/max-rh/sshelf/discussions) — questions, ideas,
+and feature requests all belong there, and answers that come up often end up on this page.

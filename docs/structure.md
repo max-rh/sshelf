@@ -33,23 +33,23 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `state.rs` | Frecency state (`use_count`, `last_used`) load/save (`state.json`); score computation. |
 | `forwards.rs` | Background port-forwards: the `ForwardSpec`/`ForwardEntry` model, the `-L/-R/-D` argv builder, spawn (detached `ssh -N` + readiness/error mapping), PID liveness/kill via `ps`/`kill`, reconcile, and `forwards.json` load/save. |
 | `secrets.rs` | `SecretStore` trait → keyring backend + `age`-vault fallback; `zeroize` on secrets. |
-| `ssh.rs` | Build `ssh` argv from a `Host`; terminal teardown + `exec()` handoff; askpass env wiring. |
+| `ssh.rs` | Build `ssh` argv from a `Host`; terminal teardown + `exec()` handoff; askpass env wiring; the tmux `new-window`/`split-window` spawn and the rules for what may cross that boundary. |
 | `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer password prompts via `secrets`, or a queued 2FA code (`SSHELF_2FA_CODE`) for the verification prompt; else decline. |
 | `search.rs` | Fuzzy filter (`nucleo-matcher`) + frecency ranking + per-row match indices for highlight. |
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. Also the shape (`ImportResult`) and add-only plumbing (`new_hosts`, `missing_sites`) every importer shares. |
 | `tailscale.rs` | `sshelf import --tailscale`: locate the user's `tailscale` binary, run `status --json`, map eligible peers → hosts (MagicDNS name/FQDN, tailnet → site, ACL tags). Pure parser over `&str`; the only process spawn is isolated in one function. |
 | `export.rs` | Render the database as an ssh_config `Include` fragment (site defaults resolved, `-o` extras translated); write to `ssh_config` in the config dir; auto-refresh on hosts saves once the file exists. |
 | `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
-| `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color; writes a commented default on first run. |
+| `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color, `tmux` mode; writes a commented default on first run. |
 | `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |
-| `transfer/worker.rs` | Background worker thread: owns the ControlMaster (open/readiness/teardown), lists remote dirs (`sftp ls -l`), runs `sftp` `get`/`put` transfers with progress + cancel. |
-| `transfer/pane.rs` | One side's browsing state (fuzzy filter + selection + nav, reusing `search`); `read_local_dir` for the local side; `RemoteEntry`→`PaneEntry`. |
-| `transfer/screen.rs` | The dual-pane `TransferScreen`: two panes over one session, key handling, draining worker events. |
+| `transfer/worker.rs` | Background worker thread: owns the ControlMaster (open/readiness/teardown), lists remote dirs (`sftp ls -l`), creates remote dirs (`sftp mkdir`), runs `sftp` `get`/`put` transfers with progress + cancel. |
+| `transfer/pane.rs` | One side's browsing state (fuzzy filter + selection + nav + positional marks, reusing `search`); `read_local_dir` for the local side; `RemoteEntry`→`PaneEntry`. |
+| `transfer/screen.rs` | The dual-pane `TransferScreen`: two panes over one session, key handling, the send queue (marks → one transfer at a time, skips vs failures), the new-directory input, draining worker events. |
 | `ui/list.rs` | Host list rendering + match highlighting + selection. |
-| `ui/transfer.rs` | Renders the transfer screen (two panes + progress/status + hint bar) from a borrowed view. |
+| `ui/transfer.rs` | Renders the transfer screen (two panes + mark glyphs + the new-directory input + progress/status + hint bar) from a borrowed view. |
 | `ui/wizard.rs` | Auth-aware add/edit form: fields, validation, key picker, opens the file browser. |
 | `ui/browse.rs` | File-browser modal (fuzzy-filtered) for picking a key file anywhere on disk. |
-| `ui/settings.rs` | Settings screen (F2): config-file display + editable hosts-file location. |
+| `ui/settings.rs` | Settings screen (F2): config-file display, editable hosts-file location, tmux-mode toggle. |
 | `ui/sites.rs` | Sites manager (F3): list + add/edit/delete sites and their optional defaults; emits renames for the app to cascade. |
 | `ui/forward_popup.rs` | New-port-forward popup (Ctrl-f): kind chooser (Local/Remote/Dynamic) + ports/host fields + validation; emits a `ForwardSpec` for the app to spawn. |
 | `ui/forwards.rs` | Port-forwards manager (F4): lists all active forwards from a live snapshot; emits a kill request for the app to act on. |

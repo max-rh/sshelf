@@ -5,6 +5,73 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-026 · Transfer multi-select: positional marks, a serial queue, and `mkdir` (not `mkdir -p`)
+`Space` marks the entry under the cursor and `Ctrl-a` marks everything the filter shows (pressing
+it again clears every mark); `Ctrl-s` then sends the marked set — the loudest missing piece next
+to a real file manager. Marks are **positional** (indices into the pane's current listing) and are
+dropped whenever that listing is replaced: a directory change, a refresh after a transfer, or a
+listing error. Rejected: remembering marks per path across navigation, which needs a second
+model of the remote tree and raises the question of what a mark means after the file behind it
+changed. Positional marks are always either right or gone. `Space` therefore stops being a filter
+character — filenames with spaces still match by the rest of their name, and marking is worth far
+more than a literal space at position one of a query.
+
+A send becomes a **queue**, not parallel transfers: the worker owns one ControlMaster and runs one
+`sftp` at a time, and one authenticated connection is the whole point of that design (D-019).
+The queue is captured at send time, so later navigation can't change what moves, and
+sending **consumes the marks** — the queue is now the record. A destination that already holds the
+name is **skipped and the queue continues** (never-overwrite still holds, and one collision
+shouldn't cost the other nine); a genuine transfer *failure* stops the rest, because a broken link
+or a full disk will break the next item too. The destination is refreshed once, when the queue
+drains, rather than after every item — a listing is a round trip.
+
+Cancelling mid-queue now emits a `Cancelled` event. Before, the worker cancelled silently and
+the screen — which blocks every other key while a transfer runs — stayed stuck in that state.
+
+`F7` (mc's key, with `Ctrl-f` as an alias for terminals that keep the function keys) opens a
+one-line input on the focused pane. It creates **one** directory in that pane's current
+directory: `std::fs::create_dir` locally, `sftp`'s own `mkdir` remotely — deliberately **not**
+`create_dir_all` / `mkdir -p`. A name carrying a path is a mistake, not a shortcut, and silently
+creating three intermediate directories from a typo is exactly the kind of surprise this tool
+avoids. Names with `/`, control characters, `.`/`..`, or an existing entry are refused with the
+input still open; an existing directory is **never adopted**, matching how transfers refuse to
+overwrite. On success the listing refreshes and the new directory lands under the cursor.
+
+### D-025 · tmux integration: window/pane modes, stay in the picker, and why secrets never cross
+One config key — `tmux = "off" | "window" | "pane"`, default `"off"` — plus a `$TMUX` check.
+When both say yes, `Enter` spawns `tmux new-window`/`split-window` and sshelf **keeps running**;
+that is the feature, not a side effect. The picker's cost per connection is what makes people
+stop reaching for it, and a tmux user wants four sessions, not four launches. Outside tmux, or
+with the key off, the path is bit-for-bit the old one: tear down, `exec()`, exit to shell (D-001).
+Frecency is persisted before the spawn for the same reason it is persisted before `exec()` — the
+connection is gone from sshelf's hands either way.
+
+The ssh argv is handed to tmux as **separate arguments after `--`**, so tmux `execvp`s it
+directly and no shell re-splits an identity path containing a space.
+
+The hard part is authentication. The askpass wiring normally rides on the child `Command`'s
+environment, which a tmux window — a child of the tmux *server*, not of sshelf — never inherits.
+tmux's only way across is `new-window -e KEY=VALUE`, and **those are the tmux client's own
+argv**: world-readable via `ps`, which is precisely the leak D-002 exists to prevent. So the line
+is drawn by content, not convenience:
+
+- **Key/agent hosts** — plain spawn, no `-e` at all.
+- **Stored-secret hosts** — `-e` carries `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`,
+  `SSHELF_ASKPASS=1` and `SSHELF_HOST_ID`. None is a secret: the id is an opaque ULID the helper
+  trades for the real secret out of the keyring, exactly as it does after an `exec()`.
+- **A queued 2FA code** (`SSHELF_2FA_CODE`) and **the vault master passphrase**
+  (`SSHELF_VAULT_PASSPHRASE`) — never. Those connections **fall back to `exec()` in place**, with
+  a one-line reason printed after the TUI is down and before ssh starts.
+- **tmux older than 3.0** has no `-e`, so stored-secret hosts fall back there too; an unreadable
+  or unparseable `tmux -V` counts as too old, since falling back is always correct.
+
+Rejected: writing the code or passphrase to a temp file for the new window to read (a second
+secret-at-rest path, with cleanup that a killed pane never runs); `tmux setenv` before spawning
+(same argv exposure, plus it leaks into the whole session); and refusing tmux mode for every
+secret-bearing host (it would exclude ordinary keyring password hosts, which are safe, for the
+sake of two that aren't). A unit test asserts the code and passphrase variables can never appear
+in a generated tmux argv.
+
 ### D-024 · Tailscale import shells out to the user's CLI; MagicDNS names, suffix eligibility, add-only
 `sshelf import --tailscale` fills the database from a tailnet — the inventory a homelab/small-fleet
 user already curates — without sshelf growing a network client. It **shells out to the user's own

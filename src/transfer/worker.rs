@@ -88,6 +88,15 @@ impl TransferSession {
     pub fn send(&self, cmd: WorkerCmd) {
         let _ = self.cmd_tx.send(cmd);
     }
+
+    /// A session with no `ssh` behind it: commands land in the returned receiver instead. Lets
+    /// the screen's queue / mkdir logic be driven without a server (the real transport is
+    /// covered by `e2e.rs`).
+    #[cfg(test)]
+    pub(super) fn detached() -> (Self, Receiver<WorkerCmd>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        (Self { cmd_tx, join: None }, cmd_rx)
+    }
 }
 
 impl Drop for TransferSession {
@@ -174,11 +183,20 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
                     Ok(()) => {
                         let _ = events.send(WorkerEvent::Done);
                     }
-                    Err(TransferError::Cancelled) => dbg.log("transfer cancelled"),
+                    Err(TransferError::Cancelled) => {
+                        dbg.log("transfer cancelled");
+                        // The screen blocks every other key while a transfer runs, so it needs
+                        // to be told the cancel finished or it stays stuck in that state.
+                        let _ = events.send(WorkerEvent::Cancelled);
+                    }
                     Err(TransferError::Failed(e)) => {
                         let _ = events.send(WorkerEvent::Error(e));
                     }
                 }
+            }
+            WorkerCmd::Mkdir(path) => {
+                let result = mkdir_remote(&socket, &target, &path, &dbg).map(|()| path);
+                let _ = events.send(WorkerEvent::MkdirDone(result));
             }
             // A stray cancel with nothing running, or anything else: ignore.
             WorkerCmd::Cancel => {}
@@ -302,6 +320,54 @@ fn list_remote(
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+/// Create one remote directory with `sftp`'s own `mkdir`, which **fails** on an existing name
+/// rather than adopting it — the same never-clobber rule transfers follow. Deliberately not
+/// `mkdir -p`: the UI creates one directory in the pane's current directory (D-026).
+fn mkdir_remote(
+    socket: &ControlSocket,
+    target: &str,
+    path: &Path,
+    dbg: &DebugLog,
+) -> Result<(), String> {
+    let line = format!("mkdir {}\n", shell_quote(&path.to_string_lossy()));
+    dbg.log(&format!("sftp> {}", line.trim_end()));
+
+    let mut child = Command::new("sftp")
+        .args(sftp_batch_args(socket.path(), target))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not launch sftp: {e}"))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "sftp stdin unavailable".to_string())?;
+        stdin
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("writing to sftp: {e}"))?;
+        // stdin dropped here → EOF → sftp runs the batch and exits.
+    }
+
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("sftp failed: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    dbg.log(&format!(
+        "  mkdir failed (exit {:?}):\n{}",
+        out.status.code(),
+        err.trim_end()
+    ));
+    Err(match tidy_error(&err) {
+        Some(detail) => format!("could not create {}: {detail}", path.display()),
+        None => format!("could not create {}", path.display()),
+    })
 }
 
 /// Resolve the remote working directory via `sftp`'s `pwd` (`Remote working directory: …`).

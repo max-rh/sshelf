@@ -10,7 +10,7 @@ pub(crate) mod settings;
 pub(crate) mod sites;
 mod transfer;
 pub(crate) mod two_factor;
-mod widgets;
+pub(crate) mod widgets;
 pub(crate) mod wizard;
 
 use std::sync::OnceLock;

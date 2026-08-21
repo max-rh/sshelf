@@ -6,6 +6,12 @@
 //! Connecting is deferred until *after* the terminal is restored: `on_key` returns
 //! `Outcome::Connect`, the loop records it and quits, and `run` performs the `exec()` handoff
 //! once the TUI is torn down (so ssh inherits a clean TTY).
+//!
+//! The one exception is tmux mode (`tmux = "window" | "pane"`, and only when sshelf itself runs
+//! inside tmux): the connection opens in a new window/pane and sshelf **keeps running**, so
+//! several hosts can be fired off in a row. Connections that can't cross the tmux boundary
+//! without putting a secret in argv fall back to the in-place handoff — see `ssh::tmux_fallback`
+//! and D-025.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -13,7 +19,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::config::Config;
+use crate::config::{Config, Tmux};
 use crate::forwards::{self, ForwardsState};
 use crate::import;
 use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile, Site};
@@ -97,6 +103,13 @@ pub struct App {
     pub should_quit: bool,
     /// Set when the user chose a host; the real connect happens after terminal restore.
     pub pending_connect: Option<usize>,
+    /// A line to print just before the in-place handoff — currently why tmux mode stepped
+    /// aside for this connection, so the missing window isn't a mystery. Printed after the TUI
+    /// is down (nothing else is visible from inside the alternate screen).
+    pub connect_note: Option<String>,
+    /// Whether sshelf itself is running inside tmux. Read once: `$TMUX` is set by the server
+    /// for the pane we were launched in and cannot change while this process lives.
+    pub in_tmux: bool,
 }
 
 impl App {
@@ -132,6 +145,8 @@ impl App {
             status: None,
             should_quit: false,
             pending_connect: None,
+            connect_note: None,
+            in_tmux: ssh::inside_tmux(),
         };
         app.recompute();
         app
@@ -354,6 +369,7 @@ impl App {
             self.paths.config_file().display().to_string(),
             self.config.hosts_file.clone(),
             self.paths.default_hosts_display(),
+            self.config.tmux,
         ));
     }
 
@@ -410,7 +426,7 @@ impl App {
         match outcome {
             SettingsOutcome::Continue => {}
             SettingsOutcome::Cancel => self.settings = None,
-            SettingsOutcome::Save { hosts_file } => {
+            SettingsOutcome::Save { hosts_file, tmux } => {
                 self.settings = None;
                 // Resolve the proposed path WITHOUT committing config yet.
                 let proposed = Config {
@@ -418,12 +434,17 @@ impl App {
                     ..self.config.clone()
                 };
                 let new_path = proposed.hosts_path(&self.paths);
+                // The tmux mode has no side effects, so it commits regardless of the path step.
+                self.config.tmux = tmux;
 
                 if new_path == self.hosts_path {
                     self.config.hosts_file = hosts_file;
                     match self.config.save(&self.paths.config_file()) {
                         Ok(()) => self.set_status("settings saved"),
-                        Err(e) => self.set_status(format!("could not save config: {e}")),
+                        Err(e) => self.set_status(format!(
+                            "settings not saved to {}: {e} — check the file is writable",
+                            self.paths.config_file().display()
+                        )),
                     }
                     return;
                 }
@@ -558,6 +579,66 @@ impl App {
         }
     }
 
+    /// True when a login password / key passphrase is stored for this host (so the askpass
+    /// helper has something to supply). Mirrors what connect and the transfer worker ask.
+    fn has_secret(&self, id: &str) -> bool {
+        secrets::get_password(&self.paths.vault_file(), id)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Persist this host's usage. Returns a warning to surface if the save failed: usage must
+    /// reach disk *before* any handoff, since neither `exec()` nor a tmux window comes back.
+    fn record_use(&mut self, id: &str) -> Option<String> {
+        self.state.record_use(id);
+        self.state
+            .save(&self.paths.state_file())
+            .err()
+            .map(|e| format!("usage not saved: {e}"))
+    }
+
+    /// Connect to the host at `idx`.
+    ///
+    /// In tmux mode this opens a new window/pane and **returns to the picker**; otherwise (and
+    /// whenever the connection would have to carry a secret across tmux's argv) it queues the
+    /// in-place `exec()` handoff the event loop performs once the terminal is restored.
+    fn connect(&mut self, idx: usize) {
+        let mode = self.config.tmux;
+        if mode == Tmux::Off || !self.in_tmux {
+            return self.queue_exec_connect(idx);
+        }
+        // Site defaults (bastion/user/port/identity) apply exactly as on an in-place connect;
+        // `id` is preserved, so the secrets lookup and frecency still key correctly.
+        let host = self.hosts[idx].with_site_defaults(&self.sites);
+        // A queued 2FA code settles this on its own (it could only cross into tmux through
+        // argv), so don't ask the keyring anything we won't use.
+        let has_code = self.pending_2fa_code.is_some();
+        let wire_askpass = !has_code && self.has_secret(&host.id);
+        if let Err(reason) = ssh::tmux_fallback(wire_askpass, has_code) {
+            self.connect_note = Some(reason.message().to_string());
+            return self.queue_exec_connect(idx);
+        }
+        // Persist usage BEFORE the spawn — the new window owns the connection from here on.
+        let warning = self.record_use(&host.id);
+        match ssh::tmux_connect(mode, &host, wire_askpass) {
+            Ok(name) => {
+                let mut msg = format!("opened in tmux {}: {name}", mode.noun());
+                if let Some(w) = warning {
+                    msg.push_str(&format!(" · {w}"));
+                }
+                self.set_status(msg);
+            }
+            Err(e) => self.set_status(e),
+        }
+    }
+
+    /// Hand the connection to the event loop: quit, restore the terminal, then `exec()` ssh.
+    fn queue_exec_connect(&mut self, idx: usize) {
+        self.pending_connect = Some(idx);
+        self.should_quit = true;
+    }
+
     /// Open the 2FA code popup for `idx` (a `requires_2fa` host). On submit it queues the code +
     /// the pending connect and quits, so the real `exec()` happens after terminal restore.
     fn open_two_factor(&mut self, idx: usize) {
@@ -576,9 +657,10 @@ impl App {
                 let idx = self.two_factor.as_ref().map(TwoFactorPopup::host_idx);
                 self.two_factor = None;
                 if let Some(idx) = idx {
+                    // Queue the code first: `connect` sees it and (in tmux mode) steps aside,
+                    // because a code can only cross into tmux through argv.
                     self.pending_2fa_code = Some(code);
-                    self.pending_connect = Some(idx);
-                    self.should_quit = true;
+                    self.connect(idx);
                 }
             }
         }
@@ -750,6 +832,10 @@ fn run_with(start_add: bool) -> Result<()> {
     loop_result?;
 
     if let Some(idx) = app.pending_connect {
+        // Now that the alternate screen is gone, explain (once) why tmux mode stepped aside.
+        if let Some(note) = &app.connect_note {
+            eprintln!("sshelf: {note}");
+        }
         // Resolve the host's site defaults (bastion/user/port/identity) for the real connect.
         let host = app.hosts[idx].with_site_defaults(&app.sites);
         // Persist usage BEFORE exec() — nothing runs after a successful exec.
@@ -802,8 +888,7 @@ fn dispatch(app: &mut App, key: KeyEvent) {
                 // Collect the verification code first; the connect happens on the popup's submit.
                 app.open_two_factor(idx);
             } else {
-                app.pending_connect = Some(idx);
-                app.should_quit = true;
+                app.connect(idx);
             }
         }
         Outcome::Yank(idx) => {
@@ -977,6 +1062,48 @@ mod tests {
         assert!(app.two_factor.is_none());
         assert!(app.should_quit);
         assert!(app.pending_connect.is_some());
+    }
+
+    #[test]
+    fn tmux_off_connects_in_place() {
+        let mut app = test_app();
+        app.config.tmux = Tmux::Off;
+        app.in_tmux = true; // even inside tmux, "off" means off
+        dispatch(&mut app, key(KeyCode::Enter));
+        assert!(app.should_quit);
+        assert!(app.pending_connect.is_some());
+        assert!(app.connect_note.is_none());
+    }
+
+    #[test]
+    fn tmux_mode_outside_tmux_connects_in_place() {
+        // `tmux = "window"` on a machine that isn't running tmux must behave exactly as today.
+        let mut app = test_app();
+        app.config.tmux = Tmux::Window;
+        app.in_tmux = false;
+        dispatch(&mut app, key(KeyCode::Enter));
+        assert!(app.should_quit);
+        assert!(app.pending_connect.is_some());
+        assert!(app.connect_note.is_none(), "no fallback note is owed here");
+    }
+
+    #[test]
+    fn a_2fa_host_in_tmux_mode_falls_back_to_an_in_place_connect() {
+        let mut app = test_app();
+        app.config.tmux = Tmux::Window;
+        app.in_tmux = true;
+        app.hosts[1].requires_2fa = true;
+        app.open_two_factor(1);
+        for c in "654321".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        // No tmux window: the code would have had to ride tmux's argv.
+        assert_eq!(app.pending_connect, Some(1));
+        assert!(app.should_quit);
+        assert_eq!(app.pending_2fa_code.as_deref(), Some("654321"));
+        let note = app.connect_note.expect("the skipped window is explained");
+        assert!(note.starts_with("2FA host — connecting here"), "{note}");
     }
 
     #[test]

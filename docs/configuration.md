@@ -11,6 +11,7 @@ comments on first run:
 | `default_sort` | `"frecency"` | Idle list order: `"frecency"` or `"name"`. |
 | `accent` | `"cyan"` | UI accent color: black / red / green / yellow / blue / magenta / cyan / white / gray. |
 | `hosts_file` | (config dir) | Custom host-database path; `~` is expanded. Editable from `F2`. |
+| `tmux` | `"off"` | Inside tmux, where `Enter` opens a connection: `"off"`, `"window"`, or `"pane"`. See [Searching & connecting](search-connect.md#connecting-inside-tmux). Editable from `F2`. |
 
 Point sshelf at an alternate **config file** with `--config FILE` or `$SSHELF_CONFIG` — the
 config-file location itself isn't a key in the file (that would be circular). The **hosts
@@ -18,10 +19,14 @@ file** location *is* a setting.
 
 ## The settings screen (`F2`)
 
+`Tab` moves between fields; `Enter` or `Ctrl-s` saves, `Esc` cancels.
+
 - **Config file** — shown read-only (it's chosen before the config is read; see above).
 - **Hosts file** — editable; blank means the default under the config dir. On save, an
   *existing* file at the new path is **adopted** (loaded, never overwritten); a new path is
   created from your current hosts, so they follow.
+- **tmux** — `Space` cycles `off` → `window` → `pane`. Only has an effect when sshelf itself
+  is running inside tmux.
 
 ## Where everything lives
 

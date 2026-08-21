@@ -32,8 +32,10 @@ independent database, so it never risks corrupting a config shared with Ansible/
 editor — and it adds what plain SSH config can't express:
 
 - **Fuzzy launcher** — type to filter, `Enter` to connect; your most-used hosts float to the top.
-- **Dual-pane file transfer** (`Ctrl-t`) — copy files and folders both ways over SFTP, with
-  fuzzy search on both sides and one authentication.
+- **Dual-pane file transfer** (`Ctrl-t`) — mark several files or folders and send them both ways
+  over SFTP, create directories with `F7`, all on one authentication.
+- **tmux mode** — `Enter` opens each host in a new tmux window or pane and leaves you in the
+  picker, so you can fire off a handful in a row.
 - **Background port forwarding** (`Ctrl-f`) — Local / Remote / SOCKS tunnels that keep running
   after you quit; `F4` lists and stops them.
 - **Sites & tags** (`F3`) — group hosts; a site can carry a shared bastion + defaults that
@@ -130,6 +132,12 @@ Secret Service (or an `age`-encrypted vault on headless systems) — never in `h
 never on a command line. `sshelf` makes **no network calls of its own** — no telemetry, no
 account, no cloud; the only network activity is the `ssh` it hands your terminal to. See
 [`SECURITY.md`](SECURITY.md) for the full threat model.
+
+## Questions & ideas
+
+Ask, suggest a feature, or show what you built with it in
+[**GitHub Discussions**](https://github.com/max-rh/sshelf/discussions). Contributions are
+welcome — start with [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Support
 
