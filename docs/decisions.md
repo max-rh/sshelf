@@ -5,6 +5,44 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-027 · `doctor` is local, read-only, and exit-code shaped — with no `--json` yet
+`sshelf doctor` exists because every support question so far has had one of six causes, and
+none of them is visible from inside sshelf: an OpenSSH older than 8.4, a secret backend that
+isn't there, a hand-edited `hosts.toml`, a `site` that was renamed away, an agent that isn't
+running, an export fragment that drifted. One command that names all six — and the fix for each
+— is worth more than six FAQ entries, so the FAQ now points at it instead.
+
+**Local only.** Every check reads the filesystem, the environment, the secret backend, or
+`ssh -V`. No pings, no test connections, no version lookups. sshelf's no-network posture (D-024,
+`security.md`) is a promise, not a default, so it isn't relaxed for diagnostics: `doctor`
+reports whether *sshelf* is set up, never whether a *host* is up. Rejected: a connectivity probe
+per host — it would be the most-requested feature of the command and the first thing to turn it
+into a monitoring tool, which is explicitly out of scope.
+
+**Read-only, with one stated exception.** The keyring check writes a throwaway entry
+(`sshelf-doctor-probe`, under the real `sshelf` service so it exercises the actual path) and
+deletes it immediately, because a backend that reads but can't write is a backend that fails the
+first time a password is saved — and a read-only probe would pass. Everything else, including
+the vault check, only reads.
+
+**Exit 0 unless something failed; warnings don't fail the run.** That split is what makes
+`sshelf doctor && …` usable in a script: `fail` means broken now, `warn` means it works but is
+limited (a stale export, no agent for agent hosts, orphaned secrets). A per-check severity with
+no exit-code contract would leave every caller inventing its own parser.
+
+**Orphan detection is vault-only, and says so.** The `keyring` crate offers no portable way to
+enumerate a service's entries (macOS would need `security dump-keychain`, which prompts), so in
+keyring mode the check reports that it did not run. Rejected: silently reporting `ok` — a clean
+bill of health nobody checked is worse than an honest gap.
+
+**Export staleness is compared by content, not mtime.** The fragment renders deterministically
+(D-023), so identical content *is* an up-to-date file whatever the timestamps say — and a
+touched-but-unchanged file shouldn't nag.
+
+**No `--json` in this release.** The exit code already covers the scriptable case, and a
+machine-readable report has no user yet; adding one now would freeze a schema before anything
+consumes it. Demand-gated, like the rest.
+
 ### D-026 · Transfer multi-select: positional marks, a serial queue, and `mkdir` (not `mkdir -p`)
 `Space` marks the entry under the cursor and `Ctrl-a` marks everything the filter shows (pressing
 it again clears every mark); `Ctrl-s` then sends the marked set — the loudest missing piece next

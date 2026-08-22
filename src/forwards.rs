@@ -266,7 +266,7 @@ pub fn spawn_forward(
 
     let mut child = cmd.spawn().map_err(|e| {
         let _ = std::fs::remove_file(&log_path);
-        format!("could not launch ssh: {e}")
+        format!("could not launch ssh: {e} — is an OpenSSH client on your PATH?")
     })?;
     let pid = child.id() as i32;
 
@@ -421,19 +421,22 @@ fn classify_forward_error(
         || low.contains("name or service not known")
         || low.contains("nodename nor servname")
     {
-        return "could not resolve the host".into();
+        return "a hostname could not be resolved — check the host's address and the forward's \
+                target"
+            .into();
     }
     if low.contains("connection refused") {
-        return "connection refused".into();
+        return "connection refused — check the host is up and listening on its ssh port".into();
     }
     if low.contains("timed out") || low.contains("timeout") {
-        return "connection timed out".into();
+        return "connection timed out — check the host is reachable from here".into();
     }
     if low.contains("permission denied")
         || low.contains("authentication failed")
         || low.contains("too many authentication failures")
     {
-        return "authentication failed".into();
+        return "authentication failed — check the host's key, your agent, or its stored password"
+            .into();
     }
     // Unknown failure: show the most useful (last non-blank) line, else the exit code.
     if let Some(line) = tidy_error(stderr) {

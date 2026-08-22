@@ -8,6 +8,7 @@
 mod app;
 mod askpass;
 mod config;
+mod doctor;
 mod export;
 mod forwards;
 mod import;
@@ -113,6 +114,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<SitesAction>,
     },
+    /// Check the environment and the host database for the things that break connections:
+    /// the OpenSSH version, the secret backend, dangling site references, a stale export, a
+    /// missing ssh-agent. Local and read-only — it never contacts a host. Exits 1 if any
+    /// check failed (warnings don't).
+    Doctor,
     /// Print static shell completions to stdout (for packaging). For host-name completion,
     /// set up dynamic completions instead — see the README.
     Completions {
@@ -305,6 +311,7 @@ fn main() -> Result<()> {
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
         Some(Command::Print { host }) => cmd_print_command(&host),
         Some(Command::Sites { action }) => cmd_sites(action),
+        Some(Command::Doctor) => cmd_doctor(),
         Some(Command::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "sshelf", &mut std::io::stdout());
             Ok(())
@@ -336,7 +343,10 @@ fn cmd_import(dry_run: bool, tailscale: bool) -> Result<()> {
     } else {
         let path = import::default_config_path().context("HOME is not set")?;
         if !path.exists() {
-            anyhow::bail!("no ssh config at {}", path.display());
+            anyhow::bail!(
+                "no ssh config at {} — nothing to import; add hosts with `sshelf add` instead",
+                path.display()
+            );
         }
         let result = import::parse_file(&path)?;
         println!(
@@ -473,7 +483,9 @@ fn cmd_set_password(host_ref: &str) -> Result<()> {
     let host = hosts
         .iter()
         .find(|h| h.id == host_ref || h.name == host_ref)
-        .with_context(|| format!("no host with name or id '{host_ref}'"))?;
+        .with_context(|| {
+            format!("no host with name or id '{host_ref}' — run `sshelf list` to see your hosts")
+        })?;
 
     let mut line = String::new();
     std::io::stdin()
@@ -482,7 +494,11 @@ fn cmd_set_password(host_ref: &str) -> Result<()> {
         .context("reading password from stdin")?;
     let password = line.trim_end_matches(['\n', '\r']);
     if password.is_empty() {
-        anyhow::bail!("empty password; nothing stored");
+        anyhow::bail!(
+            "nothing on stdin — nothing stored; pipe the password in, e.g. \
+             `printf %s \"$PASS\" | sshelf set-password {}`",
+            host.name
+        );
     }
     secrets::store_password(&paths.vault_file(), &host.id, password)?;
     println!("stored password for \"{}\" ({})", host.name, host.id);
@@ -495,8 +511,9 @@ fn cmd_print_command(host_ref: &str) -> Result<()> {
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
     let file = store::load_hosts(&cfg.hosts_path(&paths))?;
-    let host = resolve_host(&file.hosts, host_ref)
-        .with_context(|| format!("no host with name or id '{host_ref}'"))?;
+    let host = resolve_host(&file.hosts, host_ref).with_context(|| {
+        format!("no host with name or id '{host_ref}' — run `sshelf list` to see your hosts")
+    })?;
     println!(
         "{}",
         ssh::command_string(&host.with_site_defaults(&file.sites))
@@ -613,7 +630,10 @@ fn cmd_add(args: AddArgs) -> Result<()> {
             .context("reading secret from stdin")?;
         let s = line.trim_end_matches(['\n', '\r']).to_string();
         if s.is_empty() {
-            anyhow::bail!("--password-stdin given but stdin was empty; nothing added");
+            anyhow::bail!(
+                "--password-stdin was given but stdin was empty — nothing added; pipe the \
+                 secret in, e.g. `printf %s \"$PASS\" | sshelf add …`"
+            );
         }
         Some(s)
     } else {
@@ -635,6 +655,67 @@ fn cmd_add(args: AddArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `sshelf doctor` — gather every input, print one line per check, exit 1 if any failed.
+///
+/// Everything IO-shaped happens here so `doctor.rs` stays a set of pure functions over the
+/// results. Nothing here writes, with the single documented exception of the keyring probe
+/// (`secrets::probe`), which round-trips a throwaway entry and deletes it again.
+fn cmd_doctor() -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts_path = cfg.hosts_path(&paths);
+    let loaded = store::load_hosts(&hosts_path).map_err(|e| format!("{e:#}"));
+
+    // The exported fragment is compared against a freshly rendered one, so an empty database
+    // (or an unreadable one) still produces something to compare with.
+    let export_path = paths.ssh_config_file();
+    let export_display = export_path.display().to_string();
+    let export_fresh = match &loaded {
+        Ok(file) => export::render(file, &export_display),
+        Err(_) => String::new(),
+    };
+
+    let checks = doctor::run(&doctor::Inputs {
+        ssh_version: ssh_version(),
+        hosts: loaded.as_ref().map_err(Clone::clone),
+        hosts_path: &hosts_path,
+        backend: secrets::backend(),
+        probe: secrets::probe(&paths.vault_file()).map_err(|e| format!("{e:#}")),
+        stored_ids: secrets::stored_ids(&paths.vault_file()).ok().flatten(),
+        auth_sock: std::env::var("SSH_AUTH_SOCK").ok(),
+        export_existing: std::fs::read_to_string(&export_path).ok(),
+        export_fresh,
+        export_path: &export_path,
+    });
+
+    println!("sshelf doctor — checking this machine and your host database\n");
+    for check in &checks {
+        println!("{}", check.render());
+    }
+    println!("\n{}", doctor::summary(&checks));
+    if !doctor::healthy(&checks) {
+        // A plain exit code, not an anyhow error: the report above already said everything,
+        // and an "Error:" line on top of it would only repeat one of the checks. No terminal
+        // state to restore — `doctor` never enters the TUI.
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `ssh -V`, which OpenSSH prints on **stderr**. `None` if the binary can't be run at all.
+fn ssh_version() -> Option<String> {
+    let out = std::process::Command::new("ssh").arg("-V").output().ok()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 fn cmd_sites(action: Option<SitesAction>) -> Result<()> {
@@ -715,7 +796,10 @@ fn cmd_sites_add(
     let hosts_path = cfg.hosts_path(&paths);
     let mut file = store::load_hosts(&hosts_path)?;
     if crate::model::find_site(&file.sites, &name).is_some() {
-        anyhow::bail!("a site named '{name}' already exists");
+        anyhow::bail!(
+            "a site named '{name}' already exists — pick another name, or edit that one with F3 \
+             in the TUI"
+        );
     }
     file.sites.push(Site {
         name: name.clone(),
@@ -943,6 +1027,15 @@ mod tests {
                 tailscale: true
             })
         ));
+    }
+
+    #[test]
+    fn doctor_parses_as_a_bare_subcommand() {
+        let c = Cli::try_parse_from(["sshelf", "doctor"]).unwrap();
+        assert!(matches!(c.command, Some(Command::Doctor)));
+        assert!(c.host.is_none());
+        // No flags in this release — `--json` is deliberately absent (D-027).
+        assert!(Cli::try_parse_from(["sshelf", "doctor", "--json"]).is_err());
     }
 
     #[test]

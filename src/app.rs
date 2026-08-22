@@ -44,6 +44,10 @@ pub enum Screen {
     Help,
 }
 
+/// Shown when an action needs a host but the cursor isn't on one — an empty database, or a
+/// filter that matches nothing.
+const NO_HOST_SELECTED: &str = "no host under the cursor — clear the filter (esc), or add one (^a)";
+
 /// Pending delete confirmation.
 pub struct ConfirmDelete {
     pub id: String,
@@ -177,6 +181,15 @@ impl App {
         self.status = Some(msg.into());
     }
 
+    /// The message for a failed write of the host database. Every caller has the same next
+    /// action — the file is named so it can be checked — so they share one wording.
+    fn save_failed(&self, e: &anyhow::Error) -> String {
+        format!(
+            "hosts NOT saved to {}: {e:#} — nothing was written",
+            self.hosts_path.display()
+        )
+    }
+
     /// The host index currently under the cursor, if any.
     fn current(&self) -> Option<usize> {
         self.order.get(self.selected).copied()
@@ -278,7 +291,7 @@ impl App {
             }
             (KeyCode::Char('f'), true) => match self.current() {
                 Some(i) => return Outcome::OpenForwardPopup(i),
-                None => self.set_status("no host selected"),
+                None => self.set_status(NO_HOST_SELECTED),
             },
             (KeyCode::Char('a'), true) => {
                 let names = self.site_names();
@@ -289,7 +302,7 @@ impl App {
                     let names = self.site_names();
                     self.wizard = Some(Wizard::from_host(&self.hosts[i], &names));
                 }
-                None => self.set_status("no host selected"),
+                None => self.set_status(NO_HOST_SELECTED),
             },
             (KeyCode::Char('d'), true) => {
                 if let Some(i) = self.current() {
@@ -348,16 +361,24 @@ impl App {
                     Some(pw) => secrets::store_password(&self.paths.vault_file(), &id, &pw).err(),
                     None => None,
                 };
+                let name = self
+                    .hosts
+                    .iter()
+                    .find(|h| h.id == id)
+                    .map(|h| h.name.clone());
                 match self.persist_hosts() {
                     Ok(()) => match secret_err {
-                        Some(e) => self.set_status(format!("host saved; secret NOT stored: {e}")),
+                        Some(e) => self.set_status(format!(
+                            "host saved, but its secret was not stored: {e} — retry with `sshelf set-password {}`",
+                            name.unwrap_or_else(|| id.clone())
+                        )),
                         None => self.set_status(if updated {
                             "host updated"
                         } else {
                             "host added"
                         }),
                     },
-                    Err(e) => self.set_status(format!("save failed: {e}")),
+                    Err(e) => self.set_status(self.save_failed(&e)),
                 }
                 self.recompute();
             }
@@ -411,7 +432,7 @@ impl App {
                 self.sites = sites;
                 match self.persist_hosts() {
                     Ok(()) => self.set_status("sites saved"),
-                    Err(e) => self.set_status(format!("save failed: {e}")),
+                    Err(e) => self.set_status(self.save_failed(&e)),
                 }
                 self.recompute();
             }
@@ -458,7 +479,10 @@ impl App {
                             self.sites = file.sites;
                             Ok(format!("using existing hosts at {}", new_path.display()))
                         }
-                        Err(e) => Err(format!("could not read {}: {e}", new_path.display())),
+                        Err(e) => Err(format!(
+                            "could not read {}: {e} — fix it or pick another path",
+                            new_path.display()
+                        )),
                     }
                 } else {
                     let file = HostsFile {
@@ -468,7 +492,10 @@ impl App {
                     };
                     match store::save_hosts(&new_path, &file) {
                         Ok(()) => Ok(format!("hosts moved to {}", new_path.display())),
-                        Err(e) => Err(format!("hosts NOT written: {e}")),
+                        Err(e) => Err(format!(
+                            "could not write {}: {e} — the hosts file is unchanged",
+                            new_path.display()
+                        )),
                     }
                 };
 
@@ -488,9 +515,10 @@ impl App {
                         let _ = crate::export::refresh_if_exported(&self.paths, &file);
                         match self.config.save(&self.paths.config_file()) {
                             Ok(()) => self.set_status(format!("settings saved · {msg}")),
-                            Err(e) => {
-                                self.set_status(format!("hosts updated; config NOT saved: {e}"))
-                            }
+                            Err(e) => self.set_status(format!(
+                                "hosts updated, but {} was not saved: {e} — the new location won't stick",
+                                self.paths.config_file().display()
+                            )),
                         }
                     }
                     Err(e) => self.set_status(format!("settings not applied · {e}")),
@@ -512,7 +540,7 @@ impl App {
             let _ = secrets::delete_password(&self.paths.vault_file(), &c.id);
             match self.persist_hosts() {
                 Ok(()) => self.set_status(format!("deleted {}", c.name)),
-                Err(e) => self.set_status(format!("save failed: {e}")),
+                Err(e) => self.set_status(self.save_failed(&e)),
             }
             self.recompute();
         }
@@ -523,11 +551,16 @@ impl App {
         let path = match import::default_config_path() {
             Some(p) if p.exists() => p,
             Some(p) => {
-                self.set_status(format!("no ssh config at {}", p.display()));
+                self.set_status(format!(
+                    "no ssh config at {} — nothing to import; add a host with ^a instead",
+                    p.display()
+                ));
                 return;
             }
             None => {
-                self.set_status("HOME is not set");
+                self.set_status(
+                    "$HOME is not set — sshelf can't locate ~/.ssh/config to import from",
+                );
                 return;
             }
         };
@@ -551,10 +584,13 @@ impl App {
                     Ok(()) => {
                         self.set_status(format!("imported {added} new of {total} host(s){warn}"))
                     }
-                    Err(e) => self.set_status(format!("parsed ok but save failed: {e}")),
+                    Err(e) => self.set_status(format!(
+                        "{added} host(s) parsed, but {} could not be written: {e}",
+                        self.hosts_path.display()
+                    )),
                 }
             }
-            Err(e) => self.set_status(format!("import failed: {e}")),
+            Err(e) => self.set_status(format!("could not import {}: {e}", path.display())),
         }
     }
 
@@ -575,7 +611,10 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/"));
         match transfer::TransferScreen::open(&host, has_secret, start) {
             Ok(screen) => self.transfer = Some(screen),
-            Err(e) => self.set_status(format!("could not start transfer: {e}")),
+            Err(e) => self.set_status(format!(
+                "could not open the transfer screen for {}: {e}",
+                host.name
+            )),
         }
     }
 
@@ -697,7 +736,9 @@ impl App {
                         let display = entry.display.clone();
                         self.forwards_state.forwards.push(entry);
                         if let Err(e) = self.forwards_state.save(&self.paths.forwards_file()) {
-                            self.set_status(format!("forward up, but not saved: {e}"));
+                            self.set_status(format!(
+                                "forward up, but not recorded: {e} — F4 will lose it when sshelf restarts"
+                            ));
                         } else {
                             self.set_status(format!("forward up · {display}"));
                         }

@@ -48,6 +48,9 @@ editor — and it adds what plain SSH config can't express:
 - **Tailscale import** — `sshelf import --tailscale` turns your whole tailnet into searchable
   hosts (MagicDNS names, tailnet as a site, ACL tags as tags), by running your own `tailscale`
   CLI. Add-only, so re-running is safe.
+- **`sshelf doctor`** — one command that checks your OpenSSH version, secret backend, host
+  database, sites, agent, and export, and names the fix for anything that's off. Local and
+  read-only; it never contacts a host.
 - **Jump hosts, a guided add/edit form, frecency ordering, read-only import** from `~/.ssh/config`.
 
 **Never:** no telemetry, no account, no cloud — and it will never edit your SSH config.
@@ -105,6 +108,7 @@ sshelf -                      # reconnect to the most recently used host
 sshelf list tag:prod --json   # scriptable listing (fields + generated command)
 sshelf print-command db       # print the ssh command instead of running it
 sshelf export                 # Include file so plain ssh/scp/VS Code see your hosts
+sshelf doctor                 # something not working? check the setup and get told the fix
 ```
 
 In the TUI: type to filter (plus `tag:NAME` / `site:NAME`), `Enter` to connect — **`F1` shows
@@ -117,7 +121,8 @@ The **[user guide](https://max-rh.github.io/sshelf/)** covers everything:
 [Quickstart](https://max-rh.github.io/sshelf/quickstart.html) ·
 [CLI reference](https://max-rh.github.io/sshelf/cli.html) ·
 [Configuration](https://max-rh.github.io/sshelf/configuration.html) ·
-[FAQ](https://max-rh.github.io/sshelf/faq.html) — plus per-feature pages for
+[FAQ](https://max-rh.github.io/sshelf/faq.html) ·
+[`sshelf doctor`](https://max-rh.github.io/sshelf/doctor.html) — plus per-feature pages for
 [file transfer](https://max-rh.github.io/sshelf/transfer.html),
 [port forwarding](https://max-rh.github.io/sshelf/port-forwarding.html),
 [sites & tags](https://max-rh.github.io/sshelf/sites-tags.html),

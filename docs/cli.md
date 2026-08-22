@@ -18,6 +18,7 @@ Everything sshelf does without opening the TUI.
 | `sshelf import --tailscale [--dry-run]` | [Import your Tailscale tailnet](import.md#from-tailscale): runs your own `tailscale status --json` and adds every eligible peer (MagicDNS name → host, tailnet → site, ACL tags → tags). Add-only; re-running adds 0. |
 | `sshelf export [--stdout]` | [Export](export.md) the database as an ssh_config `Include` fragment, written next to sshelf's config (`--stdout` prints it instead). Once the file exists, it refreshes on every hosts change. |
 | `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. |
+| `sshelf doctor` | [Check this machine and your host database](doctor.md) — OpenSSH version, secret backend, dangling site references, a stale export, a missing ssh-agent. Local and read-only; it never contacts a host. **Exits 1** if any check failed (warnings don't). |
 | `sshelf completions <shell>` | Print static shell completions. |
 | `sshelf man` | Print the man page. |
 
@@ -90,3 +91,6 @@ Host-name completion works for direct connect, `print-command`, and `set-passwor
 `sshelf list --json [query]` emits each selected host's fields **plus its generated `ssh`
 command**, and is always valid JSON even when the selection is empty — the stable surface for
 scripts and integrations. `sshelf sites --json` does the same for sites.
+
+`sshelf doctor` has **no** `--json`: its exit code (`0` healthy, `1` something failed) is the
+scriptable part, and a machine-readable report has no users yet — [D-027](decisions.md).

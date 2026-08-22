@@ -20,6 +20,7 @@ sshelf                             # launch the TUI
 - **[Install](install.md)** — Homebrew, shell installer, `.deb`, `.rpm`, Gentoo, or cargo.
 - **[Quickstart](quickstart.md)** — the first five minutes: add or import hosts, connect.
 - **[FAQ & troubleshooting](faq.md)** — common questions, quick answers.
+- **[`sshelf doctor`](doctor.md)** — when something isn't working, run this first.
 
 ## What's in the box
 
@@ -37,6 +38,8 @@ sshelf                             # launch the TUI
 - **Import** from `~/.ssh/config` or your whole **Tailscale tailnet** (`--tailscale`) —
   [Importing hosts](import.md)
 - A scriptable **CLI** (`sshelf add`, `list --json`, `print-command`, …) — [CLI reference](cli.md)
+- **`sshelf doctor`** — one command that checks your setup and names the fix —
+  [Checking your setup](doctor.md)
 
 Platforms: **macOS + Linux**, x86_64 and arm64. Runtime: **OpenSSH 8.4+** for password
 auto-supply.

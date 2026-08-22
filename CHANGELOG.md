@@ -5,6 +5,28 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-21
+
+### Added
+- **`sshelf doctor`** — one command that checks the things that quietly break connections and
+  names the fix for each: the OpenSSH version (8.4+ is what stored passwords ride on), whether
+  your secret backend actually opens, whether `hosts.toml` parses and has no duplicate names or
+  ids, hosts pointing at a site that no longer exists, stored secrets whose host is gone, a
+  missing or stale `$SSH_AUTH_SOCK` when hosts use agent auth, and an exported ssh_config
+  fragment that has drifted from your hosts. Each line is `ok` / `warn` / `fail` with one
+  runnable next action; it **exits 1** if anything failed, so `sshelf doctor && …` works in a
+  script. Local and read-only throughout — it never contacts a host, and the only write is a
+  throwaway keyring entry it deletes again. Full page:
+  [Checking your setup](https://max-rh.github.io/sshelf/doctor.html). No new dependencies.
+
+### Changed
+- **Every user-facing error now names the thing, the cause, and the next action.** A failed save
+  names the file it couldn't write instead of just "save failed"; an unknown host, a duplicate
+  site, and an empty `--password-stdin` each say what to run instead; a failed `ssh` launch asks
+  whether OpenSSH is on your `PATH`; a forward that can't authenticate says what to check; an
+  undecryptable vault names the environment variable to fix.
+- The FAQ answers that used to end in a shrug now end in `sshelf doctor`.
+
 ## [0.12.0] — 2026-08-21
 
 ### Added
@@ -200,7 +222,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/max-rh/sshelf/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/max-rh/sshelf/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/max-rh/sshelf/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/max-rh/sshelf/compare/v0.9.0...v0.10.0

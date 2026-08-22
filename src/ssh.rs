@@ -87,7 +87,10 @@ pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) 
     cmd.args(&args);
     configure_askpass(&mut cmd, host, wire_askpass, two_fa_code);
     // exec() returns only on failure.
-    anyhow::anyhow!("failed to launch ssh: {}", cmd.exec())
+    anyhow::anyhow!(
+        "could not launch ssh: {} — is an OpenSSH client installed and on your PATH?",
+        cmd.exec()
+    )
 }
 
 #[cfg(not(unix))]
@@ -99,7 +102,9 @@ pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) 
     configure_askpass(&mut cmd, host, wire_askpass, two_fa_code);
     match cmd.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-        Err(e) => anyhow::anyhow!("failed to launch ssh: {e}"),
+        Err(e) => anyhow::anyhow!(
+            "could not launch ssh: {e} — is an OpenSSH client installed and on your PATH?"
+        ),
     }
 }
 

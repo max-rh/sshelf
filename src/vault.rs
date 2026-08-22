@@ -29,11 +29,21 @@ fn encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>> {
 fn decrypt(ciphertext: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     let decryptor = match age::Decryptor::new(ciphertext).context("age: open vault")? {
         age::Decryptor::Passphrase(d) => d,
-        _ => return Err(anyhow!("vault is not passphrase-encrypted")),
+        _ => {
+            return Err(anyhow!(
+                "the vault is not a passphrase-encrypted age file — sshelf did not write it; \
+                 move it aside and re-add your secrets"
+            ));
+        }
     };
     let mut reader = decryptor
         .decrypt(&age::secrecy::Secret::new(passphrase.to_owned()), None)
-        .map_err(|_| anyhow!("could not decrypt vault (wrong passphrase?)"))?;
+        .map_err(|_| {
+            anyhow!(
+                "could not decrypt the vault — is $SSHELF_VAULT_PASSPHRASE the passphrase it \
+                 was created with?"
+            )
+        })?;
     let mut plaintext = Vec::new();
     reader.read_to_end(&mut plaintext)?;
     Ok(plaintext)
@@ -65,6 +75,12 @@ pub fn store(path: &Path, passphrase: &str, id: &str, password: &str) -> Result<
 
 pub fn get(path: &Path, passphrase: &str, id: &str) -> Result<Option<String>> {
     Ok(load_map(path, passphrase)?.get(id).cloned())
+}
+
+/// Every host id the vault holds a secret for. Read-only, and the reason `doctor` can report
+/// orphaned secrets in vault mode: the vault is a map we own, unlike the OS keyring.
+pub fn ids(path: &Path, passphrase: &str) -> Result<Vec<String>> {
+    Ok(load_map(path, passphrase)?.into_keys().collect())
 }
 
 pub fn delete(path: &Path, passphrase: &str, id: &str) -> Result<()> {
@@ -114,6 +130,19 @@ mod tests {
         store(&path, "p", "id", "pw").unwrap();
         delete(&path, "p", "id").unwrap();
         assert_eq!(get(&path, "p", "id").unwrap(), None);
+    }
+
+    #[test]
+    fn ids_lists_every_stored_host() {
+        let path = tmp();
+        assert!(ids(&path, "p").unwrap().is_empty());
+        store(&path, "p", "id2", "b").unwrap();
+        store(&path, "p", "id1", "a").unwrap();
+        let mut listed = ids(&path, "p").unwrap();
+        listed.sort();
+        assert_eq!(listed, vec!["id1".to_string(), "id2".to_string()]);
+        // Listing is a read: a wrong passphrase can't fake an empty vault.
+        assert!(ids(&path, "wrong").is_err());
     }
 
     #[test]

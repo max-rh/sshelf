@@ -14,8 +14,10 @@ your sshelf hosts by name.
 ## What does sshelf need at runtime?
 
 **OpenSSH 8.4+** on your machine — password/passphrase auto-supply rides on
-`SSH_ASKPASS_REQUIRE`, added in OpenSSH 8.4 (2020). Check with `ssh -V`. Key/agent hosts work
-with anything reasonably modern. Platforms: macOS + Linux, x86_64 and arm64.
+`SSH_ASKPASS_REQUIRE`, added in OpenSSH 8.4 (2020). Key/agent hosts work with anything
+reasonably modern. Platforms: macOS + Linux, x86_64 and arm64.
+
+Run [`sshelf doctor`](doctor.md) — it reads your version and says whether it's enough.
 
 ## Does sshelf phone home?
 
@@ -33,10 +35,12 @@ written to `hosts.toml`, and the import only ever *adds* hosts.
 
 ## Password auto-supply isn't working
 
-- Check `ssh -V` — you need OpenSSH 8.4+ (see above).
 - **Built from source on macOS?** An unsigned binary can hit a Keychain approval prompt on
   every connect (Keychain ACLs are keyed to the code signature). Approve it, or ad-hoc sign
   your build: `codesign -s - target/release/sshelf`.
+
+Start with [`sshelf doctor`](doctor.md): it checks the OpenSSH version *and* round-trips your
+secret backend, which covers both of the usual causes.
 
 ## I'm on a headless box with no keyring
 
@@ -44,10 +48,13 @@ Set `SSHELF_VAULT_PASSPHRASE` — secrets then live in an `age`-encrypted vault 
 a keyring. Details: [where secrets live](passwords-2fa.md#where-secrets-live); the
 env-inheritance tradeoff is documented in [Security](security.md).
 
+[`sshelf doctor`](doctor.md) confirms which backend it's actually using and whether it opens.
+
 ## Can a jump host use password auth?
 
 Not currently — jump hosts are key/agent only. The askpass helper holds the *target's* secret
-and can't tell which hop in a chain is prompting.
+and can't tell which hop in a chain is prompting. If a jump-host connection fails, check your
+agent is reachable: [`sshelf doctor`](doctor.md).
 
 ## Can I open connections in tmux windows instead of leaving the picker?
 
@@ -87,6 +94,9 @@ Completion has two layers. The packages install **static** completion (subcomman
 open a new shell so it loads. Completing your saved **host names** needs the dynamic engine
 sourced in your shell rc — one line per shell: [Shell completions](cli.md#shell-completions).
 
+If host names still don't complete, check the database itself parses:
+[`sshelf doctor`](doctor.md).
+
 ## A forward vanished from F4
 
 `F4` only ever shows forwards whose processes are **actually running** — the list is
@@ -101,6 +111,9 @@ custom path is a setting: [Configuration](configuration.md)). **Secrets don't tr
 it**: they're per-machine, in each machine's keyring or vault — re-add them with
 `sshelf set-password`. Frecency state is per-machine and app-managed.
 
+On the new machine, run [`sshelf doctor`](doctor.md) — it checks the file parses, has no
+duplicate names or ids, and that its sites all exist.
+
 ## Where did the first-connection host-key prompt go?
 
 Connections pass `StrictHostKeyChecking=accept-new`: a brand-new host's key is accepted and
@@ -112,6 +125,12 @@ recorded on first use (so the prompt can't interfere with automated password sup
 
 Not currently — connect hands off via Unix `exec()`, and the askpass/process plumbing is
 Unix-specific. macOS + Linux for now.
+
+## Something isn't working and I don't know why
+
+Run [`sshelf doctor`](doctor.md). It checks the OpenSSH version, your secret backend, the host
+database, dangling site references, the ssh-agent, and the exported ssh_config fragment, and
+names a fix for anything that isn't right. It's local and read-only — it never contacts a host.
 
 ## My question isn't here
 

@@ -241,7 +241,9 @@ impl SiteForm {
             .enumerate()
             .any(|(i, s)| Some(i) != self.editing && s.name.eq_ignore_ascii_case(&name));
         if dup {
-            return Err(format!("a site named '{name}' already exists"));
+            return Err(format!(
+                "a site named '{name}' already exists — pick another name"
+            ));
         }
         let port = {
             let t = self.fields[2].value.trim();

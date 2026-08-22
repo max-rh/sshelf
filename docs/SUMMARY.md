@@ -16,6 +16,7 @@
 - [Exporting to SSH config](export.md)
 - [CLI reference](cli.md)
 - [Configuration](configuration.md)
+- [Checking your setup (`doctor`)](doctor.md)
 - [FAQ & troubleshooting](faq.md)
 
 # Understanding sshelf

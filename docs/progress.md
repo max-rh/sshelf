@@ -3,8 +3,77 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Day-to-day friction — tmux connect modes and a transfer screen that can
-mark, queue, and create directories. Targets v0.12.0. (v0.11.0 tailnet import shipped.)
+**Current milestone:** Self-service diagnostics — `sshelf doctor`, plus an error-message pass
+so every failure names its own fix. Targets v0.13.0. (v0.12.0 tmux + transfer shipped.)
+
+---
+
+## 2026-08-21 — `sshelf doctor`, and errors that name the next action
+
+- **New `doctor.rs` + `sshelf doctor`.** Seven checks, each one line of `ok` / `warn` / `fail`
+  plus a single runnable next action when it isn't ok: the OpenSSH version (fail below 8.4 —
+  that's the `SSH_ASKPASS_REQUIRE` floor stored secrets ride on; warn if the banner can't be
+  parsed), the host database (parse errors, and duplicate names or **ids** — an id keys both the
+  stored secret and the frecency history), the secret backend, dangling `site` references, stored
+  secrets whose host is gone, `$SSH_AUTH_SOCK` when any host uses agent auth (also flagged when
+  it points at a socket that no longer exists), and whether the exported ssh_config fragment
+  still matches the database. Exit 0 unless something **failed** — warnings don't fail the run,
+  so `sshelf doctor && …` is usable in a script. **D-027.**
+- **Local and read-only.** No pings, no test connections, no version lookups: `doctor` reports
+  whether *sshelf* is set up, never whether a *host* is up. The single write is a throwaway
+  keyring entry (`sshelf-doctor-probe`, under the real `sshelf` service so it exercises the
+  actual code path) that is deleted again — a backend that reads but can't write is one that
+  fails the first time a password is saved, and a read-only probe would pass.
+- **Honest about what it can't check.** The `keyring` crate has no portable enumeration, so
+  orphan detection only has teeth in vault mode; the keyring case *says* it didn't run rather
+  than reporting a clean bill of health nobody checked. Export staleness is compared by content
+  (the render is deterministic), not by mtime.
+- Every check is a pure function over inputs the caller gathers, so the whole matrix is
+  fixture-tested without a keyring, a config dir, or an `ssh` binary; `secrets.rs` gained
+  read-only introspection (`backend`, `probe`, `stored_ids`) and `vault.rs` an `ids` accessor.
+- **Error-message pass.** Audited every user-facing string against one rule — name the thing,
+  the cause, the next action — and rewrote the ones that failed it. Before → after:
+  - `save failed: {e}` → `hosts NOT saved to <path>: {e} — nothing was written`
+  - `no host selected` → `no host under the cursor — clear the filter (esc), or add one (^a)`
+  - `HOME is not set` → `$HOME is not set — sshelf can't locate ~/.ssh/config to import from`
+  - `import failed: {e}` → `could not import <path>: {e}`
+  - `parsed ok but save failed` → `<n> host(s) parsed, but <path> could not be written: {e}`
+  - `host saved; secret NOT stored` → `… — retry with sshelf set-password <name>`
+  - `hosts updated; config NOT saved` → `… <config path> was not saved: {e} — the new location
+    won't stick`
+  - `hosts NOT written: {e}` → `could not write <path>: {e} — the hosts file is unchanged`
+  - `could not start transfer` → `could not open the transfer screen for <host>: {e}`
+  - `forward up, but not saved` → `forward up, but not recorded: {e} — F4 will lose it when
+    sshelf restarts`
+  - `failed to launch ssh` → `could not launch ssh: {e} — is an OpenSSH client installed and on
+    your PATH?`
+  - `empty password; nothing stored` → `nothing on stdin — nothing stored; pipe the password
+    in, e.g. printf %s "$PASS" | sshelf set-password <name>`
+  - `a site named 'x' already exists` → `… — pick another name, or edit that one with F3`
+  - `no host with name or id 'x'` → `… — run sshelf list to see your hosts`
+  - `could not decrypt vault (wrong passphrase?)` → `could not decrypt the vault — is
+    $SSHELF_VAULT_PASSPHRASE the passphrase it was created with?`
+  - bare `authentication failed` / `connection refused` / `connection timed out` /
+    `could not resolve the host` on a failed forward now each name what to check.
+  No behavior changed inside the pass — only the words.
+- **Verified end-to-end** against isolated config dirs: a healthy setup reports 7 × ok and
+  exits 0; a deliberately broken one (a `site` that isn't defined, a hand-edited stale export
+  fragment, `$SSH_AUTH_SOCK` unset with agent hosts) reports fail + 2 warn and exits 1, and the
+  remedies it printed were then *run* — `sshelf sites add …` and `sshelf export` each flipped
+  their check to ok and the run back to exit 0. Duplicate names/ids and an unparseable
+  `hosts.toml` both fail with the offending values (a multi-line TOML error is folded onto one
+  line, keeping the line/column and the reason). Vault mode was checked both ways: reachable
+  (including an orphan the keyring case can't see) and unreadable with a wrong passphrase.
+  `~/.ssh` and `hosts.toml` were byte-identical after every run, and no probe entry was left in
+  the keyring.
+- 24 new tests (281 pass, 4 `#[ignore]`d e2e), clippy + `fmt --check` clean, **no new
+  dependencies**.
+- Docs synced: new `doctor.md` (+ `SUMMARY.md`), `cli.md`, `faq.md` (relevant answers now end in
+  `sshelf doctor`, plus a new "something isn't working" entry), `structure.md`, `index.md`,
+  README, `decisions.md` (D-027), CHANGELOG. Ships in **v0.13.0**.
+- **Still open from v0.12.0:** `sshelf --config FILE <subcommand>` is rejected by clap, and
+  `sshelf --config FILE list` is read as "connect to a host named `list`". `$SSHELF_CONFIG`
+  works. Not folded into this release.
 
 ---
 
