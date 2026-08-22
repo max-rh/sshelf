@@ -39,13 +39,12 @@ use crate::model::{AuthMethod, Host, Site};
 use crate::paths::{CONFIG_ENV, Paths};
 use crate::state::FrecencyState;
 
+/// Note the absence of `args_conflicts_with_subcommands`: it counts the **global** flags as
+/// top-level args, so it rejected `sshelf --config FILE <subcommand>` outright — and, worse,
+/// read `sshelf --config FILE list` as "connect to a host named `list`". The one combination it
+/// was really guarding against is caught explicitly by [`reject_host_with_subcommand`].
 #[derive(Parser)]
-#[command(
-    name = "sshelf",
-    version,
-    about = "A TUI SSH host manager",
-    args_conflicts_with_subcommands = true
-)]
+#[command(name = "sshelf", version, about = "A TUI SSH host manager")]
 struct Cli {
     /// Use a specific config file (default: ~/.config/sshelf/config.toml).
     #[arg(long, global = true, value_name = "FILE")]
@@ -127,6 +126,25 @@ enum Command {
     },
     /// Print the man page (roff) to stdout.
     Man,
+}
+
+impl Command {
+    /// The subcommand's own name, for error messages. Kept next to the variants so a new
+    /// subcommand can't quietly go unnamed.
+    fn name(&self) -> &'static str {
+        match self {
+            Command::List { .. } => "list",
+            Command::Add(_) => "add",
+            Command::Import { .. } => "import",
+            Command::Export { .. } => "export",
+            Command::SetPassword { .. } => "set-password",
+            Command::Print { .. } => "print-command",
+            Command::Sites { .. } => "sites",
+            Command::Doctor => "doctor",
+            Command::Completions { .. } => "completions",
+            Command::Man => "man",
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -283,6 +301,7 @@ fn main() -> Result<()> {
     CompleteEnv::with_factory(Cli::command).complete();
 
     let cli = Cli::parse();
+    reject_host_with_subcommand(cli.host.as_deref(), cli.command.as_ref())?;
     // `--config` is plumbed to all paths via the env var so subcommands + Paths resolution see
     // it uniformly. Set before any Paths::resolve().
     if let Some(path) = &cli.config {
@@ -327,6 +346,24 @@ fn main() -> Result<()> {
             None => app::run(),
         },
     }
+}
+
+/// Reject `sshelf <HOST> <subcommand>`.
+///
+/// The bare positional means "connect to this host", so pairing it with a subcommand is always a
+/// mistake — and would be a *silent* one, since dispatch matches the subcommand first and the
+/// host would simply be dropped. This is the only combination the old blanket
+/// `args_conflicts_with_subcommands` was really guarding, and catching it here means the global
+/// `--config` / `--transfer-log` flags work on either side of a subcommand, as documented.
+fn reject_host_with_subcommand(host: Option<&str>, command: Option<&Command>) -> Result<()> {
+    let (Some(host), Some(command)) = (host, command) else {
+        return Ok(());
+    };
+    let sub = command.name();
+    anyhow::bail!(
+        "'{host}' is read as a host name, but '{sub}' is a subcommand — run one or the other \
+         (`sshelf {host}` connects to it; `sshelf {sub} …` takes no host in front)"
+    )
 }
 
 /// `sshelf import` — from `~/.ssh/config` by default, or from the user's Tailscale tailnet
@@ -979,6 +1016,77 @@ mod tests {
         // Nothing → TUI.
         let c = Cli::try_parse_from(["sshelf"]).unwrap();
         assert!(c.command.is_none() && c.host.is_none());
+    }
+
+    /// The regression this replaced `args_conflicts_with_subcommands` to fix: the **global**
+    /// flags must work on either side of a subcommand, as `docs/cli.md` documents.
+    #[test]
+    fn global_flags_work_before_and_after_a_subcommand() {
+        for argv in [
+            vec!["sshelf", "--config", "/tmp/x.toml", "list"],
+            vec!["sshelf", "list", "--config", "/tmp/x.toml"],
+        ] {
+            let c = Cli::try_parse_from(&argv).expect("--config is a global flag");
+            assert!(matches!(c.command, Some(Command::List { .. })), "{argv:?}");
+            assert_eq!(
+                c.config.as_deref(),
+                Some(std::path::Path::new("/tmp/x.toml"))
+            );
+            assert!(c.host.is_none(), "{argv:?} must not be read as a host name");
+        }
+        // Previously a hard parse error, and the reason `sshelf --config F doctor` was unusable.
+        let c = Cli::try_parse_from(["sshelf", "--config", "/tmp/x.toml", "doctor"]).unwrap();
+        assert!(matches!(c.command, Some(Command::Doctor)));
+        let c = Cli::try_parse_from(["sshelf", "--config", "/tmp/x.toml", "set-password", "web"])
+            .unwrap();
+        assert!(matches!(c.command, Some(Command::SetPassword { .. })));
+        // …and the same for the other global flag.
+        let c = Cli::try_parse_from(["sshelf", "--transfer-log", "/tmp/t.log", "list"]).unwrap();
+        assert!(matches!(c.command, Some(Command::List { .. })));
+        assert_eq!(
+            c.transfer_log.as_deref(),
+            Some(std::path::Path::new("/tmp/t.log"))
+        );
+    }
+
+    #[test]
+    fn a_host_and_a_subcommand_together_are_refused_not_silently_resolved() {
+        // clap parses both happily; dispatch would run the subcommand and drop the host, so the
+        // combination is rejected explicitly instead.
+        let c = Cli::try_parse_from(["sshelf", "prod-web", "list"]).unwrap();
+        assert_eq!(c.host.as_deref(), Some("prod-web"));
+        assert!(c.command.is_some());
+        let err = reject_host_with_subcommand(c.host.as_deref(), c.command.as_ref())
+            .expect_err("a host plus a subcommand is always a mistake")
+            .to_string();
+        assert!(err.contains("prod-web"), "{err}");
+        assert!(err.contains("'list' is a subcommand"), "{err}");
+        assert!(err.contains("`sshelf prod-web` connects"), "{err}");
+
+        // Either alone is fine.
+        assert!(reject_host_with_subcommand(Some("prod-web"), None).is_ok());
+        let c = Cli::try_parse_from(["sshelf", "list"]).unwrap();
+        assert!(reject_host_with_subcommand(None, c.command.as_ref()).is_ok());
+        assert!(reject_host_with_subcommand(None, None).is_ok());
+    }
+
+    #[test]
+    fn every_subcommand_reports_its_own_name() {
+        for (argv, expected) in [
+            (vec!["sshelf", "list"], "list"),
+            (vec!["sshelf", "add"], "add"),
+            (vec!["sshelf", "import"], "import"),
+            (vec!["sshelf", "export"], "export"),
+            (vec!["sshelf", "set-password", "web"], "set-password"),
+            (vec!["sshelf", "print-command", "web"], "print-command"),
+            (vec!["sshelf", "sites"], "sites"),
+            (vec!["sshelf", "doctor"], "doctor"),
+            (vec!["sshelf", "completions", "bash"], "completions"),
+            (vec!["sshelf", "man"], "man"),
+        ] {
+            let c = Cli::try_parse_from(&argv).unwrap();
+            assert_eq!(c.command.as_ref().unwrap().name(), expected, "{argv:?}");
+        }
     }
 
     #[test]

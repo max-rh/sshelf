@@ -66,14 +66,23 @@ so every failure names its own fix. Targets v0.13.0. (v0.12.0 tmux + transfer sh
   (including an orphan the keyring case can't see) and unreadable with a wrong passphrase.
   `~/.ssh` and `hosts.toml` were byte-identical after every run, and no probe entry was left in
   the keyring.
-- 24 new tests (281 pass, 4 `#[ignore]`d e2e), clippy + `fmt --check` clean, **no new
+- 27 new tests (284 pass, 4 `#[ignore]`d e2e), clippy + `fmt --check` clean, **no new
   dependencies**.
 - Docs synced: new `doctor.md` (+ `SUMMARY.md`), `cli.md`, `faq.md` (relevant answers now end in
   `sshelf doctor`, plus a new "something isn't working" entry), `structure.md`, `index.md`,
-  README, `decisions.md` (D-027), CHANGELOG. Ships in **v0.13.0**.
-- **Still open from v0.12.0:** `sshelf --config FILE <subcommand>` is rejected by clap, and
-  `sshelf --config FILE list` is read as "connect to a host named `list`". `$SSHELF_CONFIG`
-  works. Not folded into this release.
+  README, `decisions.md` (D-027), `cli.md` (global flags work on either side of a subcommand),
+  CHANGELOG. Ships in **v0.13.0**.
+- **Fixed the CLI-routing bug found during v0.12.0 verification.** clap's
+  `args_conflicts_with_subcommands` counts the **global** flags as top-level args, so
+  `sshelf --config FILE set-password web` failed to parse, and — worse — the same flag before
+  `list` made `sshelf --config FILE list` read as "connect to a host named `list`", which would
+  have connected had such a host existed. The
+  setting is gone; the one combination it genuinely guarded (`sshelf <HOST> <subcommand>`, which
+  clap parses happily and dispatch would resolve to the subcommand, silently dropping the host)
+  is now rejected by an explicit check with its own message. Every subcommand gained a `name()`
+  so that message can say which one. Verified across the matrix — both global flags on either
+  side of every subcommand, bare host, `-`, bare subcommand — with 3 new tests; `--help`,
+  completions and the man page are unchanged in shape.
 
 ---
 

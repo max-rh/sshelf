@@ -19,6 +19,14 @@ versions follow SemVer.
   throwaway keyring entry it deletes again. Full page:
   [Checking your setup](https://max-rh.github.io/sshelf/doctor.html). No new dependencies.
 
+### Fixed
+- **Global flags now work before a subcommand.** `sshelf --config FILE list` used to be read as
+  "connect to a host named `list`", and `sshelf --config FILE set-password web` failed to parse
+  at all — despite `--config` being documented as global. Both now work, on either side of the
+  subcommand, as does `--transfer-log`. (Combining a host name *and* a subcommand —
+  `sshelf prod-web list` — is now refused explicitly instead of silently running the subcommand
+  and dropping the host.)
+
 ### Changed
 - **Every user-facing error now names the thing, the cause, and the next action.** A failed save
   names the file it couldn't write instead of just "save failed"; an unknown host, a duplicate

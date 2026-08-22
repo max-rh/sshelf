@@ -22,10 +22,14 @@ Everything sshelf does without opening the TUI.
 | `sshelf completions <shell>` | Print static shell completions. |
 | `sshelf man` | Print the man page. |
 
-Global flags: **`--config FILE`** — use a specific config file (also `$SSHELF_CONFIG`); see
-[Configuration](configuration.md). **`--transfer-log FILE`** — append transfer diagnostics,
-no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
+Global flags work **before or after** a subcommand (`sshelf --config F list` and
+`sshelf list --config F` are the same command): **`--config FILE`** — use a specific config file
+(also `$SSHELF_CONFIG`); see [Configuration](configuration.md). **`--transfer-log FILE`** —
+append transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 [Transferring files](transfer.md#debugging-a-failing-transfer).
+
+A host name and a subcommand can't be combined — `sshelf prod-web list` is refused rather than
+quietly running `list` and forgetting the host.
 
 Environment: **`$SSHELF_TAILSCALE_BIN`** — the `tailscale` binary `--tailscale` should run,
 for installs that aren't on `PATH` (sshelf otherwise tries `PATH`, then the macOS app bundle
