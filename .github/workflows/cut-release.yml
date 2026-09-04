@@ -73,7 +73,7 @@ jobs:
           marker = "## [Unreleased]"
           i = text.index(marker) + len(marker)
           # Move the Unreleased items under a new version heading; leave Unreleased empty.
-          text = text[:i] + f"\n\n## [{version}] — {date}" + text[i:]
+          text = text[:i] + f"\n\n## [{version}] ({date})" + text[i:]
           # Point the Unreleased compare-link at the new tag and add this version's link.
           repl = (
               f"[Unreleased]: {repo}/compare/v{version}...HEAD\n"
