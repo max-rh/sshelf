@@ -425,9 +425,12 @@ fn apply_import(result: import::ImportResult, dry_run: bool) -> Result<()> {
     }
     let new_sites = import::missing_sites(&mut to_add, &file.sites);
 
+    // Preview the endpoints as they will read once written: against the sites already on file
+    // plus the ones this import is about to create (a Tailscale tailnet site, say).
+    let preview_sites: Vec<Site> = file.sites.iter().chain(new_sites.iter()).cloned().collect();
     println!("{} new host(s):", to_add.len());
     for h in &to_add {
-        println!("  {:<20} {}", h.name, h.endpoint());
+        println!("  {:<20} {}", h.name, h.endpoint_in(&preview_sites));
     }
     for s in &new_sites {
         println!("  + site '{}'", s.name);
@@ -567,7 +570,7 @@ fn cmd_list(query: &str, json: bool) -> Result<()> {
     let file = store::load_hosts(&hosts_path)?;
     let (hosts, sites) = (file.hosts, file.sites);
     let st = FrecencyState::load(&paths.state_file())?;
-    let order = search::rank(&hosts, query, &st, cfg.decay_rate, cfg.default_sort);
+    let order = search::rank(&hosts, &sites, query, &st, cfg.decay_rate, cfg.default_sort);
 
     // JSON must always be valid (even empty) for scripts — emit before the human messages.
     if json {
@@ -586,27 +589,32 @@ fn cmd_list(query: &str, json: bool) -> Result<()> {
         return Ok(());
     }
     for &i in &order {
-        let h = &hosts[i];
-        let site = h
-            .site
-            .as_deref()
-            .map(|s| format!("  ·{s}·"))
-            .unwrap_or_default();
-        let tags = if h.tags.is_empty() {
-            String::new()
-        } else {
-            format!("  [{}]", h.tags.join(", "))
-        };
-        println!(
-            "{:<20}  {:<28}  {}{}{}",
-            h.name,
-            h.endpoint(),
-            h.auth.as_str(),
-            site,
-            tags
-        );
+        println!("{}", list_row(&hosts[i], &sites));
     }
     Ok(())
+}
+
+/// One plain-output `sshelf list` row: `name  user@host:port  auth  ·site·  [tags]`. The
+/// endpoint resolves the host's site defaults, so an inherited user is the one printed.
+fn list_row(h: &Host, sites: &[Site]) -> String {
+    let site = h
+        .site
+        .as_deref()
+        .map(|s| format!("  ·{s}·"))
+        .unwrap_or_default();
+    let tags = if h.tags.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", h.tags.join(", "))
+    };
+    format!(
+        "{:<20}  {:<28}  {}{}{}",
+        h.name,
+        h.endpoint_in(sites),
+        h.auth.as_str(),
+        site,
+        tags
+    )
 }
 
 /// A host record plus its generated ssh command, for `sshelf list --json`.
@@ -863,7 +871,14 @@ fn cmd_connect(host_ref: &str) -> Result<()> {
 
     let Some(host) = resolve_host(&hosts, host_ref).cloned() else {
         let st = FrecencyState::load(&paths.state_file()).unwrap_or_default();
-        let order = search::rank(&hosts, host_ref, &st, cfg.decay_rate, cfg.default_sort);
+        let order = search::rank(
+            &hosts,
+            &sites,
+            host_ref,
+            &st,
+            cfg.decay_rate,
+            cfg.default_sort,
+        );
         if order.is_empty() {
             anyhow::bail!("no host named '{host_ref}' — run `sshelf list` to see your hosts");
         }
@@ -961,15 +976,15 @@ fn host_name_candidates() -> Vec<CompletionCandidate> {
         return Vec::new();
     };
     match store::load_hosts(&cfg.hosts_path(&paths)) {
-        Ok(file) => host_candidates_from(&file.hosts),
+        Ok(file) => host_candidates_from(&file.hosts, &file.sites),
         Err(_) => Vec::new(),
     }
 }
 
-fn host_candidates_from(hosts: &[Host]) -> Vec<CompletionCandidate> {
+fn host_candidates_from(hosts: &[Host], sites: &[Site]) -> Vec<CompletionCandidate> {
     hosts
         .iter()
-        .map(|h| CompletionCandidate::new(&h.name).help(Some(h.endpoint().into())))
+        .map(|h| CompletionCandidate::new(&h.name).help(Some(h.endpoint_in(sites).into())))
         .collect()
 }
 
@@ -1285,7 +1300,47 @@ mod tests {
     #[test]
     fn host_candidates_from_lists_each_name() {
         let hosts = vec![Host::new("a", "h1"), Host::new("b", "h2")];
-        assert_eq!(host_candidates_from(&hosts).len(), 2);
+        assert_eq!(host_candidates_from(&hosts, &[]).len(), 2);
+    }
+
+    /// Issue #16: plain `sshelf list` prints the user a host inherits from its site, while
+    /// `--json` keeps flattening the record exactly as stored (`user` stays `null`).
+    #[test]
+    fn list_row_shows_the_inherited_site_user_but_json_keeps_the_record() {
+        let sites = vec![Site {
+            name: "dc".into(),
+            user: Some("deploy".into()),
+            port: None,
+            jump_hosts: Vec::new(),
+            identity_files: Vec::new(),
+        }];
+        let mut inherits = Host::new("web1", "10.0.0.1");
+        inherits.site = Some("dc".into());
+        let mut own = Host::new("web2", "10.0.0.2");
+        own.site = Some("dc".into());
+        own.user = Some("mike".into());
+
+        let row = list_row(&inherits, &sites);
+        assert!(row.contains("deploy@10.0.0.1:22"), "{row}");
+        assert!(row.contains("·dc·"), "{row}");
+        assert!(list_row(&own, &sites).contains("mike@10.0.0.2:22"));
+        // Completion help text resolves the same way.
+        let help = host_candidates_from(&[inherits.clone()], &sites);
+        assert_eq!(
+            help[0].get_help().unwrap().to_string(),
+            "deploy@10.0.0.1:22"
+        );
+
+        // The JSON contract is unchanged: the record is as stored, only `command` resolves.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&hosts_to_json(&[&inherits], &sites).unwrap()).unwrap();
+        assert!(parsed[0]["user"].is_null());
+        assert!(
+            parsed[0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("deploy@10.0.0.1")
+        );
     }
 
     #[test]

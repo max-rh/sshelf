@@ -12,7 +12,7 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use crate::config::Sort;
-use crate::model::Host;
+use crate::model::{Host, Site};
 use crate::state::FrecencyState;
 
 /// A fresh fuzzy matcher.
@@ -38,9 +38,11 @@ pub fn parse_query(query: &str) -> (Vec<String>, Option<String>, String) {
     (tags, site, rest.join(" "))
 }
 
-/// Host indices (into `hosts`) in display order.
+/// Host indices (into `hosts`) in display order. `sites` resolves each host's inherited
+/// defaults before matching, so a site's user is searchable on the hosts that inherit it.
 pub fn rank(
     hosts: &[Host],
+    sites: &[Site],
     query: &str,
     state: &FrecencyState,
     decay: f64,
@@ -71,7 +73,7 @@ pub fn rank(
     let mut buf = Vec::new();
     let mut scored: Vec<(usize, u32)> = Vec::new();
     for &i in &candidates {
-        let hay = hosts[i].search_haystack();
+        let hay = hosts[i].search_haystack(sites);
         let hs = Utf32Str::new(&hay, &mut buf);
         if let Some(score) = pattern.score(hs, &mut matcher) {
             scored.push((i, score));
@@ -154,7 +156,7 @@ fn name_asc(a: &Host, b: &Host) -> Ordering {
 mod tests {
     use super::*;
     use crate::config::Sort;
-    use crate::model::Host;
+    use crate::model::{Host, Site};
     use crate::state::{FrecencyState, HostStat};
 
     fn sample() -> Vec<Host> {
@@ -180,7 +182,7 @@ mod tests {
                 last_used: now,
             },
         );
-        let order = rank(&hosts, "", &state, 0.2, Sort::Frecency);
+        let order = rank(&hosts, &[], "", &state, 0.2, Sort::Frecency);
         assert_eq!(order[0], 1);
     }
 
@@ -188,7 +190,7 @@ mod tests {
     fn empty_query_name_sort() {
         let hosts = sample();
         let state = FrecencyState::default();
-        let order = rank(&hosts, "", &state, 0.2, Sort::Name);
+        let order = rank(&hosts, &[], "", &state, 0.2, Sort::Name);
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         assert_eq!(names, vec!["bastion", "prod-db", "prod-web", "staging-web"]);
     }
@@ -197,7 +199,7 @@ mod tests {
     fn fuzzy_filters_to_matches() {
         let hosts = sample();
         let state = FrecencyState::default();
-        let order = rank(&hosts, "prod", &state, 0.2, Sort::Frecency);
+        let order = rank(&hosts, &[], "prod", &state, 0.2, Sort::Frecency);
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         assert!(names.contains(&"prod-web"));
         assert!(!names.contains(&"bastion"));
@@ -208,7 +210,7 @@ mod tests {
         let hosts = sample();
         let state = FrecencyState::default();
         // tag:web matches prod-web and staging-web only
-        let order = rank(&hosts, "tag:web", &state, 0.2, Sort::Name);
+        let order = rank(&hosts, &[], "tag:web", &state, 0.2, Sort::Name);
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         assert_eq!(names, vec!["prod-web", "staging-web"]);
     }
@@ -218,7 +220,7 @@ mod tests {
         let hosts = sample();
         let state = FrecencyState::default();
         // tag:web narrows to the two -web hosts, then fuzzy "staging"
-        let order = rank(&hosts, "tag:web staging", &state, 0.2, Sort::Frecency);
+        let order = rank(&hosts, &[], "tag:web staging", &state, 0.2, Sort::Frecency);
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         assert_eq!(names, vec!["staging-web"]);
     }
@@ -227,7 +229,7 @@ mod tests {
     fn multiple_tags_are_anded() {
         let hosts = sample();
         let state = FrecencyState::default();
-        let order = rank(&hosts, "tag:prod tag:db", &state, 0.2, Sort::Name);
+        let order = rank(&hosts, &[], "tag:prod tag:db", &state, 0.2, Sort::Name);
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         assert_eq!(names, vec!["prod-db"]);
     }
@@ -249,7 +251,29 @@ mod tests {
         let plain = Host::new("plain", "10.0.0.3"); // no site
         let hosts = vec![a, b, plain];
         let state = FrecencyState::default();
-        let order = rank(&hosts, "site:DC1", &state, 0.2, Sort::Name);
+        let order = rank(&hosts, &[], "site:DC1", &state, 0.2, Sort::Name);
+        let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
+        assert_eq!(names, vec!["web1"]);
+    }
+
+    /// A host that inherits its site's user is found by fuzzy-searching that user — the
+    /// haystack resolves site defaults exactly like the row the user is looking at.
+    #[test]
+    fn inherited_site_user_is_searchable() {
+        let sites = vec![Site {
+            name: "dc".into(),
+            user: Some("deploy".into()),
+            port: None,
+            jump_hosts: Vec::new(),
+            identity_files: Vec::new(),
+        }];
+        let mut inherits = Host::new("web1", "10.0.0.1");
+        inherits.site = Some("dc".into());
+        let outsider = Host::new("web2", "10.0.0.2"); // no site, no inherited user
+        let hosts = vec![inherits, outsider];
+        let state = FrecencyState::default();
+
+        let order = rank(&hosts, &sites, "deploy", &state, 0.2, Sort::Name);
         let names: Vec<&str> = order.iter().map(|&i| hosts[i].name.as_str()).collect();
         assert_eq!(names, vec!["web1"]);
     }

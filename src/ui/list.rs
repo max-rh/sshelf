@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::App;
-use crate::model::Host;
+use crate::model::{Host, Site};
 use crate::search;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -69,12 +69,17 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .clamp(6, 24);
 
     let mut matcher = search::matcher();
-    let base = Style::default();
-    let hl = Style::default()
-        .fg(super::accent())
-        .add_modifier(Modifier::BOLD);
     // Highlight only the fuzzy part of the query (not any `tag:`/`site:` tokens).
     let (_, _, fuzzy) = search::parse_query(&app.query);
+    let ctx = RowCtx {
+        sites: &app.sites,
+        name_w,
+        fuzzy: &fuzzy,
+        base: Style::default(),
+        hl: Style::default()
+            .fg(super::accent())
+            .add_modifier(Modifier::BOLD),
+    };
 
     // Idle → group hosts under site headers; filtering → a flat list with a site column.
     // `app.selected` indexes `order` (hosts only); headers shift the ListState index, so we
@@ -104,22 +109,14 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             if pos == app.selected {
                 selected_listidx = items.len();
             }
-            items.push(host_row(h, name_w, &fuzzy, &mut matcher, base, hl, false));
+            items.push(host_row(h, &ctx, &mut matcher, false));
         }
     } else {
         for (pos, &i) in app.order.iter().enumerate() {
             if pos == app.selected {
                 selected_listidx = items.len();
             }
-            items.push(host_row(
-                &app.hosts[i],
-                name_w,
-                &fuzzy,
-                &mut matcher,
-                base,
-                hl,
-                true,
-            ));
+            items.push(host_row(&app.hosts[i], &ctx, &mut matcher, true));
         }
     }
 
@@ -143,23 +140,31 @@ fn section_key(h: &Host) -> String {
     section_display(h).to_lowercase()
 }
 
-/// One host row: `name  user@host:port  [tags]`, fuzzy-highlighted, with an optional dim
-/// `·site·` column (shown only in the flat/filtered view, where there are no section headers).
-fn host_row(
-    h: &Host,
+/// What every row needs and no row changes: the defined sites (to resolve inherited defaults),
+/// the name column width, the fuzzy part of the query, and the two highlight styles.
+struct RowCtx<'a> {
+    sites: &'a [Site],
     name_w: usize,
-    fuzzy: &str,
-    matcher: &mut Matcher,
+    fuzzy: &'a str,
     base: Style,
     hl: Style,
-    show_site: bool,
-) -> ListItem<'static> {
-    let mut text = format!("{:<width$}  {}", h.name, h.endpoint(), width = name_w);
+}
+
+/// One host row: `name  user@host:port  [tags]`, fuzzy-highlighted, with an optional dim
+/// `·site·` column (shown only in the flat/filtered view, where there are no section headers).
+/// The endpoint resolves the host's site defaults, so an inherited user is the one shown.
+fn host_row(h: &Host, ctx: &RowCtx, matcher: &mut Matcher, show_site: bool) -> ListItem<'static> {
+    let mut text = format!(
+        "{:<width$}  {}",
+        h.name,
+        h.endpoint_in(ctx.sites),
+        width = ctx.name_w
+    );
     if !h.tags.is_empty() {
         text.push_str(&format!("  [{}]", h.tags.join(",")));
     }
-    let indices = search::match_indices(&text, fuzzy, matcher);
-    let mut spans = super::highlight(&text, &indices, base, hl);
+    let indices = search::match_indices(&text, ctx.fuzzy, matcher);
+    let mut spans = super::highlight(&text, &indices, ctx.base, ctx.hl);
     if show_site && let Some(site) = &h.site {
         spans.push(Span::styled(
             format!("  ·{site}·"),
@@ -189,7 +194,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::config::Config;
-    use crate::model::Host;
+    use crate::model::{Host, Site};
     use crate::paths::Paths;
     use crate::state::FrecencyState;
     use ratatui::Terminal;
@@ -256,6 +261,42 @@ mod tests {
             "expected a prod-dc section header"
         );
         assert!(text.contains("(no site)"), "expected a (no site) group");
+    }
+
+    /// Issue #16: a host with no user of its own, in a site that defines one, must list as the
+    /// **site's** user — not the local `$USER` the raw record falls back to.
+    #[test]
+    fn a_host_shows_the_user_it_inherits_from_its_site() {
+        let mut inherits = Host::new("web1", "10.0.0.1");
+        inherits.site = Some("dc".into());
+        let sites = vec![Site {
+            name: "dc".into(),
+            user: Some("deploy".into()),
+            port: None,
+            jump_hosts: Vec::new(),
+            identity_files: Vec::new(),
+        }];
+        let paths = Paths {
+            config_dir: std::env::temp_dir(),
+            data_dir: std::env::temp_dir(),
+            config_file_override: None,
+        };
+        let app = App::new(
+            vec![inherits],
+            sites,
+            FrecencyState::default(),
+            Config::default(),
+            paths,
+        );
+
+        let text = draw(&app);
+        assert!(text.contains("deploy@10.0.0.1:22"), "{text}");
+        // …and never the machine's own user (computed here so the test travels).
+        if let Ok(user) = std::env::var("USER")
+            && user != "deploy"
+        {
+            assert!(!text.contains(&format!("{user}@")), "{text}");
+        }
     }
 
     #[test]

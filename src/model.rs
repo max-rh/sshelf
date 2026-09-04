@@ -143,7 +143,8 @@ impl Host {
         self.port.unwrap_or(22)
     }
 
-    /// `user@host:port` summary used in the list and previews.
+    /// `user@host:port` for the host **as stored** — no site defaults resolved. Use
+    /// [`Host::endpoint_in`] for anything a person reads.
     pub fn endpoint(&self) -> String {
         format!(
             "{}@{}:{}",
@@ -153,9 +154,16 @@ impl Host {
         )
     }
 
-    /// The haystack string used for fuzzy matching (name + endpoint + tags + site).
-    pub fn search_haystack(&self) -> String {
-        let mut s = format!("{} {}", self.name, self.endpoint());
+    /// `user@host:port` with the host's [`Site`] defaults resolved — what every human-facing
+    /// listing shows, so an inherited user reads as the site's user rather than `$USER`.
+    pub fn endpoint_in(&self, sites: &[Site]) -> String {
+        self.with_site_defaults(sites).endpoint()
+    }
+
+    /// The haystack string used for fuzzy matching (name + endpoint + tags + site). Uses the
+    /// site-resolved endpoint so typing a site's user finds the hosts that inherit it.
+    pub fn search_haystack(&self, sites: &[Site]) -> String {
+        let mut s = format!("{} {}", self.name, self.endpoint_in(sites));
         if !self.tags.is_empty() {
             s.push(' ');
             s.push_str(&self.tags.join(" "));
@@ -299,6 +307,25 @@ mod tests {
     fn haystack_includes_site() {
         let mut h = Host::new("web", "10.0.0.1");
         h.site = Some("prod-dc".into());
-        assert!(h.search_haystack().contains("prod-dc"));
+        assert!(h.search_haystack(&[]).contains("prod-dc"));
+    }
+
+    #[test]
+    fn endpoint_in_resolves_the_sites_user_and_port() {
+        let sites = [prod_site()];
+        let mut inherits = Host::new("web", "10.0.0.1");
+        inherits.site = Some("prod".into());
+        assert_eq!(inherits.endpoint_in(&sites), "deploy@10.0.0.1:2222");
+        // The stored record is untouched, and `endpoint()` still shows it.
+        assert_eq!(inherits.user, None);
+        assert!(!inherits.endpoint().starts_with("deploy@"));
+        // The haystack follows, so fuzzy-searching the inherited user finds the host.
+        assert!(inherits.search_haystack(&sites).contains("deploy@"));
+
+        // A host with its own user keeps it.
+        let mut own = Host::new("db", "10.0.0.2");
+        own.site = Some("prod".into());
+        own.user = Some("mike".into());
+        assert_eq!(own.endpoint_in(&sites), "mike@10.0.0.2:2222");
     }
 }

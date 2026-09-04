@@ -22,6 +22,12 @@ Inherited defaults show up everywhere the command does: connect, `Ctrl-y` yank,
 `sshelf print-command`, transfers, forwards. A host that names an *undefined* site still
 groups under that name — it just inherits nothing.
 
+The `user@host:port` you see is the resolved one, so a host with no user of its own is
+listed under the site's user in the TUI, in `sshelf list`, and in shell completion, and
+searching for that user finds it. What `hosts.toml` stores is unchanged, and so is
+`sshelf list --json`: an inherited field stays `null` there, with the resolved values
+visible in the generated `command`.
+
 ## In the list
 
 Idle (empty search box): hosts group under `── site (n) ──` headers, with `(no site)` last.

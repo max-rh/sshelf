@@ -162,6 +162,7 @@ impl App {
     pub fn recompute(&mut self) {
         let ranked = search::rank(
             &self.hosts,
+            &self.sites,
             &self.query,
             &self.state,
             self.config.decay_rate,

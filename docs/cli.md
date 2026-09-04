@@ -10,7 +10,7 @@ Everything sshelf does without opening the TUI.
 | `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI — same connect path as `Enter` (frecency recorded, stored secret auto-supplied, [2FA code](passwords-2fa.md#two-factor-2fa-hosts) prompted on the terminal). A miss suggests the closest names; a host named like a subcommand (`list`, `import`, …) is reached via the TUI instead. |
 | `sshelf -` | Reconnect to the most recently used host. Errors (without connecting) if there's no history yet. |
 | `sshelf add [NAME …]` | Bare: open the TUI add form. With arguments: add a host non-interactively — see [below](#adding-hosts-from-the-cli). |
-| `sshelf list [query] [--json]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). |
+| `sshelf list [query] [--json]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). The `user@host:port` column shows [site defaults](sites-tags.md) resolved. |
 | `sshelf print-command <host>` | Print the generated, shell-quoted `ssh …` command (site defaults included) without connecting or touching frecency — the CLI twin of `Ctrl-y`. |
 | `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
 | `sshelf sites add NAME [-u/-p/-J/-i]` | Define a [site](sites-tags.md) (settings optional; edit later with `F3`). |
@@ -95,6 +95,10 @@ Host-name completion works for direct connect, `print-command`, and `set-passwor
 `sshelf list --json [query]` emits each selected host's fields **plus its generated `ssh`
 command**, and is always valid JSON even when the selection is empty — the stable surface for
 scripts and integrations. `sshelf sites --json` does the same for sites.
+
+The host fields are the record as stored in `hosts.toml`, so a `user`, `port`, jump host or
+identity file inherited from a [site](sites-tags.md) stays `null` or empty there. The resolved
+values are in `command`.
 
 `sshelf doctor` has **no** `--json`: its exit code (`0` healthy, `1` something failed) is the
 scriptable part, and a machine-readable report has no users yet — [D-027](decisions.md).

@@ -5,6 +5,14 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- **The host list now shows the user a host inherits from its site**, instead of falling back
+  to your local `$USER`. Only the display was ever wrong: connecting, `Ctrl-y` and
+  `sshelf print-command` already used the site's user. The fix covers the TUI rows,
+  `sshelf list` and shell-completion help, and searching for that user now matches the hosts
+  that inherit it. `sshelf list --json` is unchanged, and still reports the record as stored,
+  so an inherited `user` stays `null` with the resolved values in the generated `command`.
+  (#16)
 ### Changed
 - **README rewritten as a landing page** — a re-recorded demo clip, one section and one real
   screenshot per feature (`docs/assets/`), why the project exists, a comparison with the tools
