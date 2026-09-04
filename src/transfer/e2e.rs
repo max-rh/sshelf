@@ -5,7 +5,7 @@
 //! as the transfer screen does (open the master, list a remote directory, copy files both ways,
 //! recursively, with a filename containing spaces), and confirm the ControlMaster + `sftp`
 //! transport works against a real server. The unit tests cover the pure pieces (argv builders,
-//! `ls -l` parsing, progress math); this is the integration layer the M0 spike proved by hand.
+//! `ls -la` parsing, progress math); this is the integration layer the M0 spike proved by hand.
 
 use std::path::Path;
 use std::sync::mpsc::Receiver;
@@ -42,12 +42,16 @@ fn lists_and_transfers_both_directions() {
         return;
     };
 
-    // Remote tree (remote == localhost): a dir with files (incl. a name with spaces) + a subdir.
+    // Remote tree (remote == localhost): a dir with files (incl. a name with spaces) + a subdir,
+    // plus a dotfile and a hidden directory (issue #15 — `sftp`'s `ls` hides those without -a).
     let remote = sshd.dir.join("remote");
     std::fs::create_dir_all(remote.join("sub")).unwrap();
+    std::fs::create_dir_all(remote.join(".hidden-dir")).unwrap();
     std::fs::write(remote.join("hello.txt"), b"hello from remote").unwrap();
     std::fs::write(remote.join("a name with spaces.txt"), b"spaced").unwrap();
     std::fs::write(remote.join("sub/inner.txt"), b"deep").unwrap();
+    std::fs::write(remote.join(".dotfile"), b"hidden").unwrap();
+    std::fs::write(remote.join(".hidden-dir/inner.txt"), b"hidden deep").unwrap();
 
     // Enable the diagnostic log and confirm it captures the commands (the `--transfer-log` /
     // SSHELF_TRANSFER_LOG feature). SAFETY: this #[ignore]d test owns its process.
@@ -79,6 +83,30 @@ fn lists_and_transfers_both_directions() {
     };
     assert!(entries.iter().any(|e| e.name == "hello.txt" && !e.is_dir));
     assert!(entries.iter().any(|e| e.name == "sub" && e.is_dir));
+    // Issue #15: hidden entries are listed, exactly as the local pane lists them…
+    assert!(
+        entries.iter().any(|e| e.name == ".dotfile" && !e.is_dir),
+        "a dotfile must be listed: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| e.name == ".hidden-dir" && e.is_dir),
+        "a hidden directory must be listed: {entries:?}"
+    );
+    // …while `.` and `..` never are, on either side.
+    assert!(!entries.iter().any(|e| e.name == "." || e.name == ".."));
+
+    // A hidden directory can be entered, and lists its contents.
+    session.send(WorkerCmd::ListRemote(remote.join(".hidden-dir")));
+    let WorkerEvent::Listing { entries, .. } =
+        recv_until(&events, |e| matches!(e, WorkerEvent::Listing { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(
+        entries.iter().any(|e| e.name == "inner.txt"),
+        "a hidden directory must be browseable: {entries:?}"
+    );
+    assert!(!entries.iter().any(|e| e.name == "." || e.name == ".."));
 
     // Download a single file.
     let dl = sshd.dir.join("download");

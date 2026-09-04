@@ -118,7 +118,7 @@ impl Progress {
     }
 }
 
-/// A remote directory entry, parsed from `sftp`'s `ls -l` output by the worker.
+/// A remote directory entry, parsed from `sftp`'s `ls -la` output by the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEntry {
     pub name: String,

@@ -13,6 +13,11 @@ versions follow SemVer.
   that inherit it. `sshelf list --json` is unchanged, and still reports the record as stored,
   so an inherited `user` stays `null` with the resolved values in the generated `command`.
   (#16)
+- **The remote pane of the transfer screen now lists hidden files**, as the local pane always
+  did, so you can open `.config` on a server and copy things out of it. sshelf lists over SFTP
+  with `ls -la`; `.` and `..` still never appear on either side. There is no show/hide toggle,
+  and typing a `.` into the pane filter keeps the names that have one. (#15)
+
 ### Changed
 - **README rewritten as a landing page** — a re-recorded demo clip, one section and one real
   screenshot per feature (`docs/assets/`), why the project exists, a comparison with the tools

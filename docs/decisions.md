@@ -5,6 +5,21 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-028 · Transfer panes list hidden files on both sides, with no toggle
+The remote pane listed through `sftp`'s own `ls -l`, which drops dot-entries, while the local
+pane read the directory itself and kept them. A host's `.config` was therefore invisible, with
+no way to walk into it (#15). The listing now uses `ls -la` and the two sides agree.
+
+Rejected: a show/hide-hidden toggle. It would need a key (and `Ctrl-h` is Backspace in most
+terminals), a line in the help overlay, a docs section, and a decision about whether the local
+pane follows the same switch. The narrowing case is already covered by the filter that is
+there: type a `.` and the pane keeps the names that have one. A real toggle can be its own
+small change if people ask for it.
+
+`.` and `..` are still dropped in `parse_ls_line`. That check was written defensively before
+those entries could arrive; with `-a` they really do. Sorting is untouched (directories first,
+then case-insensitive by name), so dotfiles land wherever that comparator puts them.
+
 ### D-027 · `doctor` is local, read-only, and exit-code shaped — with no `--json` yet
 `sshelf doctor` exists because every support question so far has had one of six causes, and
 none of them is visible from inside sshelf: an OpenSSH older than 8.4, a secret backend that

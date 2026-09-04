@@ -266,7 +266,9 @@ fn master_alive(socket: &Path, target: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// List a remote directory by running `sftp -b -` over the master and parsing `ls -l`.
+/// List a remote directory by running `sftp -b -` over the master and parsing `ls -la`.
+/// The `-a` is what makes dotfiles appear: `sftp`'s own `ls` hides them otherwise, while the
+/// local pane's `read_dir` never did — the two panes have to show the same thing (D-028).
 fn list_remote(
     socket: &ControlSocket,
     target: &str,
@@ -281,7 +283,7 @@ fn list_remote(
         .spawn()
         .map_err(|e| format!("could not launch sftp: {e}"))?;
 
-    let line = format!("ls -l {}\n", shell_quote(&path.to_string_lossy()));
+    let line = format!("ls -la {}\n", shell_quote(&path.to_string_lossy()));
     dbg.log(&format!("sftp> {}", line.trim_end()));
     {
         let mut stdin = child
@@ -557,7 +559,7 @@ fn tidy_error(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Parse one `sftp` `ls -l` line into a [`RemoteEntry`], or `None` for prompts, headers, and
+/// Parse one `sftp` `ls -la` line into a [`RemoteEntry`], or `None` for prompts, headers, and
 /// entries we don't browse (`.`/`..`, sockets/devices). The format (captured from OpenSSH):
 /// `mode  links  owner  group  size  month  day  time  PATH` — note `links` is `?` and `PATH`
 /// is the full path, so we take its basename. Symlinks show no ` -> target`, just an `l` mode.
@@ -580,8 +582,9 @@ fn parse_ls_line(line: &str) -> Option<RemoteEntry> {
     let size = fields[4].parse::<u64>().unwrap_or(0);
     // The name is field 8 onward (it may contain spaces); take its basename.
     let raw_name = remainder_from_field(line, 8)?;
-    // Skip the self/parent entries. `ls -l` (no `-a`) omits them, but be defensive — and check
-    // the raw path's last component, since `Path::file_name("…/.")` yields the parent, not ".".
+    // Skip the self/parent entries — `ls -la` really does list them, and neither pane browses
+    // them. Check the raw path's last component, since `Path::file_name("…/.")` yields the
+    // parent, not ".".
     if raw_name == "." || raw_name == ".." || raw_name.ends_with("/.") || raw_name.ends_with("/..")
     {
         return None;
@@ -640,9 +643,24 @@ mod tests {
         assert_eq!(e.name, "my notes.md");
     }
 
+    /// Issue #15: with `ls -la` the listing carries dot-entries, and a dotfile is an ordinary
+    /// entry — only `.` and `..` are dropped.
+    #[test]
+    fn parses_dotfiles_and_dot_directories() {
+        let f = parse_ls_line("-rw-------    ? me wheel        220 Jun 16 19:09 /tmp/d/.bashrc")
+            .unwrap();
+        assert_eq!(f.name, ".bashrc");
+        assert!(!f.is_dir);
+
+        let d = parse_ls_line("drwx------    ? me wheel         96 Jun 16 19:09 /tmp/d/.config")
+            .unwrap();
+        assert_eq!(d.name, ".config");
+        assert!(d.is_dir);
+    }
+
     #[test]
     fn skips_prompts_dots_and_specials() {
-        assert!(parse_ls_line("sftp> ls -l /tmp/d").is_none());
+        assert!(parse_ls_line("sftp> ls -la /tmp/d").is_none());
         assert!(parse_ls_line("").is_none());
         assert!(parse_ls_line("drwxr-xr-x    ? me wheel  64 Jun 16 19:09 /tmp/d/.").is_none());
         assert!(parse_ls_line("drwxrwxrwt    ? root wheel 2400 Jun 16 19:09 /tmp/d/..").is_none());

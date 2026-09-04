@@ -54,6 +54,16 @@ control characters, not `.` or `..`, and **not a name that already exists** — 
 directory is never adopted, so the input stays open with an error and you can pick another
 name. On success the listing refreshes and the new directory lands under the cursor.
 
+## Hidden files
+
+Both panes list hidden entries. The local pane always did; the remote one lists with
+`ls -la` through `sftp`, so dotfiles and dot-directories show up on the server side too and
+you can open `.config` or `.ssh` the same way you open any other directory. `.` and `..`
+are never listed on either side (`←` goes up).
+
+There is no show/hide toggle. If a directory has too much in it, type a `.` into the pane
+filter: that keeps the names with a dot in them, and the hidden ones sort to the top.
+
 ## Behavior & limits
 
 - Directories are shown as `name/` and symlinks as `name@` — **symlinks are skipped**.

@@ -3,8 +3,46 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Presentation and trust — the README as a landing page, a real capture
-per feature, `PRIVACY.md`, `llms.txt`. Docs and assets only. (v0.13.0 `doctor` shipped.)
+**Current milestone:** v0.13.1, a patch release for the first two reported bugs (the user
+shown in the host list, hidden files in the remote transfer pane). v0.14.0, secrets from a
+password manager, is next.
+
+---
+
+## 2026-09-04: the first two reported bugs
+
+Two issues from users, both display bugs, both fixed for v0.13.1. Nothing in this change bumps
+the version; the release workflow does that.
+
+**Issue #16, the host list showing `$USER` for a host that inherits its user from a site.**
+`Host::endpoint()` resolves nothing, and every list-style caller handed it the raw record, so a
+host with no user of its own borrowed the local login name. Connecting was always right,
+because those paths already call `with_site_defaults`. There is now `endpoint_in(&sites)` on
+`Host`, used by the TUI row, `sshelf list`, the shell-completion help text, and the import
+preview (which resolves against the sites already on file plus the ones the import is about to
+create). `search_haystack` takes the sites too, so searching for the site's user finds the
+hosts that inherit it. That was the same bug one layer down: search matched the raw endpoint.
+
+**Issue #15, the remote transfer pane hiding dotfiles.** `list_remote` sent `ls -l` to `sftp`,
+and sftp's own `ls` skips dot-entries unless you pass `-a`, while the local pane reads the
+directory itself and never filtered. A hidden directory on a server was invisible with no way
+to walk into it. The listing uses `ls -la` now, so both sides show the same thing. No toggle:
+the reasons are in D-028.
+
+**Nothing on disk changed.** `sshelf list --json` still flattens the host as stored, so an
+inherited `user` stays `null`, with the resolved values visible in the generated `command`.
+`endpoint()` itself is untouched for callers that want the raw record.
+
+**Tests that would have caught both.** A `TestBackend` render case asserting the row reads
+`deploy@` and never the machine's own `$USER@`; a search case for the inherited user; a
+`list_row` case for the plain CLI output and the completion help; a `parse_ls_line` case for a
+dotfile. The transfer e2e now puts a `.dotfile` and a `.hidden-dir/inner.txt` on the throwaway
+sshd, asserts both are listed, and enters the hidden directory. Also checked by hand: `sshelf
+list` and the TUI against a scratch database with a `dc` site, and a real download of
+`~/.sshelf-test/.hidden/inner.txt` through the transfer screen against the rootless test sshd.
+
+**Next:** nothing further here. v0.14.0 (secrets from `op` / `bw` / `rbw` / `pass`) is the next
+piece of work.
 
 ---
 
