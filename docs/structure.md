@@ -6,7 +6,7 @@
 > `import`, `model`, `paths`, `search`, `secrets`, `ssh`, `state`, `store`, `tailscale`,
 > `transfer/{mod,worker,pane,screen,e2e}`, `testsupport` (test-only), `vault`,
 > `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards,two_factor}`.
-> (`error.rs` was removed — the codebase uses `anyhow` throughout.)
+> (`error.rs` was removed; the codebase uses `anyhow` throughout.)
 
 ## Repository
 
@@ -58,7 +58,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `ui/help.rs` | Help overlay. |
 | `ui/widgets.rs` | Shared widgets: single-line text input (hand-rolled), keybind hint bar, confirm modal. |
 
-## Data flow at a glance
+## Data flow
 
 ```
 paths ──▶ store ──▶ model(Host[])  ┐
@@ -72,5 +72,6 @@ secrets ◀── ui (store on add/edit)                     askpass ◀── s
 
 - One responsibility per module; `ssh.rs` is the *only* place that calls `exec()`; `secrets.rs`
   is the *only* place that touches the keyring/vault.
-- No `unwrap()`/`expect()` on fallible I/O in non-test code — return errors, surface them in the UI.
+- No `unwrap()`/`expect()` on fallible I/O in non-test code; return errors and surface them in
+  the UI.
 - Every new/moved module updates this file.

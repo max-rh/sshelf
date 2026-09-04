@@ -2,7 +2,7 @@
 
 ## File locations
 
-Paths resolve via the `etcetera` **base strategy** (XDG everywhere — `~/.config/sshelf` on
+Paths resolve via the `etcetera` **base strategy** (XDG everywhere: `~/.config/sshelf` on
 both macOS *and* Linux, honoring `XDG_CONFIG_HOME`/`XDG_DATA_HOME` when set). This keeps
 config hand-editable instead of buried in macOS `~/Library`.
 
@@ -12,7 +12,7 @@ config hand-editable instead of buried in macOS `~/Library`.
 | `config.toml` | `~/.config/sshelf/config.toml` | user | Preferences (theme, `decay_rate`, sort, keybinds). |
 | `state.json` | `~/.local/share/sshelf/state.json` | app | Frecency counters, keyed by host id. Churns; not for hand-editing. |
 | `forwards.json` | `~/.local/share/sshelf/forwards.json` | app | Ledger of active background port-forwards (PIDs). Reconciled against the OS on launch. Mode `0600`. |
-| `ssh_config` | `~/.config/sshelf/ssh_config` | app | Exported ssh_config `Include` fragment (`sshelf export`) — derived from `hosts.toml`, refreshed on every hosts save once present. Mode `0600`. |
+| `ssh_config` | `~/.config/sshelf/ssh_config` | app | Exported ssh_config `Include` fragment (`sshelf export`), derived from `hosts.toml` and refreshed on every hosts save once present. Mode `0600`. |
 | `vault.age` | `~/.local/share/sshelf/vault.age` | app | **Fallback** encrypted secret store (only when no OS keyring). Mode `0600`. |
 
 Directories are created on first run (`0700`). **Secrets are never written to `hosts.toml`.**
@@ -30,7 +30,7 @@ jump_hosts = ["bastion.prod"] # optional default ProxyJump (the site's bastion)
 identity_files = ["~/.ssh/prod"]  # optional default key(s) (applied to key-auth members)
 
 [[host]]
-id        = "01J…"            # stable unique id (e.g. ULID/UUID); keys secrets & frecency
+id        = "01J..."            # stable unique id (e.g. ULID/UUID); keys secrets & frecency
 name      = "prod-db"         # display alias (what you search/see)
 hostname  = "10.25.25.25"     # IP or DNS name           (required)
 user      = "mike"            # optional; default = $USER at connect time
@@ -42,15 +42,16 @@ tags      = ["prod", "db"]    # many-valued, free-form; for filtering/grouping
 site      = "prod-dc"         # optional; one site (by name); groups + inherits its defaults
 requires_2fa = true           # optional (default false); connect prompts for a verification code
 extra_args = "-o ServerAliveInterval=30"  # raw, shlex-split, appended verbatim
-# NOTE: no password field — ever. auth="password" means "look up the secret by id".
+# NOTE: no password field, ever. auth="password" means "look up the secret by id".
 ```
 
 Notes:
 - Optional fields use `Option<T>` in Rust with `#[serde(skip_serializing_if = "Option::is_none")]`
   so the TOML stays clean; new fields use `#[serde(default)]` for backward compatibility.
 - `identity_files` / `jump_hosts` / `tags` are `Vec<String>` (empty = absent).
-- `format_version` lets us migrate the schema later without breaking older files. Adding `[[site]]`
-  and `host.site` needed **no** bump — old files load with `sites = []` / `site = None`.
+- `format_version` lets sshelf migrate the schema later without breaking older files. Adding
+  `[[site]]` and `host.site` needed **no** bump: old files load with `sites = []` /
+  `site = None`.
 - `requires_2fa` marks a host whose login needs an interactive verification code; connect collects
   it and passes it to `ssh` via the transient `SSHELF_2FA_CODE` env var (never stored on disk).
   See [`decisions.md`](./decisions.md) D-022.
@@ -60,7 +61,7 @@ Notes:
 A **Site** is *one per host* and may carry optional shared SSH defaults; **tags** are
 many-valued free-form labels. At connect time a host is resolved into an *effective host*
 (`Host::with_site_defaults`): for `user`, `port`, `jump_hosts`, `identity_files`, the site's
-value fills in **only where the host leaves that field unset** — the host always wins. Auth is
+value fills in **only where the host leaves that field unset**, so the host always wins. Auth is
 **not** inheritable. A host that names an **undefined** site still groups under that name but
 inherits nothing (graceful degradation). Renaming a site (F3 manager) cascades to member hosts;
 deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
@@ -69,7 +70,7 @@ deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
 
 ```json
 {
-  "01J…": { "use_count": 12, "last_used": "2026-06-05T09:30:00Z" }
+  "01J...": { "use_count": 12, "last_used": "2026-06-05T09:30:00Z" }
 }
 ```
 
@@ -84,8 +85,8 @@ deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
 ```json
 [
   {
-    "id": "01J…",                       // ULID; also names the forward's stderr log
-    "host_id": "01J…",                  // originating host id
+    "id": "01J...",                       // ULID; also names the forward's stderr log
+    "host_id": "01J...",                  // originating host id
     "host_name": "prod-db",             // snapshot for display
     "kind": "local",                    // "local" | "remote" | "dynamic"
     "spec": { "listen_port": 8080, "target_host": "db", "target_port": 3306 },
@@ -96,7 +97,7 @@ deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
 ]
 ```
 
-- App-owned; written atomically (`0600`). The running `ssh` processes are authoritative — this
+- App-owned; written atomically (`0600`). The running `ssh` processes are authoritative; this
   file is only a remembered list of PIDs, **reconciled** against the OS (`ps`) on startup, on
   opening the manager, and each tick while it's open. A forward leaves the ledger the moment its
   process is gone, however it ended. See [`decisions.md`](./decisions.md) D-021.

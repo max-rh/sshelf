@@ -9,6 +9,33 @@ password manager, is next.
 
 ---
 
+## 2026-09-04: punctuation and phrasing pass on the public text
+
+Docs and copy only: no code changed, no version bump, nothing any sentence claims is
+different. Everything a stranger can read (README, CHANGELOG, CONTRIBUTING, PRIVACY,
+SECURITY, every page under `docs/`, `llms.txt`) went through the house-style checker, which
+found about 660 hits, most of them em dashes. Each one became a split sentence, a
+comma, a pair of parentheses, or "to" for a range, whichever the sentence wanted; the rest
+were bolded-label bullets, checkmarks in the milestone table and the old milestone headings,
+a few plural "we"s in a one-person project, and a handful of banned words. Where a doc quotes a
+string the binary actually prints (the `sshelf doctor` sample output, the error-message list
+in the doctor entry below, `2FA host — connecting here`) the quote is left byte-for-byte as
+it is, since the docs are supposed to match the program. `Cargo.toml`'s `description` lost
+its em dash too, so the crates.io blurb reads like the rest.
+`python3 .claude/skills/human-voice/check.py` passes on every public file, `mdbook build`
+renders, and the §6 anchor in `packaging.md` was re-pointed after its heading changed.
+
+Two things this pass couldn't reach, both worth a follow-up. The GitHub repo description
+(the "About" box, set by hand in the web UI) isn't in the repo: it should be checked for em
+dashes and matched to the new `Cargo.toml` description. And `cut-release.yml` writes the
+next version heading as `## [x.y.z] — DATE`, which would put an em dash straight back into
+the CHANGELOG on the next release; the headings here are now `## [x.y.z] (DATE)`, so that
+one line in the workflow has to follow. The binary's own strings are still full of em
+dashes, which is why the sample output in `doctor.md` still has them; strings and the docs
+that quote them should move in the same change, not separately.
+
+---
+
 ## 2026-09-04: the first two reported bugs
 
 Two issues from users, both display bugs, both fixed for v0.13.1. Nothing in this change bumps
@@ -46,7 +73,7 @@ piece of work.
 
 ---
 
-## 2026-09-04 — README as a landing page, `PRIVACY.md`, `llms.txt`
+## 2026-09-04: README as a landing page, `PRIVACY.md`, `llms.txt`
 
 Docs and assets only: no code changed, no version bump, no behavior claim that isn't already
 true of v0.13.0.
@@ -54,27 +81,27 @@ true of v0.13.0.
 - **README rebuilt.** A one-line pitch and badge row (now including the docs site, ratatui, and
   the MSRV), the demo clip, install, then a first-person "why I built this", one short section
   per feature with a real capture, a comparison with the tools people weigh sshelf against, and
-  the never-list written as concrete promises. The hand-drawn ASCII screen is gone — the
+  the never-list written as concrete promises. The hand-drawn ASCII screen is gone; the
   captures replace it. `First five minutes` and the documentation block survive from the old
   README because they were already doing their job.
 - **Nine captures, all real.** `docs/assets/` gains `launcher`, `transfer`, `forwards`, `sites`,
   `wizard`, `doctor`, `export` (PNG), `tmux.gif`, and `logo.svg`; `docs/sshelf-readme.gif` was
-  re-recorded. Every one is VHS driving the actual release binary — same theme, font size and
-  width, so the page reads as one tool. Nothing is a mockup: the transfer and forward shots move
+  re-recorded. Every one is VHS driving the actual release binary, with the same theme, font size
+  and width, so the page reads as one tool. Nothing is a mockup: the transfer and forward shots move
   real bytes and bind real ports against a throwaway rootless `sshd` on localhost (the same
   trick `src/testsupport.rs` uses for the e2e tests), and the tmux clip opens a real session.
-  Everything on screen is demo data — RFC-5737 addresses, `example.net`, `mike`/`deploy` — with
+  Everything on screen is demo data (RFC-5737 addresses, `example.net`, `mike`/`deploy`), with
   the machine's own home, hostname and user kept out of frame.
-- **Two things the recording turned up.** VHS can't send F1–F12, so the `F3`/`F4` screens are
+- **Two things the recording turned up.** VHS can't send F1 to F12, so the `F3`/`F4` screens are
   captured with sshelf running inside a scratch tmux session and the key delivered by
   `tmux send-keys`. And a host that inherits its site's bastion really does try the bastion:
   pointing the tmux clip at a `prod-dc` member made the new window die on a DNS failure in under
-  a second — correct behavior, wrong host for a demo.
+  a second: correct behavior, wrong host for a demo.
 - **`PRIVACY.md`** at the repo root: what sshelf reads, writes, runs, and sends, in that order,
   plus where secrets live and how to check the claims yourself. Linked from the README's
   never-list and from `SECURITY.md`, which now points at it for the non-attacker half of the
   picture.
-- **`docs/llms.txt`** — the standard shape: description, a paragraph, and one line per guide
+- `docs/llms.txt`, in the standard shape: description, a paragraph, and one line per guide
   page. `mdbook build` copies it to the site root, so it serves at `/llms.txt`, and `docs/assets`
   lands at `/assets` for the guide pages to reuse later.
 - **The comparison table is sourced, not remembered.** Every cell was re-read from the project's
@@ -83,21 +110,21 @@ true of v0.13.0.
 
 ---
 
-## 2026-08-21 — `sshelf doctor`, and errors that name the next action
+## 2026-08-21: `sshelf doctor`, and errors that name the next action
 
 - **New `doctor.rs` + `sshelf doctor`.** Seven checks, each one line of `ok` / `warn` / `fail`
-  plus a single runnable next action when it isn't ok: the OpenSSH version (fail below 8.4 —
-  that's the `SSH_ASKPASS_REQUIRE` floor stored secrets ride on; warn if the banner can't be
-  parsed), the host database (parse errors, and duplicate names or **ids** — an id keys both the
-  stored secret and the frecency history), the secret backend, dangling `site` references, stored
-  secrets whose host is gone, `$SSH_AUTH_SOCK` when any host uses agent auth (also flagged when
-  it points at a socket that no longer exists), and whether the exported ssh_config fragment
-  still matches the database. Exit 0 unless something **failed** — warnings don't fail the run,
-  so `sshelf doctor && …` is usable in a script. **D-027.**
+  plus a single runnable next action when it isn't ok: the OpenSSH version (fail below 8.4,
+  the `SSH_ASKPASS_REQUIRE` floor stored secrets ride on; warn if the banner can't be
+  parsed), the host database (parse errors, and duplicate names or **ids**, since an id keys both
+  the stored secret and the frecency history), the secret backend, dangling `site` references,
+  stored secrets whose host is gone, `$SSH_AUTH_SOCK` when any host uses agent auth (also flagged
+  when it points at a socket that no longer exists), and whether the exported ssh_config fragment
+  still matches the database. Exit 0 unless something **failed**; warnings don't fail the run,
+  so `sshelf doctor && ...` is usable in a script. **D-027.**
 - **Local and read-only.** No pings, no test connections, no version lookups: `doctor` reports
   whether *sshelf* is set up, never whether a *host* is up. The single write is a throwaway
   keyring entry (`sshelf-doctor-probe`, under the real `sshelf` service so it exercises the
-  actual code path) that is deleted again — a backend that reads but can't write is one that
+  actual code path) that is deleted again, because a backend that reads but can't write is one that
   fails the first time a password is saved, and a read-only probe would pass.
 - **Honest about what it can't check.** The `keyring` crate has no portable enumeration, so
   orphan detection only has teeth in vault mode; the keyring case *says* it didn't run rather
@@ -106,35 +133,30 @@ true of v0.13.0.
 - Every check is a pure function over inputs the caller gathers, so the whole matrix is
   fixture-tested without a keyring, a config dir, or an `ssh` binary; `secrets.rs` gained
   read-only introspection (`backend`, `probe`, `stored_ids`) and `vault.rs` an `ids` accessor.
-- **Error-message pass.** Audited every user-facing string against one rule — name the thing,
-  the cause, the next action — and rewrote the ones that failed it. Before → after:
+- **Error-message pass.** Audited every user-facing string against one rule (name the thing,
+  the cause, the next action) and rewrote the ones that failed it. Before → after:
   - `save failed: {e}` → `hosts NOT saved to <path>: {e} — nothing was written`
   - `no host selected` → `no host under the cursor — clear the filter (esc), or add one (^a)`
   - `HOME is not set` → `$HOME is not set — sshelf can't locate ~/.ssh/config to import from`
   - `import failed: {e}` → `could not import <path>: {e}`
   - `parsed ok but save failed` → `<n> host(s) parsed, but <path> could not be written: {e}`
-  - `host saved; secret NOT stored` → `… — retry with sshelf set-password <name>`
-  - `hosts updated; config NOT saved` → `… <config path> was not saved: {e} — the new location
-    won't stick`
+  - `host saved; secret NOT stored` → `... — retry with sshelf set-password <name>`
+  - `hosts updated; config NOT saved` → `... <config path> was not saved: {e} — the new location won't stick`
   - `hosts NOT written: {e}` → `could not write <path>: {e} — the hosts file is unchanged`
   - `could not start transfer` → `could not open the transfer screen for <host>: {e}`
-  - `forward up, but not saved` → `forward up, but not recorded: {e} — F4 will lose it when
-    sshelf restarts`
-  - `failed to launch ssh` → `could not launch ssh: {e} — is an OpenSSH client installed and on
-    your PATH?`
-  - `empty password; nothing stored` → `nothing on stdin — nothing stored; pipe the password
-    in, e.g. printf %s "$PASS" | sshelf set-password <name>`
-  - `a site named 'x' already exists` → `… — pick another name, or edit that one with F3`
-  - `no host with name or id 'x'` → `… — run sshelf list to see your hosts`
-  - `could not decrypt vault (wrong passphrase?)` → `could not decrypt the vault — is
-    $SSHELF_VAULT_PASSPHRASE the passphrase it was created with?`
+  - `forward up, but not saved` → `forward up, but not recorded: {e} — F4 will lose it when sshelf restarts`
+  - `failed to launch ssh` → `could not launch ssh: {e} — is an OpenSSH client installed and on your PATH?`
+  - `empty password; nothing stored` → `nothing on stdin — nothing stored; pipe the password in, e.g. printf %s "$PASS" | sshelf set-password <name>`
+  - `a site named 'x' already exists` → `... — pick another name, or edit that one with F3`
+  - `no host with name or id 'x'` → `... — run sshelf list to see your hosts`
+  - `could not decrypt vault (wrong passphrase?)` → `could not decrypt the vault — is $SSHELF_VAULT_PASSPHRASE the passphrase it was created with?`
   - bare `authentication failed` / `connection refused` / `connection timed out` /
     `could not resolve the host` on a failed forward now each name what to check.
-  No behavior changed inside the pass — only the words.
+  No behavior changed inside the pass, only the words.
 - **Verified end-to-end** against isolated config dirs: a healthy setup reports 7 × ok and
   exits 0; a deliberately broken one (a `site` that isn't defined, a hand-edited stale export
   fragment, `$SSH_AUTH_SOCK` unset with agent hosts) reports fail + 2 warn and exits 1, and the
-  remedies it printed were then *run* — `sshelf sites add …` and `sshelf export` each flipped
+  remedies it printed were then *run*: `sshelf sites add ...` and `sshelf export` each flipped
   their check to ok and the run back to exit 0. Duplicate names/ids and an unparseable
   `hosts.toml` both fail with the offending values (a multi-line TOML error is folded onto one
   line, keeping the line/column and the reason). Vault mode was checked both ways: reachable
@@ -149,29 +171,29 @@ true of v0.13.0.
   CHANGELOG. Ships in **v0.13.0**.
 - **Fixed the CLI-routing bug found during v0.12.0 verification.** clap's
   `args_conflicts_with_subcommands` counts the **global** flags as top-level args, so
-  `sshelf --config FILE set-password web` failed to parse, and — worse — the same flag before
+  `sshelf --config FILE set-password web` failed to parse, and, worse, the same flag before
   `list` made `sshelf --config FILE list` read as "connect to a host named `list`", which would
   have connected had such a host existed. The
-  setting is gone; the one combination it genuinely guarded (`sshelf <HOST> <subcommand>`, which
+  setting is gone; the one combination it actually guarded (`sshelf <HOST> <subcommand>`, which
   clap parses happily and dispatch would resolve to the subcommand, silently dropping the host)
   is now rejected by an explicit check with its own message. Every subcommand gained a `name()`
-  so that message can say which one. Verified across the matrix — both global flags on either
-  side of every subcommand, bare host, `-`, bare subcommand — with 3 new tests; `--help`,
+  so that message can say which one. Verified across the matrix (both global flags on either
+  side of every subcommand, bare host, `-`, bare subcommand) with 3 new tests; `--help`,
   completions and the man page are unchanged in shape.
 
 ---
 
-## 2026-08-21 — tmux connect modes, transfer multi-select + `F7` mkdir
+## 2026-08-21: tmux connect modes, transfer multi-select + `F7` mkdir
 
 - **tmux mode.** One config key, `tmux = "off" | "window" | "pane"` (default `off`, also on the
   `F2` settings screen as a `Space`-cycled toggle). With a mode set **and** `$TMUX` present,
-  `Enter` runs `tmux new-window`/`split-window` and sshelf **stays up** — that's the feature:
+  `Enter` runs `tmux new-window`/`split-window` and sshelf **stays up**, which is the feature:
   open four hosts without relaunching the picker. Windows are named after the host (sanitized);
   panes aren't (`split-window` has no `-n`). Everything else is untouched: with the key off, or
   outside tmux, connect is the same teardown → `exec()` → exit-to-shell path as before. Frecency
   is persisted before the spawn, for the same reason it is persisted before `exec()`.
 - **What may cross the tmux boundary.** A tmux window is a child of the tmux *server*, so it
-  inherits none of sshelf's environment, and tmux's only channel — `new-window -e KEY=VALUE` —
+  inherits none of sshelf's environment, and tmux's only channel (`new-window -e KEY=VALUE`)
   is the tmux client's own argv, i.e. `ps`-visible. So only the askpass *wiring* rides it
   (`SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE`, `SSHELF_ASKPASS`, and the opaque `SSHELF_HOST_ID` the
   helper trades for the real secret); a queued 2FA code, a vault master passphrase, or a tmux
@@ -186,17 +208,17 @@ true of v0.13.0.
   the name is skipped and the queue continues; a real failure stops the rest and says how many
   were left. `Esc` gained a rung: cancel → clear marks → clear filter → close. **D-026.**
 - **Transfer `F7` mkdir** on both panes (`Ctrl-f` alias for terminals that keep the function
-  keys), through `std::fs::create_dir` locally and `sftp mkdir` remotely — one directory, never
+  keys), through `std::fs::create_dir` locally and `sftp mkdir` remotely: one directory, never
   `-p`, never adopting an existing name; the new directory lands under the cursor.
 - **Fixed:** cancelling a transfer left the screen permanently stuck in "transfer running" (the
   worker cancelled silently and never told the UI). It now emits a `Cancelled` event.
-- **Verified end-to-end**, not just in tests: inside a scripted tmux session, `window` mode
+- **Verified end-to-end** beyond the tests: inside a scripted tmux session, `window` mode
   opened a window named `keybox` running `ssh` with sshelf still live in pane 0 and
   `state.json` already written; `pane` mode split the window instead; the same config with
   sshelf launched *outside* tmux exec'd in place (one window, `cmd=ssh`, no note); a 2FA host
-  printed `2FA host — connecting here …` and connected in place; a vault-mode host did the
+  printed `2FA host — connecting here ...` and connected in place; a vault-mode host did the
   same with its own reason. A **passphrase-protected key host logged in through a tmux window**,
-  proving the askpass wiring crossed — and the recorded tmux argv held only the four wiring
+  proving the askpass wiring crossed, and the recorded tmux argv held only the four wiring
   vars, with the passphrase, `SSHELF_2FA_CODE` and `SSHELF_VAULT_PASSPHRASE` absent from every
   real process argv. `~/.ssh` was byte-identical throughout (content hashes, not a listing).
   Transfers were exercised against a real rootless `sshd` by two new `e2e.rs` tests driving the
@@ -217,27 +239,27 @@ true of v0.13.0.
 
 ---
 
-## 2026-07-27 — `sshelf import --tailscale`: the tailnet as an inventory source
+## 2026-07-27: `sshelf import --tailscale`, the tailnet as an inventory source
 
 - New `tailscale.rs` + a `--tailscale` flag on `import`: runs the **user's own** `tailscale
-  status --json` and maps every eligible peer to a host — MagicDNS first label → `name`, the
+  status --json` and maps every eligible peer to a host: MagicDNS first label → `name`, the
   MagicDNS FQDN → `hostname` (Tailscale IP, IPv4 first, when MagicDNS is off for the tailnet),
   the tailnet → a `site`, ACL tags minus the `tag:` prefix → `tags`, auth `agent`. Eligibility
-  is one rule — the peer's `DNSName` must sit under the tailnet's own `MagicDNSSuffix` — which
+  is one rule (the peer's `DNSName` must sit under the tailnet's own `MagicDNSSuffix`), which
   drops Mullvad exit nodes and shared-in nodes without special cases; expired peers are
   skipped, offline ones are **not** (an asleep laptop is still a host). Binary resolution:
   `$SSHELF_TAILSCALE_BIN` → `PATH` → the macOS app bundle, with an error that names all three.
 - **Add-only, in both directions:** existing hosts and sites are never updated or deleted
   (case-insensitive match), so a re-run converges to "0 added" and a byte-identical
   `hosts.toml`. Nothing tailscale-specific (node IDs, keys) is stored. The no-network posture
-  stands — the CLI runs only from this subcommand, never at startup, on save, on a timer, or
+  stands: the CLI runs only from this subcommand, never at startup, on save, on a timer, or
   from the TUI. Rationale + rejected alternatives: **D-024**.
-- Refactor: both import modes now share one tail (`apply_import`) — dedupe, site creation
-  (`import::missing_sites`), save, export refresh — so the D-023 fragment auto-refreshes after
+- Refactor: both import modes now share one tail (`apply_import`) that dedupes, creates sites
+  (`import::missing_sites`), saves and refreshes the export, so the D-023 fragment refreshes after
   a tailnet import exactly as it does after an ssh-config one. The summary gained a
   duplicates count and a line per created site.
 - **Verified end-to-end** against a stub `tailscale` fed the test fixture, with an isolated
-  config dir: 3 hosts + the site land in `hosts.toml`, counts match (3 parsed, 3 excluded — 2
+  config dir: 3 hosts + the site land in `hosts.toml`, counts match (3 parsed, 3 excluded: 2
   foreign, 1 expired), a second run adds 0 with an identical file, `--dry-run` writes nothing,
   and an existing `NAS` host + differently-cased site are reused, not duplicated. A
   pre-created export fragment refreshed to the imported hosts; without one, nothing was
@@ -245,8 +267,9 @@ true of v0.13.0.
   JSON, a bogus `$SSHELF_TAILSCALE_BIN`. `~/.ssh` was byte-identical throughout (content
   hashes, not a directory listing), and the ssh-config import path was re-checked through the
   shared tail. 18 new tests (213 pass), clippy + `fmt --check` clean.
-- **Live tailnet run:** on a real 6-peer tailnet — MagicDNS **disabled**, so the IPv4 fallback
-  took the real path — the binary resolved itself from the macOS app bundle and imported the 2
+- **Live tailnet run:** on a real 6-peer tailnet with MagicDNS **disabled**, so the IPv4
+  fallback took the real path, the binary resolved itself from the macOS app bundle and
+  imported the 2
   peers with valid node keys (`100.x` addresses, site from `CurrentTailnet.Name`), excluding 4
   with expired keys and this machine (`Self`); a re-run added 0, and `list --json` /
   `print-command` produced usable `ssh` commands. Earlier, before login, the same client
@@ -259,12 +282,12 @@ true of v0.13.0.
 
 ---
 
-## 2026-07-12 — `sshelf export`: an ssh_config Include fragment
+## 2026-07-12: `sshelf export`, an ssh_config Include fragment
 
 - New `export.rs` + `sshelf export [--stdout]`: renders every host (site defaults resolved,
-  name-sorted, deterministic — no timestamps) as ssh_config `Host` blocks into
+  name-sorted, deterministic, no timestamps) as ssh_config `Host` blocks into
   `~/.config/sshelf/ssh_config`, and prints the one `Include` line for the user to add to
-  `~/.ssh/config` — which sshelf still never writes (it only *reads* it, to drop the hint once
+  `~/.ssh/config`, which sshelf still never writes (it only *reads* it, to drop the hint once
   the Include is already present). After that, plain ssh/scp/sftp, rsync, git, and SSH-config
   pickers (VS Code Remote-SSH) resolve sshelf hosts by name.
 - Rendering mirrors `build_args` minus sshelf-only plumbing: no
@@ -273,9 +296,10 @@ true of v0.13.0.
   in-block comment. Names that can't be a safe `Host` pattern (glob/negation/comment/quote
   chars) are skipped with a comment; all values are control-char-sanitized so nothing can
   inject extra directives.
-- **Auto-refresh:** once the file exists (creating it = opt-in), every hosts save rewrites it —
-  TUI `persist_hosts`, `sshelf add`, `import`, `sites add`, and the settings hosts-file adopt
-  path — best-effort, so a refresh failure never blocks a save. Deleting the file opts out.
+- **Auto-refresh:** once the file exists (creating it = opt-in), every hosts save rewrites it,
+  from TUI `persist_hosts`, `sshelf add`, `import`, `sites add`, and the settings hosts-file
+  adopt path. It's best-effort, so a refresh failure never blocks a save. Deleting the file opts
+  out.
 - Verified end-to-end: `ssh -G -F` through a real `Include` resolves hostname/user/port/
   ProxyJump (incl. a site-inherited bastion) and the translated option; auto-refresh observed
   live on `sshelf add`. 14 new unit tests (195 pass, clippy clean). Docs synced: new guide page
@@ -284,7 +308,7 @@ true of v0.13.0.
 
 ---
 
-## 2026-07-06 — Docs: user guide split from internals; slim README
+## 2026-07-06: docs, user guide split from internals, slim README
 
 - The mdBook site now leads with a **Guide** for users: install, quickstart, adding/editing
   hosts, searching & connecting, file transfer, port forwarding, sites & tags,
@@ -293,59 +317,59 @@ true of v0.13.0.
   inside `ux.md` moved into these pages; `index.md` is a product landing page instead of a doc
   inventory, and `SUMMARY.md` is reorganized into Guide / Understanding sshelf / Development.
 - `ux.md` slimmed to **UI design notes** (visual model, ranking, form design, modality,
-  theming) — stale milestone markers removed; behavior and keybindings are documented in the
+  theming), with stale milestone markers removed; behavior and keybindings are documented in the
   Guide pages, which the docs-in-sync rule in `CONTRIBUTING.md` now points at.
 - README cut from ~230 to ~140 lines: pitch, install (secondary channels folded into a
   `<details>`), a "first five minutes" block, and links into the site; added crates.io/CI/
   license badges and an explicit no-telemetry / no-account / no-cloud line. Everything removed
   now lives on the site.
 - Why: the README had become the user manual because the site didn't have one, while the site
-  led with contributor docs — and the site is the crates.io homepage, so a real guide is what
+  led with contributor docs, and the site is the crates.io homepage, so a real guide is what
   visitors should land on. Docs-only change; no code touched.
 
 ---
 
-## 2026-06-23 — Distribution: crates.io + RPM packaging
+## 2026-06-23: distribution, crates.io + RPM packaging
 
 - **crates.io:** new `release-crates.yml` (workflow_run after dist's Release → `cargo publish`;
   needs a `CARGO_REGISTRY_TOKEN` secret, skips cleanly if unset). cargo-dist has no built-in
-  crates.io publish job — `publish-jobs` only knows `homebrew`/`npm`/custom — so it's a companion
+  crates.io publish job (`publish-jobs` only knows `homebrew`/`npm`/custom), so it's a companion
   workflow like the `.deb`.
 - **`.rpm`:** new `release-rpm.yml` + `[package.metadata.generate-rpm]` (x86_64 + aarch64), built
   as a **static musl** binary so one rpm runs on any RPM distro regardless of glibc. ssh works
-  identically on RHEL/Fedora — sshelf only shells out to system ssh/sftp/ps/kill.
+  identically on RHEL/Fedora, since sshelf only shells out to system ssh/sftp/ps/kill.
 - `Cargo.toml`: homepage → the Pages docs site, refreshed description + keywords, `readme`, and an
   `exclude` that trims the published crate 64 → 43 files (drops docs/, .github/, examples/, the
   gif). Docs synced (packaging.md §4b/§4c, README install, CHANGELOG). Ships in the next release.
 
 ---
 
-## 2026-06-23 — Interactive 2FA support
+## 2026-06-23: interactive 2FA support
 
-- New: hosts can be flagged **`requires_2fa`** (add/edit form toggle, or `sshelf add … --2fa`).
+- New: hosts can be flagged **`requires_2fa`** (add/edit form toggle, or `sshelf add ... --2fa`).
   Connecting to one shows a code popup before the `exec()` handoff; the entered one-time code is
   passed to `ssh` via `SSHELF_2FA_CODE` and answered by the askpass helper at the verification
-  prompt — the same channel that supplies a stored password.
+  prompt, the same channel that supplies a stored password.
 - Why: a spike confirmed that a stored-secret connect runs with `SSH_ASKPASS_REQUIRE=force`, which
-  routes the keyboard-interactive code prompt to our helper with **no** terminal fallback, so it
+  routes the keyboard-interactive code prompt to the helper with **no** terminal fallback, so it
   failed before. The helper now answers a non-secret prompt with the queued code; `configure_askpass`
   force-wires the helper when a secret exists **or** a code is queued (so key+2FA works too). The
   CLI direct-connect path prompts for the code on the terminal.
 - New module `ui/two_factor.rs`; `Host.requires_2fa` (old files load `false`); `exec_connect` /
   `configure_askpass` take an optional code (transfer + forward spawners pass `None`). Manual entry
-  only — no TOTP seeds stored (rejected: same-vault second factor + a dep). Docs synced (decisions
+  only, no TOTP seeds stored (rejected: same-vault second factor + a dep). Docs synced (decisions
   D-022, data-model, ux, structure, README, CHANGELOG). Targets **v0.8.0** via `feat/two-factor`.
 
 ---
 
-## 2026-06-21 — Port forwarding: background SSH tunnels (M0–M4)
+## 2026-06-21: port forwarding, background SSH tunnels (M0 to M4)
 
 - New feature: **background port forwards** that survive sshelf exiting. `Ctrl-f` on a host opens
   a popup (Local `-L` / Remote `-R` / Dynamic `-D` SOCKS); `F4` opens a manager that lists every
   active forward and stops any.
 - Each forward is a detached `ssh -N` process in its own process group (std `process_group(0)`,
   no new dep), tracked by PID in `forwards.json` and reconciled against the OS (`ps`) on launch,
-  on opening the manager, and each tick while it's open — with a zombie filter and a PID-reuse
+  on opening the manager, and each tick while it's open, with a zombie filter and a PID-reuse
   guard. `ExitOnForwardFailure=yes` + a brief readiness poll surfaces bind/auth errors in the
   popup. An M0 spike confirmed detached survival (PPID→1, own process group); an `#[ignore]` e2e
   drives a real `-L` through a localhost sshd (bind → traffic → busy-port failure → kill).
@@ -357,7 +381,7 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-17 — Sites: docs + feature complete (M5)
+## 2026-06-17: sites, docs + feature complete (M5)
 
 - Docs synced: `decisions.md` D-020 (the Sites ADR), `data-model.md` (`[[site]]` schema +
   inheritance/override + back-compat), `ux.md` (grouped/flat list, `site:` filter, F3 manager,
@@ -370,7 +394,7 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-17 — Sites: CLI surface (M4)
+## 2026-06-17: sites, the CLI surface (M4)
 
 - `sshelf add --site NAME` (`-s`) assigns a site (warns, non-fatally, if it isn't defined yet).
 - `sshelf sites` lists defined sites with member counts + their defaults; `sshelf sites --json`
@@ -382,7 +406,7 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-17 — Sites: wizard chooser + F3 manager (M3)
+## 2026-06-17: sites, wizard chooser + F3 manager (M3)
 
 - The add/edit form gains a **Site** chooser (←/→ over the defined sites + "(none)"); editing a
   host preselects its site.
@@ -397,12 +421,12 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-17 — Sites: grouped/flat host list (M2)
+## 2026-06-17: sites, grouped/flat host list (M2)
 
 - The host list now **groups by site** when idle (`── {site} ({n}) ──` section headers, sites
   alphabetical, `(no site)` last) and shows a flat ranked list with a dim `·site·` column while
   filtering. `recompute` builds a grouped `order` when the query is empty (`group_order`);
-  `order` still holds host indices only, so selection/navigation are unchanged — the renderer
+  `order` still holds host indices only, so selection/navigation are unchanged, and the renderer
   maps the selected host past the non-selectable headers to the `ListState` index.
 - Tests: `group_order` sectioning (case-insensitive, `(no site)` last); render checks for the
   grouped headers + the filtered site column. 135 tests; clippy + fmt clean.
@@ -410,13 +434,13 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-17 — Sites: model + inheritance + search (M1)
+## 2026-06-17: sites, model + inheritance + search (M1)
 
 - New **Site** concept: a one-per-host grouping that may carry **optional** shared SSH defaults
   (user/port/jump/identity) member hosts inherit at connect time. Bare site = pure grouping;
   per-host fields always override; auth stays per-host. Distinct from many-valued `tags`.
 - `model.rs`: `Site` struct + `Host.site: Option<String>` (by name) + `HostsFile.sites`
-  (`[[site]]`, sites-first; no `format_version` bump — old files load unchanged). Inheritance
+  (`[[site]]`, sites-first; no `format_version` bump, so old files load unchanged). Inheritance
   via `Host::with_site_defaults(&[Site])` (clone, fill only unset fields, id preserved; unknown
   site name degrades to plain grouping) + `find_site` (case-insensitive). `search_haystack`
   includes the site.
@@ -430,31 +454,31 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-16 — Transfer: `--transfer-log` diagnostics
+## 2026-06-16: transfer, `--transfer-log` diagnostics
 
 - Added a transfer debug log: `sshelf --transfer-log <FILE>` (or `$SSHELF_TRANSFER_LOG`) appends
   every `ssh`/`sftp` command the worker runs plus its full stderr to `FILE`, so a failed transfer
   can be inspected after the fact (the status line still shows the one-line cause). No secrets are
-  logged — the password reaches `ssh` via `SSH_ASKPASS`, never argv. The e2e test asserts the log
+  logged: the password reaches `ssh` via `SSH_ASKPASS`, never argv. The e2e test asserts the log
   captures the master + `get`/`put` commands. Docs: README, `ux.md` (CLI table + transfer
   section), `security.md`.
 
 ---
 
-## 2026-06-16 — Transfer: use `sftp` (not `scp`) for the copy itself
+## 2026-06-16: transfer, use `sftp` (not `scp`) for the copy itself
 
 - Bug found in local testing: transferring a filename with **spaces** failed
-  (`scp: failed to upload … to '/…`). OpenSSH 9+ `scp` speaks the SFTP protocol and takes the
+  (`scp: failed to upload ... to '/...`). OpenSSH 9+ `scp` speaks the SFTP protocol and takes the
   remote path literally, so the shell-quoting legacy `scp` needed became *literal quotes* in the
   name. Plain names slipped through because they aren't quoted.
 - Fixed by running transfers through **`sftp` `get`/`put`** over the same master used for
-  listing — `sftp` quotes via its own command parser consistently across OpenSSH versions, so
+  listing. `sftp` quotes via its own command parser consistently across OpenSSH versions, so
   the version-dependent `scp` quoting trap is gone. Removed `scp_args`/`remote_spec`; added a
   `transfer_batch` unit test and a spaces regression to the e2e test.
 
 ---
 
-## 2026-06-16 — Transfer screen: transport core + worker
+## 2026-06-16: transfer screen, transport core + worker
 
 - Started the dual-pane SFTP/SCP **transfer screen**. Settled the transport (see `decisions.md`
   D-019): move files over the system `sftp`/`scp` riding a single `ssh` **ControlMaster**, so
@@ -469,27 +493,28 @@ true of v0.13.0.
   dirs by parsing `sftp ls -l`, runs `scp` transfers with throttled progress + mid-flight
   cancel, and tears the master + control socket down on stop via RAII. 101 tests; clippy + fmt
   clean. No UI yet; the live end-to-end run lands with the engine milestone.
-- Added `transfer/pane.rs`: one side's state — fuzzy filter + selection + navigation reused
+- Added `transfer/pane.rs`, one side's state: fuzzy filter + selection + navigation reused
   from the key-picker browser, a synthetic `..` entry, `ls -F`-style dir/`@`-symlink labels with
   control-char stripping, and a local-directory reader. Kept source-agnostic rather than behind
   a `DirSource` trait (a synchronous remote `list()` would block the very UI loop the worker
   keeps responsive); the screen feeds local entries via `std::fs` and remote ones via the worker.
   109 tests; clippy + fmt clean.
-- Wired the screen end to end: `transfer/screen.rs` (two panes over one session — local nav is
-  synchronous, remote nav requests via the worker, events drained each tick) and `ui/transfer.rs`
-  (two panes, progress/status line, hint bar; `TestBackend`-snapshotted via a borrowed view, and
-  a "terminal too small" clamp). `Ctrl-t` on the list opens it (`Outcome::Transfer`); the event
-  loop polls + drains while it's open and tears the worker down on close (RAII). Keys: `Tab`
-  switch · `→`/`Enter` open · `Ctrl-s` send file/folder · `←`/`Backspace` up · `Esc` cancel/
-  clear/close. Docs: `ux.md` transfer section + keybinding. 113 tests; clippy + fmt clean.
+- Wired the screen end to end: `transfer/screen.rs` (two panes over one session, where local nav is
+  synchronous, remote nav requests go via the worker, and events are drained each tick) and
+  `ui/transfer.rs` (two panes, progress/status line, hint bar; `TestBackend`-snapshotted via a
+  borrowed view, and a "terminal too small" clamp). `Ctrl-t` on the list opens it
+  (`Outcome::Transfer`); the event loop polls + drains while it's open and tears the worker down on
+  close (RAII). Keys: `Tab` switch · `→`/`Enter` open · `Ctrl-s` send file/folder · `←`/`Backspace`
+  up · `Esc` cancel/ clear/close. Docs: `ux.md` transfer section + keybinding. 113 tests; clippy +
+  fmt clean.
 - Validated the transport end to end against a throwaway localhost `sshd` (`transfer/e2e.rs`,
-  `#[ignore]`d — run with `cargo test -- --ignored`): the master opens, `sftp` `pwd`/`ls`
+  `#[ignore]`d, run with `cargo test -- --ignored`): the master opens, `sftp` `pwd`/`ls`
   parse, single-file download + upload (contents verified), and recursive directory download
   all pass.
 - Robustness + docs pass: a same-named destination is **skipped** rather than clobbered;
   README gains a feature bullet + the `^t` key, `security.md` covers the transfer network path,
   and `structure.md` maps the new modules. Added master-command tests for ProxyJump + password
-  hosts — the auth itself reuses `build_args`/`configure_askpass` (already tested), and the M0
+  hosts, since the auth itself reuses `build_args`/`configure_askpass` (already tested), and the M0
   spike proved `SSH_ASKPASS` opens the master, so a password *target* and key/agent jumps work;
   a fully automated password-auth transfer E2E needs a PAM/Docker sshd (the rootless test server
   is key-auth only) and is a CI-with-Docker follow-up.
@@ -499,7 +524,7 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-13 — CLI: non-interactive add, list --json, dynamic completion, reconnect-last
+## 2026-06-13: CLI, non-interactive add, list --json, dynamic completion, reconnect-last
 
 - **`sshelf add` gained flags** for a fully non-interactive add (scripts/dotfiles): `NAME` +
   `-H/--hostname` required; `-u/-p/-a/-i/-J/-t/--extra/--password-stdin`. Auth is inferred
@@ -507,7 +532,7 @@ true of v0.13.0.
   hyphen-leading values; `--password-stdin` keeps the secret out of argv. Bare `sshelf add`
   still opens the TUI form. Duplicate names are refused. (`AddArgs::into_host` is pure/tested.)
 - **`sshelf list --json`** emits each selected host's fields plus its generated `command`,
-  always valid JSON (even empty) — the stable surface for integrations.
+  always valid JSON (even empty), the stable surface for integrations.
 - **Dynamic shell completion** of host names via `clap_complete` (`unstable-dynamic`):
   `CompleteEnv` in `main`, `ArgValueCandidates` on the `<host>` args of direct-connect /
   `print-command` / `set-password`; `host_name_candidates` reads `hosts.toml` side-effect-free.
@@ -520,9 +545,9 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-12 — CLI: print generated ssh command
+## 2026-06-12: CLI, print generated ssh command
 
-- Added `sshelf print-command <host>`: prints the same shell-quoted `ssh …` command as the
+- Added `sshelf print-command <host>`: prints the same shell-quoted `ssh ...` command as the
   TUI `Ctrl-y` yank action, without connecting or updating frecency. Useful for scripts,
   wrappers, and review before running a connection.
 - Fixed generated command strings to expand identity-file `~` before shell-quoting, so yanked
@@ -531,9 +556,9 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-07 — Pre-launch hardening
+## 2026-06-07: pre-launch hardening
 
-- **`sshelf add` now opens the TUI with the add form ready** (`app::run_add`) — it was a
+- **`sshelf add` now opens the TUI with the add form ready** (`app::run_add`); it was a
   placeholder message. Empty-list hint and internal comments cleaned of milestone references.
 - **Vault env hygiene:** `configure_askpass` strips `SSHELF_VAULT_PASSPHRASE` from the child
   env when no stored secret is wired; kept (and now documented) for vault-mode askpass, which
@@ -547,14 +572,14 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-07 — Release v0.2.0
+## 2026-06-07: release v0.2.0
 
 - Cut **v0.2.0**: ships the `sshelf <host>` direct-connect and `sshelf list <query>` filter
   (below). Tagging `v0.2.0` republishes brew / shell installer / `.deb` via dist.
 
 ---
 
-## 2026-06-07 — CLI: direct connect + list filter
+## 2026-06-07: CLI, direct connect + list filter
 
 - `sshelf <host>` connects straight to a saved host by name/id, skipping the TUI (reuses the TUI
   connect path: frecency recorded before `exec`, askpass wired only when a secret exists). A miss
@@ -566,14 +591,14 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-07 — README demo GIF
+## 2026-06-07: README demo GIF
 
 - Added an animated demo to the top of the README (`docs/sshelf-readme.gif`): fuzzy-search →
   yank the generated `ssh` command.
 
 ---
 
-## 2026-06-06 — v0.1.0 released
+## 2026-06-06: v0.1.0 released
 
 - First public release is live: dist's `Release` workflow built all four targets, created the
   GitHub Release (tarballs + shell installer), and published the Homebrew formula; `release-deb`
@@ -584,35 +609,35 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-06 — Release pipeline: dist (cargo-dist) wired up
+## 2026-06-06: release pipeline, dist (cargo-dist) wired up
 
 - `dist init`: shell + Homebrew installers, 4 Unix targets (mac + linux × x86_64/arm64),
   `install-updater = false`. Added `release.yml`, `dist-workspace.toml`, and `[profile.dist]`.
-- Dropped the `x86_64-pc-windows-msvc` target dist added by default — sshelf is Unix-only
+- Dropped the `x86_64-pc-windows-msvc` target dist added by default, since sshelf is Unix-only
   (the connect path uses `exec()`), so a Windows build can't compile.
 - Reworked `release-deb.yml` to run via `workflow_run` after the dist `Release` workflow
-  finishes, attaching the `.deb`s to the release dist creates — avoids both workflows racing
+  finishes, attaching the `.deb`s to the release dist creates, which avoids both workflows racing
   to create the same release.
 - Before tagging: create the `max-rh/homebrew-tap` repo + a `HOMEBREW_TAP_TOKEN` secret (PAT)
   so the Homebrew formula can be published.
 
 ---
 
-## 2026-06-06 — CI: fix the push trigger
+## 2026-06-06: CI, fix the push trigger
 
 - `ci.yml` listened on `main`, but the default branch is `master`, so direct pushes never ran
   CI. Now triggers on `[master, main]`.
 
 ---
 
-## 2026-06-06 — Funding notes: trim public meta-commentary
+## 2026-06-06: funding notes, trim public meta-commentary
 
 - Removed the BTC-address caveat from the README Support section (the donate badge + address stay).
 - Trimmed the `.github/FUNDING.yml` comment down to the functional config.
 
 ---
 
-## 2026-06-06 — Docs: contributor guide + naming polish
+## 2026-06-06: docs, contributor guide + naming polish
 
 - Adopted **`CONTRIBUTING.md`** as the contributor guide (GitHub-conventional name) and
   refreshed its cross-references in `docs/{index,structure,decisions}.md`.
@@ -621,12 +646,12 @@ true of v0.13.0.
 
 ---
 
-## 2026-06-05 — Post-v1: browser fuzzy search, dynamic wizard width, settings screen ✅
+## 2026-06-05: post-v1, browser fuzzy search, dynamic wizard width, settings screen
 
-- **File browser fuzzy search** — type to filter the listing (nucleo); `Backspace` edits the
+- File browser fuzzy search: type to filter the listing (nucleo); `Backspace` edits the
   filter (else up-dir), `Esc` clears it (else cancels). Shared `ui::highlight` between the host
   list and browser.
-- **Dynamic wizard width** — the add/edit form sizes to the terminal (clamped 56–100), fixing
+- Dynamic wizard width: the add/edit form sizes to the terminal (clamped 56 to 100), fixing
   placeholder truncation; longest placeholders trimmed; placeholders now read `optional ·` /
   `required ·`.
 - **Settings screen (`F2`)** + `ui/settings.rs`: edit the **hosts-file** location (default shown;
@@ -638,17 +663,17 @@ true of v0.13.0.
   to a new path, committing config only on success. Two app-level tests cover both branches.
 - Help overlay height bumped (the F2 line was clipping). 84 tests; clippy + fmt clean.
 - **Deviation to confirm:** "custom config file" is via `--config`/env (shown read-only in
-  settings), not editable in the wizard — the bootstrap-correct interpretation.
+  settings), not editable in the wizard, which is the bootstrap-correct interpretation.
 - Snapshots: `target/{wizard,browse,settings}-snapshot.txt`.
 
 ---
 
-## 2026-06-05 — Post-v1: .pem keys + in-TUI file browser ✅
+## 2026-06-05: post-v1, .pem keys + in-TUI file browser
 
 Follow-up to the wizard work (user requests):
-- **`.pem` / keyless keys are detected** — `scan_keys` includes any private key by sniffing a
-  `PRIVATE KEY` header, not just `<name>.pub` pairs (AWS keys show up).
-- **File browser** (`ui/browse.rs`) — the Key field opens it with `Enter` (`←/→` still cycles
+- `.pem` and keyless keys are detected: `scan_keys` includes any private key by sniffing a
+  `PRIVATE KEY` header rather than only `<name>.pub` pairs (AWS keys show up).
+- File browser (`ui/browse.rs`): the Key field opens it with `Enter` (`←/→` still cycles
   recent `~/.ssh` keys); navigate dirs and pick a key **anywhere** without typing a path.
   A browsed path is stored as the host's identity even outside `~/.ssh`.
 - **Placeholders** now mark fields `optional ·` / `required ·`. The Key field's hint becomes
@@ -656,22 +681,22 @@ Follow-up to the wizard work (user requests):
 - 75 tests (incl. `scan_keys` against a temp dir with a `.pem`, browser nav, Enter→browse);
   clippy + fmt clean. Snapshots: `target/{wizard,browse}-snapshot.txt`.
 - **Acceptance gate:** the browser + Enter→browse→pick flow is `TestBackend`-only; a real-TTY
-  run (open the Key field, browse to a `.pem`, pick, save, connect) is still pending — folded
+  run (open the Key field, browse to a `.pem`, pick, save, connect) is still pending, folded
   into gate #2 below.
 
 ---
 
-## 2026-06-05 — Post-v1: auth-aware wizard, key picker, key-passphrase auto-supply ✅
+## 2026-06-05: post-v1, auth-aware wizard, key picker, key-passphrase auto-supply
 
 User-requested wizard improvements:
 - Every field shows a dim **placeholder** explaining it.
-- The form is **auth-aware** — only relevant fields show: key → Key picker + optional Key
+- The form is **auth-aware**, so only relevant fields show: key → Key picker + optional Key
   passphrase; password → Password; agent → neither.
 - **Key picker** cycles private keys discovered under `~/.ssh` (files with a `.pub` sibling).
 - **Key passphrase** (optional) is stored as the host secret; askpass now answers passphrase
   prompts too, and connect wires askpass whenever a stored secret exists (password OR passphrase).
 
-Hardening review — confirmed and fixed:
+Hardening review, confirmed and fixed:
 - the "password NOT stored" message → "secret NOT stored" (applies to key passphrases too);
 - `is_secret_prompt` tightened to OpenSSH prompt *shapes* (ends-with `password:` / contains
   `passphrase for`) so a keyboard-interactive server can't phish the stored secret;
@@ -684,40 +709,40 @@ Hardening review — confirmed and fixed:
 
 ---
 
-## 2026-06-05 — M8: OSS readiness ✅
+## 2026-06-05: M8, OSS readiness
 
 - **Linux verified for real** (Docker `rust:latest`): build + all 63 tests pass. The first
-  Linux build *caught a bug* — `sync-secret-service` pulled the C `libdbus-sys` (needs
+  Linux build *caught a bug*: `sync-secret-service` pulled the C `libdbus-sys` (needs
   `libdbus-1-dev`). Switched to **pure-Rust** `async-secret-service` + `crypto-rust` +
   `async-io` → no C/OpenSSL/tokio build deps. (Closes acceptance gate #3.)
 - `README.md`, `SECURITY.md` (threat model + macOS-signing note), `LICENSE-MIT` +
   `LICENSE-APACHE` (dual), and `.github/workflows/ci.yml` (fmt + clippy + build + test on
   macOS & Linux, plus a **headless-vault job** that stores/retrieves via the age vault with
-  `DBUS_SESSION_BUS_ADDRESS` unset — verified locally).
+  `DBUS_SESSION_BUS_ADDRESS` unset, verified locally).
 - `cargo fmt` applied repo-wide so the CI format check passes.
 - 63 tests; clippy `-D warnings` clean on macOS and Linux.
 
-## 2026-06-05 — M7: read-only import from ~/.ssh/config ✅
+## 2026-06-05: M7, read-only import from ~/.ssh/config
 
 - `import.rs`: `ssh2-config 0.7.1` parse (`ALLOW_UNKNOWN_FIELDS`) → `Host` mapping (name,
   hostname, user, port, identity files; the parser expands `~` to an absolute path). Skips
   wildcard patterns; **warns** about `Match` / `Include` / `ProxyJump` (unsupported).
 - `Ctrl-o` in the TUI imports all *new* (non-duplicate-by-name) hosts; `sshelf import [--dry-run]`
   does the same from the CLI. Never writes `~/.ssh/config`.
-- **Verified against the real `~/.ssh/config`**: parsed 4 hosts read-only (mtime unchanged),
+- Verified against the real `~/.ssh/config`: parsed 4 hosts read-only (mtime unchanged),
   correct mapping, `--dry-run` wrote nothing.
-- v1 deviation: no in-flight per-host *selection* UI — it imports all new hosts, then you
+- v1 deviation: no in-flight per-host *selection* UI; it imports all new hosts, then you
   curate with edit/delete (recorded in `docs/ux.md`).
 - 63 tests pass; clippy `-D warnings` clean.
 
 ---
 
-## 2026-06-06 — Distribution: dist + .deb + clap completions/man (chosen stack)
+## 2026-06-06: distribution, dist + .deb + clap completions/man (chosen stack)
 
 Picked the channels (GitHub user `max-rh`): **dist/cargo-dist** for Homebrew + tarballs +
 shell installer, **cargo-deb** for Debian/Ubuntu, **clap** for completions/man, **no crates.io**.
 - Code: added `sshelf completions <shell>` and `sshelf man` subcommands (`clap_complete` /
-  `clap_mangen` via `Cli::command()` — no build.rs). Verified bash/zsh/fish + roff output.
+  `clap_mangen` via `Cli::command()`, no build.rs). Verified bash/zsh/fish + roff output.
 - Packaging: `[package.metadata.deb]` in `Cargo.toml` (depends `openssh-client`, recommends
   `gnome-keyring`, ships completions + man); `.github/workflows/release-deb.yml` builds amd64
   (`ubuntu-22.04`) + arm64 (`ubuntu-24.04-arm`) natively and attaches `.deb`s to the `v*` Release
@@ -725,7 +750,7 @@ shell installer, **cargo-deb** for Debian/Ubuntu, **clap** for completions/man, 
 - `docs/packaging.md` rewritten around this stack (multi-arch x86+arm, dist `init` choices,
   the deb companion, the macOS signing/Keychain note, manual Homebrew formula + APT repo in an
   appendix). dist's `release.yml` itself is generated by `dist init` (documented).
-- §6 reframed: **no paid Apple Developer Program needed** — a CLI via Homebrew runs unsigned
+- §6 reframed: **no paid Apple Developer Program needed**, since a CLI via Homebrew runs unsigned
   (Homebrew doesn't quarantine formulae; arm64 just needs the free auto **ad-hoc** signature).
   Paid Developer ID/notarization is optional (only removes Gatekeeper friction for *direct*
   `.tar.gz` downloads). Vault stays the free Keychain fallback.
@@ -733,8 +758,8 @@ shell installer, **cargo-deb** for Debian/Ubuntu, **clap** for completions/man, 
   "not signed at all" and `codesign --sign - --force` → `Signature=adhoc`; documented the exact
   step + where it slots into dist's `release.yml` (§6). No paid Apple program.
 - Email: advised an alias (public in `.deb`/repo); `authors` made optional. License: keep dual
-  MIT OR Apache-2.0. Funding: **BTC only for now** (GitHub Sponsors needs a payout setup) — README
-  **Support** section + `.github/FUNDING.yml` (custom→README).
+  MIT OR Apache-2.0. Funding: **BTC only for now** (GitHub Sponsors needs a payout setup), via the
+  README **Support** section + `.github/FUNDING.yml` (custom→README).
 - Pre-public-push scan: clean (no real keys/personal email/host IPs). Swapped a coincidental LAN
   IP in a test for the RFC5737 doc range; set `Cargo.toml` repository/homepage to max-rh/sshelf.
 - 84 tests; clippy + fmt clean. BTC address filled in. Ready for the initial public push
@@ -747,7 +772,7 @@ shell installer, **cargo-deb** for Debian/Ubuntu, **clap** for completions/man, 
 These are verified by unit tests but NOT yet exercised on a real path; treat as manual
 acceptance gates (a sandbox can't cover them):
 
-1. **macOS OS-keyring path** — only the **vault** secret path (`SSHELF_VAULT_PASSPHRASE`) is
+1. macOS OS-keyring path: only the **vault** secret path (`SSHELF_VAULT_PASSPHRASE`) is
    verified end-to-end. The default macOS path (no env var → Keychain) is unrun; an unsigned
    dev build's re-exec'd askpass child may hit a Keychain access prompt per connect (ACLs are
    keyed to code signature). Run from a real macOS GUI session; until then, the **vault is the
@@ -755,20 +780,20 @@ acceptance gates (a sandbox can't cover them):
 2. **The full in-TUI connect chain has never run as one piece.** For a *password* host it is:
    real TTY → `exec_connect` (which sets `SSH_ASKPASS`/`SSHELF_*` env) → `exec(ssh)` → ssh
    re-execs `sshelf` (askpass mode) as a child, which resolves paths + fetches the secret. The
-   M5 E2E hand-set the env and called `ssh` directly — it did **not** go through `exec_connect`;
+   M5 E2E hand-set the env and called `ssh` directly; it did **not** go through `exec_connect`;
    and `TestBackend` doesn't touch raw mode / alt-screen. **Acceptance test: connect to a real
-   password host *from inside the TUI*** (not just `ssh`), and exercise the **key file browser**
-   (open the Key field → `Enter` → browse to a `.pem`, type-to-filter → pick → save → connect) and
-   the **F2 settings** relocate (change the hosts file, confirm it adopts/relocates correctly). If
-   macOS Keychain prompts on every connect for the unsigned dev build, that's expected → use the
-   vault or a signed build.
-3. ~~**Linux build**~~ — ✅ **closed (M8)**: built + tested in Docker `rust:latest` (63 tests
+   password host *from inside the TUI*** (rather than `ssh` alone), and exercise the **key file
+   browser** (open the Key field → `Enter` → browse to a `.pem`, type-to-filter → pick → save →
+   connect) and the **F2 settings** relocate (change the hosts file, confirm it adopts/relocates
+   correctly). If macOS Keychain prompts on every connect for the unsigned dev build, that's
+   expected → use the vault or a signed build.
+3. ~~**Linux build**~~, **closed (M8)**: built + tested in Docker `rust:latest` (63 tests
    pass) with the pure-Rust `async-secret-service` backend; CI now builds/tests Linux + a
    headless `DBUS_SESSION_BUS_ADDRESS`-unset vault job. (First real CI run still pending.)
 
 ---
 
-## 2026-06-05 — M6: tags, config, theme, frecency wiring ✅
+## 2026-06-05: M6, tags, config, theme, frecency wiring
 
 - **Tag filtering** (the explicitly-chosen v1 feature): `tag:NAME` tokens in the query AND
   every tag (case-insensitive, exact); remaining words fuzzy-match. Combine freely
@@ -783,13 +808,13 @@ acceptance gates (a sandbox can't cover them):
 
 ---
 
-## 2026-06-05 — M5: secrets + password auto-supply ✅ (verified end-to-end)
+## 2026-06-05: M5, secrets + password auto-supply (verified end-to-end)
 
 - `vault.rs`: age-encrypted (`age 0.10.1`, scrypt + ChaCha20-Poly1305) `host_id → password`
   map; store/get/delete + atomic writes. `secrets.rs`: routes to the **OS keyring** by default,
   or the **vault** when `SSHELF_VAULT_PASSPHRASE` is set (deterministic, headless/CI-friendly).
   `keyring 3.6.3` with per-target backends (apple-native / sync-secret-service / windows-native).
-- `askpass.rs`: headless `SSH_ASKPASS` mode — inspects `argv[1]`, answers only password prompts
+- `askpass.rs`: headless `SSH_ASKPASS` mode that inspects `argv[1]`, answers only password prompts
   (fetches by `SSHELF_HOST_ID`), declines everything else with exit 1.
 - `ssh.rs`: `configure_askpass` sets `SSH_ASKPASS`/`REQUIRE=force`/`SSHELF_ASKPASS`/`SSHELF_HOST_ID`
   for password hosts only, clearing inherited askpass otherwise.
@@ -802,7 +827,7 @@ acceptance gates (a sandbox can't cover them):
 
 ---
 
-## 2026-06-05 — M4: add / edit / delete ✅
+## 2026-06-05: M4, add / edit / delete
 
 - `ui/widgets.rs`: hand-rolled single-line `TextField` (insert/backspace/cursor moves).
 - `ui/wizard.rs`: full-screen add/edit **form** (9 focusable fields: name, hostname, user,
@@ -817,7 +842,7 @@ acceptance gates (a sandbox can't cover them):
 
 ---
 
-## 2026-06-05 — M3: connect via exec() + yank ✅
+## 2026-06-05: M3, connect via exec() + yank
 
 - `ssh.rs`: `build_args` (`-i` per key with `~` expansion, `-p` only if non-22, `-J` comma
   chain, `-o StrictHostKeyChecking=accept-new`, shlex-split extra args, `user@host`);
@@ -828,14 +853,14 @@ acceptance gates (a sandbox can't cover them):
   Panic-safety is handled by ratatui's `init()` panic hook (no separate RAII guard needed).
 - Added `shlex 2.0.1`, `arboard 3.x` (no-default-features, text-only).
 - **Verified:** recreated the spike sshd with a public key and connected with the exact
-  `build_args` flag set (`-i … -p 2222 -o StrictHostKeyChecking=accept-new tester@127.0.0.1`)
+  `build_args` flag set (`-i ... -p 2222 -o StrictHostKeyChecking=accept-new tester@127.0.0.1`)
   → `CONNECT_OK`. (Interactive TUI→exec is TTY-only; argv logic is unit-tested and the live
   connection is proven here.)
 - 33 tests pass; clippy `-D warnings` clean (collapsed nested ifs into 1.88 let-chains).
 
 ---
 
-## 2026-06-05 — M2: core TUI (list + fuzzy search) ✅
+## 2026-06-05: M2, core TUI (list + fuzzy search)
 
 Added `ratatui 0.30.0` + `nucleo-matcher 0.3.1`. The atuin-style launcher renders: search box
 (with `matched/total` in the title), highlighted fuzzy list, contextual hint bar, F1 help overlay.
@@ -852,7 +877,7 @@ Added `ratatui 0.30.0` + `nucleo-matcher 0.3.1`. The atuin-style launcher render
 
 ---
 
-## 2026-06-05 — M1: scaffold + persistence ✅
+## 2026-06-05: M1, scaffold + persistence
 
 Crate `sshelf` (edition 2024, `rust-version = 1.88`, license `MIT OR Apache-2.0`) builds clean
 with `clippy -D warnings`; 12 unit tests pass.
@@ -872,7 +897,7 @@ with `clippy -D warnings`; 12 unit tests pass.
 
 ---
 
-## 2026-06-05 — M0: askpass mechanism validated (spike) ✅
+## 2026-06-05: M0, askpass mechanism validated (spike)
 
 Empirically validated the password auto-supply design against a real password-auth sshd
 (Docker `lscr.io/linuxserver/openssh-server`, OpenSSH 10.2 client) on macOS. Also bumped the
@@ -880,44 +905,45 @@ toolchain: **Rust 1.74 → 1.96.0** via `rustup update` (clears the ratatui 0.30
 
 - **Test 1 (success):** `SSH_ASKPASS=helper SSH_ASKPASS_REQUIRE=force` + `PreferredAuthentications=password`
   + `StrictHostKeyChecking=accept-new` → **logged in, exit 0**. Confirms `SSH_ASKPASS` satisfies
-  interactive `PasswordAuthentication` (not just key passphrases). The helper received
+  interactive `PasswordAuthentication` (as well as key passphrases). The helper received
   `argv[1] = "tester@127.0.0.1's password: "`.
 - **Test 2 (host-key routing):** with `StrictHostKeyChecking=ask` + fresh known_hosts, ssh sent the
-  helper the host-key prompt (`"…Are you sure you want to continue connecting (yes/no/[fingerprint])?"`),
+  helper the host-key prompt (`"...Are you sure you want to continue connecting (yes/no/[fingerprint])?"`),
   and a naive "always return the password" helper caused an **infinite loop** on
   `"Please type 'yes', 'no' or the fingerprint:"`.
 - **Conclusions (both already in the design):** the helper **must inspect `argv[1]`** and answer only
-  password prompts (exit non-zero otherwise), and we **must pass `-o StrictHostKeyChecking=accept-new`**
-  so the host-key prompt never reaches it. See [ssh-command.md](./ssh-command.md) §3.
+  password prompts (exit non-zero otherwise), and sshelf **must pass `-o
+  StrictHostKeyChecking=accept-new`** so the host-key prompt never reaches it. See
+  [ssh-command.md](./ssh-command.md) §3.
 - Spike container kept running (`sshelf-spike`, host port 2222) for reuse in M5.
 
 ---
 
-## 2026-06-05 — Documentation foundation
+## 2026-06-05: documentation foundation
 
 - Created the project guide (the docs-in-sync rule + the hard project invariants).
 - Created the `docs/` tree: `index`, `progress`, `architecture`, `structure`, `data-model`,
-  `ssh-command`, `ux`, `decisions`, `security` — all seeded from the project plan.
-- No Rust code yet. Toolchain still on Rust 1.74 — **must `rustup update` to 1.88+** before M1.
+  `ssh-command`, `ux`, `decisions`, `security`, all seeded from the project plan.
+- No Rust code yet. Toolchain still on Rust 1.74, so **`rustup update` to 1.88+** before M1.
 - **Next:** M0 askpass spike (validate password auto-supply on macOS + Linux before building on it).
 
 ---
 
 ## Milestones
 
-Tracking against the project plan. Status: ⬜ not started · 🟡 in progress · ✅ done.
+Tracking against the project plan. Status is one of not started, in progress, or done.
 
 | # | Milestone | Status |
 |---|---|---|
-| — | Docs foundation (project guide + `docs/`) | ✅ |
-| M0 | Spike `SSH_ASKPASS` password mechanism | ✅ (macOS; Linux pending in CI) |
-| M1 | Scaffold crate + persistence (`paths`/`model`/`store`, clap, licenses) | ✅ |
-| M2 | Core TUI: list + fuzzy search + highlight + hint bar | ✅ |
-| M3 | Connect via `exec()` handoff (key/agent hosts) + yank | ✅ |
-| M4 | Add/Edit/Delete wizard (+ quick-add) | ✅ |
-| M5 | Secrets (keyring + age vault) + password auto-supply (askpass) | ✅ |
-| M6 | Polish: frecency tuning, tags, config, help, theme | ✅ |
-| M7 | Read-only import from `~/.ssh/config` | ✅ |
-| M8 | OSS readiness: README, SECURITY, CI, licenses | ✅ |
+| n/a | Docs foundation (project guide + `docs/`) | done |
+| M0 | Spike `SSH_ASKPASS` password mechanism | done (macOS; Linux pending in CI) |
+| M1 | Scaffold crate + persistence (`paths`/`model`/`store`, clap, licenses) | done |
+| M2 | Core TUI: list + fuzzy search + highlight + hint bar | done |
+| M3 | Connect via `exec()` handoff (key/agent hosts) + yank | done |
+| M4 | Add/Edit/Delete wizard (+ quick-add) | done |
+| M5 | Secrets (keyring + age vault) + password auto-supply (askpass) | done |
+| M6 | Polish: frecency tuning, tags, config, help, theme | done |
+| M7 | Read-only import from `~/.ssh/config` | done |
+| M8 | OSS readiness: README, SECURITY, CI, licenses | done |
 
 The full milestone detail lives in the project plan.

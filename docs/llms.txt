@@ -6,8 +6,8 @@
 sshelf is a single Rust binary for macOS and Linux (OpenSSH 8.4+ at runtime). Hosts live in a
 human-readable `hosts.toml` of its own; connecting `exec()`s into your real `ssh`, so there is
 no wrapper between you and the session. Passwords, for the hosts that can't use keys, are kept
-in the OS keyring or an `age`-encrypted vault and supplied through `SSH_ASKPASS` — never in a
-file, never in argv. It has no telemetry, no account, no cloud, holds no API tokens, makes no
+in the OS keyring or an `age`-encrypted vault and supplied through `SSH_ASKPASS`, never in a
+file and never in argv. It has no telemetry, no account, no cloud, holds no API tokens, makes no
 network calls of its own, never writes anything under `~/.ssh`, and keeps no secrets in
 `hosts.toml`.
 
@@ -15,10 +15,10 @@ network calls of its own, never writes anything under `~/.ssh`, and keeps no sec
 
 - [Introduction](https://max-rh.github.io/sshelf/index.html): what sshelf is, what's in the box, and where each piece is documented.
 - [Install](https://max-rh.github.io/sshelf/install.html): Homebrew, shell installer, .deb, .rpm, Gentoo, cargo; platform and OpenSSH requirements.
-- [Quickstart](https://max-rh.github.io/sshelf/quickstart.html): the first five minutes — add or import hosts, connect, where your data lives.
+- [Quickstart](https://max-rh.github.io/sshelf/quickstart.html): the first five minutes, adding or importing hosts, connecting, and where your data lives.
 - [Adding & editing hosts](https://max-rh.github.io/sshelf/hosts.html): the add/edit form, every field, and the quick-add path.
 - [Searching & connecting](https://max-rh.github.io/sshelf/search-connect.html): fuzzy filtering, `tag:`/`site:` tokens, frecency ordering, every key, and what "connect" does.
-- [Transferring files](https://max-rh.github.io/sshelf/transfer.html): the dual-pane SFTP screen (`Ctrl-t`) — marking, batch sends, `F7` mkdir, and its limits.
+- [Transferring files](https://max-rh.github.io/sshelf/transfer.html): the dual-pane SFTP screen (`Ctrl-t`), marking, batch sends, `F7` mkdir, and its limits.
 - [Port forwarding](https://max-rh.github.io/sshelf/port-forwarding.html): Local/Remote/SOCKS tunnels that outlive the TUI (`Ctrl-f`), and the manager (`F4`).
 - [Sites & tags](https://max-rh.github.io/sshelf/sites-tags.html): sites with a shared bastion and inherited defaults, and free-form tags.
 - [Passwords, keys & 2FA](https://max-rh.github.io/sshelf/passwords-2fa.html): auth methods, where secrets live, auto-supply, and hosts that need a verification code.

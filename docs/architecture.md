@@ -2,8 +2,8 @@
 
 `sshelf` is a single binary that runs in one of two modes:
 
-1. **Interactive TUI** (default, and subcommands like `import`) — the fuzzy launcher.
-2. **Askpass helper** (`SSHELF_ASKPASS=1` in the environment) — a headless, non-interactive
+1. **Interactive TUI** (default, and subcommands like `import`): the fuzzy launcher.
+2. **Askpass helper** (`SSHELF_ASKPASS=1` in the environment): a headless, non-interactive
    mode that `ssh` invokes to obtain a stored password. Never run directly by the user.
 
 ## High-level flow
@@ -22,7 +22,7 @@
               2. set env: SSH_ASKPASS=self, SSH_ASKPASS_REQUIRE=force,
                           SSHELF_ASKPASS=1, SSHELF_HOST_ID=<id>
               3. tear down TUI (raw mode off, leave alt screen, show cursor)
-              4. exec("ssh", argv…)   ← process is REPLACED; sshelf is gone
+              4. exec("ssh", argv...)   ← process is REPLACED; sshelf is gone
                                                        │
                                                        ▼
                  ┌─────────────────────────────────────────────┐
@@ -46,19 +46,19 @@
 
 - **`exec()` (process replacement), not spawn+wait.** The user chose *exit-to-shell*: when
   the SSH session ends, they're back at their normal prompt. `exec()` gives `ssh` the real
-  TTY with zero indirection — the cleanest possible handoff. Consequence: **no code runs
+  TTY with zero indirection, the cleanest possible handoff. Consequence: **no code runs
   after `exec()`**, so anything that must persist (frecency) happens *before* it.
 
 - **One exception: tmux mode.** With `tmux = "window"`/`"pane"` and `$TMUX` set, connect spawns
   `tmux new-window`/`split-window` instead and sshelf stays up, so several hosts can be opened
   in a row. Frecency is persisted before the spawn for the same reason. Connections whose
   authentication would have to cross tmux's argv (a 2FA code, a vault passphrase) fall back to
-  the `exec()` path — see [`security.md`](./security.md) and D-025.
+  the `exec()` path; see [`security.md`](./security.md) and D-025.
 
 - **Password auto-supply via `SSH_ASKPASS`, not `sshpass`.** `ssh` never accepts a password
   on the command line; `sshpass` would expose it in `ps`/argv and is an extra dependency.
-  `SSH_ASKPASS` (OpenSSH 8.4+) lets `ssh` call a helper program for the password. We point
-  it at our own binary. With `SSH_ASKPASS_REQUIRE=force`, ssh uses the helper even though a
+  `SSH_ASKPASS` (OpenSSH 8.4+) lets `ssh` call a helper program for the password. sshelf
+  points it at its own binary. With `SSH_ASKPASS_REQUIRE=force`, ssh uses the helper even though a
   TTY is present. See [`ssh-command.md`](./ssh-command.md) for the full mechanism and its
   sharp edges (the helper must inspect the prompt; host-key prompts must be neutralized).
 

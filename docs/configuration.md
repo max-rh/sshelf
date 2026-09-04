@@ -13,7 +13,7 @@ comments on first run:
 | `hosts_file` | (config dir) | Custom host-database path; `~` is expanded. Editable from `F2`. |
 | `tmux` | `"off"` | Inside tmux, where `Enter` opens a connection: `"off"`, `"window"`, or `"pane"`. See [Searching & connecting](search-connect.md#connecting-inside-tmux). Editable from `F2`. |
 
-Point sshelf at an alternate **config file** with `--config FILE` or `$SSHELF_CONFIG` — the
+Point sshelf at an alternate **config file** with `--config FILE` or `$SSHELF_CONFIG`. The
 config-file location itself isn't a key in the file (that would be circular). The **hosts
 file** location *is* a setting.
 
@@ -21,11 +21,11 @@ file** location *is* a setting.
 
 `Tab` moves between fields; `Enter` or `Ctrl-s` saves, `Esc` cancels.
 
-- **Config file** — shown read-only (it's chosen before the config is read; see above).
-- **Hosts file** — editable; blank means the default under the config dir. On save, an
+- Config file: shown read-only (it's chosen before the config is read; see above).
+- Hosts file: editable; blank means the default under the config dir. On save, an
   *existing* file at the new path is **adopted** (loaded, never overwritten); a new path is
   created from your current hosts, so they follow.
-- **tmux** — `Space` cycles `off` → `window` → `pane`. Only has an effect when sshelf itself
+- tmux: `Space` cycles `off` → `window` → `pane`. Only has an effect when sshelf itself
   is running inside tmux.
 
 ## Where everything lives
@@ -35,14 +35,14 @@ XDG paths on macOS **and** Linux (`~/.config` / `~/.local/share`, honoring
 
 | File | Default location | What it is |
 |---|---|---|
-| `hosts.toml` | `~/.config/sshelf/` | The host database — human-readable, hand-editable, nice to keep in dotfiles. |
+| `hosts.toml` | `~/.config/sshelf/` | The host database: human-readable, hand-editable, nice to keep in dotfiles. |
 | `config.toml` | `~/.config/sshelf/` | The preferences above. |
 | `state.json` | `~/.local/share/sshelf/` | Frecency counters. App-managed; churns. |
 | `forwards.json` | `~/.local/share/sshelf/` | Ledger of active [port forwards](port-forwarding.md). App-managed. |
-| `vault.age` | `~/.local/share/sshelf/` | Encrypted secret store — only in [vault mode](passwords-2fa.md#where-secrets-live). |
+| `vault.age` | `~/.local/share/sshelf/` | Encrypted secret store, only in [vault mode](passwords-2fa.md#where-secrets-live). |
 
-Secrets are **never** in `hosts.toml` — keyring or vault only. All writes are atomic
+Secrets are **never** in `hosts.toml`; it's keyring or vault only. All writes are atomic
 (temp file + rename), so a crash mid-write can't corrupt your files.
 
-Hand-editing `hosts.toml` is supported — that's also how you give one host **multiple**
+Hand-editing `hosts.toml` is supported, and that's also how you give one host **multiple**
 identity files. The full schema: [Data model & files](data-model.md).

@@ -7,34 +7,34 @@ Everything sshelf does without opening the TUI.
 | Command | What it does |
 |---|---|
 | `sshelf` | Launch the interactive TUI. |
-| `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI — same connect path as `Enter` (frecency recorded, stored secret auto-supplied, [2FA code](passwords-2fa.md#two-factor-2fa-hosts) prompted on the terminal). A miss suggests the closest names; a host named like a subcommand (`list`, `import`, …) is reached via the TUI instead. |
+| `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI, on the same connect path as `Enter` (frecency recorded, stored secret auto-supplied, [2FA code](passwords-2fa.md#two-factor-2fa-hosts) prompted on the terminal). A miss suggests the closest names; a host named like a subcommand (`list`, `import`, ...) is reached via the TUI instead. |
 | `sshelf -` | Reconnect to the most recently used host. Errors (without connecting) if there's no history yet. |
-| `sshelf add [NAME …]` | Bare: open the TUI add form. With arguments: add a host non-interactively — see [below](#adding-hosts-from-the-cli). |
-| `sshelf list [query] [--json]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax — fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). The `user@host:port` column shows [site defaults](sites-tags.md) resolved. |
-| `sshelf print-command <host>` | Print the generated, shell-quoted `ssh …` command (site defaults included) without connecting or touching frecency — the CLI twin of `Ctrl-y`. |
+| `sshelf add [NAME ...]` | Bare: open the TUI add form. With arguments: add a host non-interactively; see [below](#adding-hosts-from-the-cli). |
+| `sshelf list [query] [--json]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax: fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). The `user@host:port` column shows [site defaults](sites-tags.md) resolved. |
+| `sshelf print-command <host>` | Print the generated, shell-quoted `ssh ...` command (site defaults included) without connecting or touching frecency, the CLI twin of `Ctrl-y`. |
 | `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
 | `sshelf sites add NAME [-u/-p/-J/-i]` | Define a [site](sites-tags.md) (settings optional; edit later with `F3`). |
 | `sshelf import [--dry-run]` | [Read-only import](import.md) from `~/.ssh/config`. |
 | `sshelf import --tailscale [--dry-run]` | [Import your Tailscale tailnet](import.md#from-tailscale): runs your own `tailscale status --json` and adds every eligible peer (MagicDNS name → host, tailnet → site, ACL tags → tags). Add-only; re-running adds 0. |
 | `sshelf export [--stdout]` | [Export](export.md) the database as an ssh_config `Include` fragment, written next to sshelf's config (`--stdout` prints it instead). Once the file exists, it refreshes on every hosts change. |
 | `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. |
-| `sshelf doctor` | [Check this machine and your host database](doctor.md) — OpenSSH version, secret backend, dangling site references, a stale export, a missing ssh-agent. Local and read-only; it never contacts a host. **Exits 1** if any check failed (warnings don't). |
+| `sshelf doctor` | [Check this machine and your host database](doctor.md): the OpenSSH version, the secret backend, dangling site references, a stale export, a missing ssh-agent. Local and read-only; it never contacts a host. **Exits 1** if any check failed (warnings don't). |
 | `sshelf completions <shell>` | Print static shell completions. |
 | `sshelf man` | Print the man page. |
 
 Global flags work **before or after** a subcommand (`sshelf --config F list` and
-`sshelf list --config F` are the same command): **`--config FILE`** — use a specific config file
-(also `$SSHELF_CONFIG`); see [Configuration](configuration.md). **`--transfer-log FILE`** —
-append transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
+`sshelf list --config F` are the same command). `--config FILE` uses a specific config file
+(also `$SSHELF_CONFIG`); see [Configuration](configuration.md). `--transfer-log FILE` appends
+transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 [Transferring files](transfer.md#debugging-a-failing-transfer).
 
-A host name and a subcommand can't be combined — `sshelf prod-web list` is refused rather than
+A host name and a subcommand can't be combined: `sshelf prod-web list` is refused rather than
 quietly running `list` and forgetting the host.
 
-Environment: **`$SSHELF_TAILSCALE_BIN`** — the `tailscale` binary `--tailscale` should run,
+Environment: `$SSHELF_TAILSCALE_BIN` names the `tailscale` binary `--tailscale` should run,
 for installs that aren't on `PATH` (sshelf otherwise tries `PATH`, then the macOS app bundle
-at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`). **`$SSHELF_VAULT_PASSPHRASE`** —
-use the `age` vault instead of the OS keyring; see
+at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`). `$SSHELF_VAULT_PASSPHRASE` uses
+the `age` vault instead of the OS keyring; see
 [Passwords, keys & 2FA](passwords-2fa.md#where-secrets-live).
 
 ## Adding hosts from the CLI
@@ -52,7 +52,7 @@ sshelf add prod-db -H 10.25.25.25 -u mike -p 5432 -J bastion.example.net -i ~/.s
 # agent auth (the default) with extra raw ssh flags
 sshelf add edge -H edge.example.net --extra "-o ServerAliveInterval=30"
 
-# password auth — pipe the secret in (kept out of argv/history; stored in the keyring or vault)
+# password auth: pipe the secret in (kept out of argv/history; stored in the keyring or vault)
 echo "$PASS" | sshelf add legacy -H 10.0.0.9 -u root --password-stdin
 ```
 
@@ -76,16 +76,16 @@ A duplicate name is refused. To store a secret after the fact, use
 
 ## Shell completions
 
-**Static** completion (subcommands + flags) ships with every package — open a new shell after
+**Static** completion (subcommands + flags) ships with every package. Open a new shell after
 installing so it loads. It's also printed by `sshelf completions <shell>`.
 
-**Dynamic** completion — `sshelf prod<Tab>` completing your saved **host names** — takes one
+**Dynamic** completion (`sshelf prod<Tab>` completing your saved host names) takes one
 line in your shell rc:
 
 ```sh
-source <(COMPLETE=bash sshelf)   # bash — add to ~/.bashrc
-source <(COMPLETE=zsh sshelf)    # zsh  — add to ~/.zshrc (after compinit)
-COMPLETE=fish sshelf | source    # fish — add to ~/.config/fish/config.fish
+source <(COMPLETE=bash sshelf)   # bash: add to ~/.bashrc
+source <(COMPLETE=zsh sshelf)    # zsh:  add to ~/.zshrc (after compinit)
+COMPLETE=fish sshelf | source    # fish: add to ~/.config/fish/config.fish
 ```
 
 Host-name completion works for direct connect, `print-command`, and `set-password`.
@@ -93,7 +93,7 @@ Host-name completion works for direct connect, `print-command`, and `set-passwor
 ## JSON output
 
 `sshelf list --json [query]` emits each selected host's fields **plus its generated `ssh`
-command**, and is always valid JSON even when the selection is empty — the stable surface for
+command**, and is always valid JSON even when the selection is empty, the stable surface for
 scripts and integrations. `sshelf sites --json` does the same for sites.
 
 The host fields are the record as stored in `hosts.toml`, so a `user`, `port`, jump host or
@@ -101,4 +101,4 @@ identity file inherited from a [site](sites-tags.md) stays `null` or empty there
 values are in `command`.
 
 `sshelf doctor` has **no** `--json`: its exit code (`0` healthy, `1` something failed) is the
-scriptable part, and a machine-readable report has no users yet — [D-027](decisions.md).
+scriptable part, and a machine-readable report has no users yet ([D-027](decisions.md)).

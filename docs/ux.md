@@ -1,6 +1,6 @@
 # UI design notes
 
-How the interface is designed and why. **What each screen does — and every keybinding — is
+How the interface is designed and why. **What each screen does, and every keybinding, is
 documented in the user Guide** ([Searching & connecting](search-connect.md),
 [Adding & editing hosts](hosts.md), [Transferring files](transfer.md),
 [Port forwarding](port-forwarding.md), [Sites & tags](sites-tags.md)); this page holds the
@@ -20,17 +20,17 @@ terminal.
 
 ## Sorting / ranking
 
-- **No query (idle):** frecency desc —
+- No query (idle): frecency descending,
   `score = use_count * exp(-decay_rate * days_since_last_used)`, `decay_rate` default `0.2`
   (`default_sort = "name"` opts out). The idle view groups by site.
-- **Typing:** fuzzy-filter via `nucleo-matcher`; sort by match score with frecency breaking
+- Typing: fuzzy-filter via `nucleo-matcher`; sort by match score with frecency breaking
   ties. Matched characters are highlighted (bold/accent) using the matcher's match indices,
   rendered with `unicode-width` so wide/combining characters don't misalign.
 - Fuzzy only for now (prefix/substring modes can come later).
 
 ## The add/edit form
 
-A single-screen, **auth-aware** field form rather than a paged wizard — simpler to navigate
+A single-screen, **auth-aware** field form rather than a paged wizard. It's simpler to navigate
 and edit, "guided" by dim placeholders (`required ·` / `optional ·`) and inline validation
 with focus jumping to the offending field. Fields specific to an auth method only render for
 that method. The Key field is a picker (single key) backed by a fuzzy file-browser modal;
@@ -41,7 +41,7 @@ keeps them on edit; entering several is done by editing `hosts.toml`.
 ## Modality & precedence
 
 Full-screen modes (transfer, sites, forwards manager) and popups (forward, 2FA, confirms)
-route keys **before** the list screen — first match wins — and render in the same precedence
+route keys **before** the list screen (first match wins) and render in the same precedence
 order, so input routing and drawing can't disagree. Destructive actions (delete a host, stop
 a forward) confirm with `y`; any other key cancels. Help (`F1`) is an overlay listing every
 key; any key closes it.
@@ -49,5 +49,5 @@ key; any key closes it.
 ## Theming
 
 atuin-inspired defaults: dim chrome and a single accent color (config key `accent`) for the
-selection + match highlights. Terminal resize is handled by ratatui's layout pass — no manual
+selection + match highlights. Terminal resize is handled by ratatui's layout pass, with no manual
 recompute.

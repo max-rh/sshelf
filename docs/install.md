@@ -2,7 +2,7 @@
 
 sshelf runs on **macOS and Linux**, x86_64 and arm64. The prebuilt packages need **no Rust
 toolchain**; at runtime sshelf wants **OpenSSH 8.4+** on your machine (password auto-supply
-rides on `SSH_ASKPASS_REQUIRE`, added in OpenSSH 8.4 — see the [FAQ](faq.md) if unsure).
+rides on `SSH_ASKPASS_REQUIRE`, added in OpenSSH 8.4; see the [FAQ](faq.md) if unsure).
 
 ## Homebrew (macOS or Linux)
 
@@ -57,10 +57,10 @@ cargo install sshelf
 
 ## After installing
 
-- **Shell tab-completion** (subcommands + flags) ships with every package — open a **new
-  shell** (or `exec $SHELL`) so it loads. Completion of your saved **host names** takes one
+- Shell tab-completion (subcommands + flags) ships with every package. Open a new shell
+  (or `exec $SHELL`) so it loads. Completion of your saved host names takes one
   more line in your shell rc: see [Shell completions](cli.md#shell-completions).
-- On Linux, secrets use the **Secret Service** (GNOME Keyring / KWallet) through a pure-Rust
-  backend — no `libdbus` or OpenSSL packages needed. On a headless box with no keyring, see
+- On Linux, secrets use the Secret Service (GNOME Keyring / KWallet) through a pure-Rust
+  backend, with no `libdbus` or OpenSSL packages needed. On a headless box with no keyring, see
   [the age vault](passwords-2fa.md#where-secrets-live).
 - Next stop: the [Quickstart](quickstart.md).

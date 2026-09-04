@@ -26,7 +26,7 @@ GitHub user is **`max-rh`**; the repo is `github.com/max-rh/sshelf`; the Homebre
 3. [Homebrew + tarballs via dist](#3-homebrew--tarballs-via-dist)
 4. [Debian/Ubuntu `.deb`](#4-debianubuntu-deb)
 5. [Shell completions & man page (clap)](#5-shell-completions--man-page)
-6. [macOS signing — no Apple program needed](#6-macos-signing--and-why-you-dont-need-the-99-apple-program)
+6. [macOS signing, no Apple program needed](#6-macos-signing-and-why-you-dont-need-the-99-apple-program)
 7. [Cross-compilation reference](#7-cross-compilation-reference)
 8. [Release checklist](#8-release-checklist)
 9. [Appendix: manual Homebrew formula & APT repo](#9-appendix)
@@ -44,7 +44,7 @@ repository = "https://github.com/max-rh/sshelf"
 homepage   = "https://max-rh.github.io/sshelf"   # the GitHub Pages docs site
 readme     = "README.md"
 # `exclude` keeps the published crate lean (drops docs/, .github/, examples/, the gif, etc.).
-# `authors` is optional (cargo no longer auto-fills it) — omit it, or use a project ALIAS,
+# `authors` is optional (cargo no longer auto-fills it): omit it, or use a project ALIAS,
 # never your personal email: this file is public on GitHub and copied into every .deb.
 ```
 
@@ -59,10 +59,10 @@ Already in place in this repo:
 
 Conventions / facts that matter:
 - A release is a git tag **`vX.Y.Z`** whose number **matches `Cargo.toml`'s `version`**.
-- Ship **prebuilt binaries** (Debian/Ubuntu's packaged `rustc` often predates our MSRV 1.88).
+- Ship **prebuilt binaries** (Debian/Ubuntu's packaged `rustc` often predates the MSRV 1.88).
 - sshelf **`exec`s `ssh`** → the `.deb` depends on **`openssh-client`**; macOS has `ssh` built in.
-- Linux secrets use a **pure-Rust** Secret Service client — **no `libdbus`/OpenSSL/`tokio` C
-  build deps** — so cross-compiling is easy and the `.deb` needs no `-dev` packages. The Secret
+- Linux secrets use a **pure-Rust** Secret Service client with **no `libdbus`/OpenSSL/`tokio` C
+  build deps**, so cross-compiling is easy and the `.deb` needs no `-dev` packages. The Secret
   Service *daemon* is a `Recommends` (the `age`-vault fallback exists).
 
 ---
@@ -78,7 +78,8 @@ Conventions / facts that matter:
 | Linux x86_64/arm64 static (the `.rpm`) | `*-unknown-linux-musl` | `release-rpm.yml` (`cargo generate-rpm`) |
 
 - **GitHub's free arm64 Linux runners** (`ubuntu-24.04-arm`, GA for *public* repos since Aug
-  2025) build arm64 **natively** — no QEMU. (They aren't available to private repos on the free tier.)
+  2025) build arm64 **natively**, no QEMU. (They aren't available to private repos on the free
+  tier.)
 - macOS runners: `macos-14`/`macos-15` are arm64, `macos-13` is the last Intel one. dist
   cross-compiles `x86_64-apple-darwin` on an arm64 runner (both SDKs are present).
 - `*-gnu` is correct for `.deb`; `*-musl` gives a fully static tarball that runs on any distro
@@ -100,18 +101,18 @@ Answer `dist init` with:
 - **Installers:** `shell` and `homebrew`.
 - **Targets:** `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`,
   `aarch64-unknown-linux-gnu` (add the two `*-musl` targets if you want static tarballs).
-  **Decline Windows** — sshelf is Unix-only; remove `x86_64-pc-windows-msvc` if it's added.
-- **Updater:** **no** (`install-updater = false`) — Homebrew/apt self-update, and the
+  **Decline Windows**: sshelf is Unix-only, so remove `x86_64-pc-windows-msvc` if it's added.
+- **Updater:** **no** (`install-updater = false`), since Homebrew/apt self-update and the
   shell-installer audience is small.
 - **Homebrew tap:** `max-rh/homebrew-tap`. Create that repo first and **initialize it with a
   README** (so it has a default branch dist can push the formula to). Then add a
-  **`HOMEBREW_TAP_TOKEN`** secret to the `sshelf` repo — a PAT with write access to the tap repo,
+  **`HOMEBREW_TAP_TOKEN`** secret to the `sshelf` repo, a PAT with write access to the tap repo,
   because the default `GITHUB_TOKEN` can't push to *another* repo. Without it the
   `publish-homebrew-formula` job fails.
 
 `dist init` writes its config to **`dist-workspace.toml`** and **generates
 `.github/workflows/release.yml`**. Let `dist init`/`dist generate` manage it (it pins
-`cargo-dist-version` to your installed version). Our config:
+`cargo-dist-version` to your installed version). The config:
 
 ```toml
 [workspace]
@@ -132,7 +133,7 @@ install-updater = false
 ```
 
 > **Drop the Windows target:** `dist init` adds `x86_64-pc-windows-msvc` by default. sshelf is
-> Unix-only (the connect path uses `exec()`), so the Windows build can't compile — remove that
+> Unix-only (the connect path uses `exec()`), so the Windows build can't compile. Remove that
 > target from `targets`, leaving the four above.
 
 ### Releasing
@@ -146,7 +147,7 @@ git push origin v0.1.0
 The tag triggers `release.yml` (dist): it builds every target, creates the GitHub Release
 (tarballs + `dist-manifest.json` + shell installer), and **updates the formula in
 `max-rh/homebrew-tap`**. When that workflow *finishes*, `release-deb.yml` runs via `workflow_run`
-and attaches the `.deb`s to the Release (§4) — sequenced, not racing.
+and attaches the `.deb`s to the Release (§4), sequenced rather than racing.
 
 Users then:
 
@@ -157,7 +158,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/max-rh/sshelf/releases/
 ```
 
 > **macOS signing:** Developer ID signing + notarization need the **paid** Apple Developer
-> Program and are **optional** — a CLI installed via Homebrew runs fine unsigned. Do add a free
+> Program and are **optional**; a CLI installed via Homebrew runs fine unsigned. Do add a free
 > **ad-hoc** `codesign` step for a stable signature. See §6 for the full free-vs-paid breakdown.
 
 > **Completions in Homebrew:** dist's generated formula installs the binary. Shell completions
@@ -175,7 +176,7 @@ already in `Cargo.toml`:
 ```toml
 [package.metadata.deb]
 maintainer = "max-rh <max-rh@mail.com>"    # public alias, not a personal inbox
-depends = "$auto, openssh-client"          # we exec ssh
+depends = "$auto, openssh-client"          # sshelf execs ssh
 recommends = "gnome-keyring"               # Secret Service daemon (vault is the fallback)
 section = "utils"
 # ...assets: the binary, README/SECURITY, and the generated completions + man page...
@@ -184,8 +185,8 @@ section = "utils"
 The workflow [`.github/workflows/release-deb.yml`](../.github/workflows/release-deb.yml) builds
 **natively** on each arch (`ubuntu-22.04` for amd64, `ubuntu-24.04-arm` for arm64), generates
 completions + the man page with the `sshelf` subcommands, runs `cargo deb --no-build`, and
-attaches `target/debian/*.deb` to the Release. It triggers on **`workflow_run`** — i.e. *after*
-dist's `release.yml` completes — so the two never race to create the Release: dist owns creation,
+attaches `target/debian/*.deb` to the Release. It triggers on **`workflow_run`**, i.e. *after*
+dist's `release.yml` completes, so the two never race to create the Release: dist owns creation,
 this only attaches. (A `release: published` trigger wouldn't fire, because dist creates the
 Release with `GITHUB_TOKEN`, and `GITHUB_TOKEN`-created events can't trigger downstream workflows.)
 Outline:
@@ -222,10 +223,10 @@ jobs:
 Users install a downloaded package with:
 
 ```sh
-sudo apt install ./sshelf_0.1.0-1_amd64.deb     # resolves deps (openssh-client, …)
+sudo apt install ./sshelf_0.1.0-1_amd64.deb     # resolves deps (openssh-client, ...)
 ```
 
-For a true `apt install sshelf` (no file download), host a **signed APT repo** — see the
+For a true `apt install sshelf` (no file download), host a **signed APT repo**; see the
 [appendix](#9-appendix). That's the most involved channel; the `.deb`-on-Releases above covers
 most users.
 
@@ -236,11 +237,11 @@ most users.
 Same shape as the `.deb`, with two differences. The package metadata is in `Cargo.toml`
 (`[package.metadata.generate-rpm]`, built by [`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm)),
 and the binary is built **static musl** (`*-unknown-linux-musl`) so one `.rpm` runs on any RPM
-distro — Fedora, RHEL/Rocky/Alma, openSUSE — **regardless of glibc version**. (sshelf is
+distro (Fedora, RHEL/Rocky/Alma, openSUSE) **regardless of glibc version**. (sshelf is
 distro-agnostic at runtime: it only shells out to the system `ssh`/`sftp`/`ps`/`kill`, all OpenSSH/
-procps, and the Linux keyring is the pure-Rust Secret Service with the `age`-vault fallback — none
+procps, and the Linux keyring is the pure-Rust Secret Service with the `age`-vault fallback, so none
 of it is Debian- or RPM-specific.) `auto-req = "no"` stops rpm from adding bogus shared-lib
-`Requires` to a static binary; we declare `openssh-clients` explicitly.
+`Requires` to a static binary, so the metadata declares `openssh-clients` explicitly.
 
 [`.github/workflows/release-rpm.yml`](../.github/workflows/release-rpm.yml) mirrors the `.deb`
 workflow: `workflow_run` after dist's Release, a matrix of `x86_64` (`ubuntu-22.04`) and `aarch64`
@@ -286,48 +287,48 @@ sshelf man                   # roff man page on stdout
 ```
 
 - **`.deb`** ships them system-wide (`/usr/share/bash-completion/...`, `/usr/share/man/man1/...`)
-  — generated in the deb workflow (§4) and listed in `[package.metadata.deb].assets`.
+  (generated in the deb workflow, §4, and listed in `[package.metadata.deb].assets`).
 - **Homebrew** (dist formula): users can `source <(sshelf completions zsh)`, or switch to the
   manual formula ([appendix](#9-appendix)) which auto-installs via
   `generate_completions_from_executable(bin/"sshelf", "completions")` and `man1.install`.
-- **Tarball users:** the binary is self-sufficient — run the subcommands as needed.
+- **Tarball users:** the binary is self-sufficient, so run the subcommands as needed.
 
 Implementation: `src/main.rs` builds the `clap::Command` with `Cli::command()` and feeds it to
 `clap_complete::generate(...)` / `clap_mangen::Man::new(...)`. No `build.rs` needed.
 
 ---
 
-## 6. macOS signing — and why you don't need the $99 Apple program
+## 6. macOS signing, and why you don't need the $99 Apple program
 
 **Developer ID signing + notarization require the paid Apple Developer Program ($99/yr).** You
 do **not** need it to ship `sshelf`, because it's a **CLI distributed via Homebrew**, not a GUI
 app. Here's the free path and exactly what (if anything) you give up.
 
 **What macOS actually enforces:**
-- **Apple Silicon refuses to run a binary with *no* signature** — but a free **ad-hoc** signature
+- **Apple Silicon refuses to run a binary with *no* signature**, but a free **ad-hoc** signature
   satisfies it, and the macOS toolchain applies one automatically when it links the binary.
   (Intel Macs don't even require that.)
 - **Gatekeeper's "unidentified developer" block** only hits files carrying the
   `com.apple.quarantine` xattr, which **browsers** set on download. `curl`, `git`, and
-  **Homebrew don't set it** for CLI **formulae** — so a `brew install`-ed binary runs with no
-  Gatekeeper prompt, signed or not. (Homebrew's recent tightening — deprecating
-  `--no-quarantine`, disabling failing **casks** in Sept 2026 — targets **GUI `.app` casks**,
+  **Homebrew don't set it** for CLI **formulae**, so a `brew install`-ed binary runs with no
+  Gatekeeper prompt, signed or not. (Homebrew's recent tightening, deprecating
+  `--no-quarantine` and disabling failing **casks** in Sept 2026, targets **GUI `.app` casks**,
   not CLI formulae like sshelf.)
 
 **Free distribution that "just works" (recommended order):**
-1. **Homebrew** — `brew install max-rh/tap/sshelf`. No quarantine, no Gatekeeper prompt, no Apple
-   account. This is how most open-source Rust CLIs ship. ✅ your main path.
-2. **Build from source** — `cargo install --git https://github.com/max-rh/sshelf`, or a formula
+1. **Homebrew**: `brew install max-rh/tap/sshelf`. No quarantine, no Gatekeeper prompt, no Apple
+   account. This is how most open-source Rust CLIs ship, and it's the main path.
+2. **Build from source**: `cargo install --git https://github.com/max-rh/sshelf`, or a formula
    with `depends_on "rust" => :build`. Compiled locally → no signing questions at all.
-3. **Ad-hoc sign in CI (free, recommended) — the chosen hardening.** Guarantees a *stable*
+3. **Ad-hoc sign in CI (free, recommended), the chosen hardening.** Guarantees a *stable*
    signature on every macOS artifact, no cert/account/Apple-program. Verified on an Intel build:
    the default `cargo build` leaves the binary **"not signed at all"**; one command fixes it:
    ```sh
    codesign --sign - --force target/<triple>/release/sshelf          # ad-hoc, free
    codesign -dvv target/<triple>/release/sshelf 2>&1 | grep Signature  # -> Signature=adhoc
    ```
-   (arm64 binaries are auto ad-hoc-signed by the linker — Apple Silicon requires it to run; this
-   step also covers the cross-built **x86_64** and settles the Keychain point below.)
+   (arm64 binaries are auto ad-hoc-signed by the linker, since Apple Silicon requires it to run;
+   this step also covers the cross-built **x86_64** and settles the Keychain point below.)
 
    **Wiring it into dist:** dist builds macOS on macOS runners and generates
    `.github/workflows/release.yml`. Add this step to that file's macOS build job, right after the
@@ -348,13 +349,13 @@ xattr -dr com.apple.quarantine "$(command -v sshelf)"     # or: right-click the 
 ```
 
 Document that, or just steer direct-download users to Homebrew. **Notarization is the only thing
-that removes this** for direct downloads — and that needs the paid program.
+that removes this** for direct downloads, and that needs the paid program.
 
 **Keychain prompt (sshelf-specific):** the per-connect Keychain prompt happens when the signature
 is *unstable* (re-built dev binaries) or *absent*. A released, **ad-hoc-signed** binary has a
 stable identity, and sshelf's askpass child is the **same binary file** as the parent, so the
 Keychain ACL one creates is honored by the other → no prompt. If a user still hits keychain
-friction, the **`age` vault** (`SSHELF_VAULT_PASSPHRASE`) bypasses the OS keychain entirely — the
+friction, the **`age` vault** (`SSHELF_VAULT_PASSPHRASE`) bypasses the OS keychain entirely, the
 guaranteed-free fallback (see `docs/security.md`).
 
 **If you ever do pay** ($99/yr) for friction-free direct downloads: sign with a Developer ID
@@ -367,7 +368,7 @@ ditto -c -k --keepParent target/<triple>/release/sshelf sshelf.zip
 xcrun notarytool submit sshelf.zip --key AuthKey.p8 --key-id KEYID --issuer ISSUER_UUID --wait
 ```
 
-(You can't `stapler staple` a bare binary/zip — only `.app`/`.dmg`/`.pkg` — but a notarized zip
+(You can't `stapler staple` a bare binary/zip, only `.app`/`.dmg`/`.pkg`, but a notarized zip
 is fine for Homebrew; ship a stapled `.pkg` for offline direct downloads.)
 
 ---
@@ -422,12 +423,12 @@ class Sshelf < Formula
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
-    on_arm   { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-aarch64-apple-darwin.tar.gz"; sha256 "…" }
-    on_intel { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-x86_64-apple-darwin.tar.gz";  sha256 "…" }
+    on_arm   { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-aarch64-apple-darwin.tar.gz"; sha256 "..." }
+    on_intel { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-x86_64-apple-darwin.tar.gz";  sha256 "..." }
   end
   on_linux do
-    on_arm   { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-aarch64-unknown-linux-gnu.tar.gz"; sha256 "…" }
-    on_intel { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-x86_64-unknown-linux-gnu.tar.gz";  sha256 "…" }
+    on_arm   { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-aarch64-unknown-linux-gnu.tar.gz"; sha256 "..." }
+    on_intel { url "https://github.com/max-rh/sshelf/releases/download/v#{version}/sshelf-x86_64-unknown-linux-gnu.tar.gz";  sha256 "..." }
   end
 
   def install
@@ -467,7 +468,7 @@ sudo apt update && sudo apt install sshelf
 ```
 
 An Ubuntu **PPA** (Launchpad) is the native alternative but requires vendoring crates
-(`cargo vendor`, `dh-cargo`) because Launchpad builders have no network — more work than the
+(`cargo vendor`, `dh-cargo`) because Launchpad builders have no network, which is more work than the
 signed-repo-of-prebuilt-`.deb`s above for the same `apt install` UX.
 
 ---
