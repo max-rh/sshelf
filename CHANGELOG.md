@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-09-04
+
 ### Fixed
 - **The host list now shows the user a host inherits from its site**, instead of falling back
   to your local `$USER`. Only the display was ever wrong: connecting, `Ctrl-y` and
@@ -250,7 +252,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/max-rh/sshelf/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/max-rh/sshelf/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/max-rh/sshelf/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/max-rh/sshelf/compare/v0.10.0...v0.11.0
