@@ -52,6 +52,8 @@ Deciding whether to trust it — or just curious how the pieces fit?
   against, and what they are not.
 - [How the ssh command is built](ssh-command.md) — argv generation and the `SSH_ASKPASS`
   mechanism that supplies passwords without `sshpass`.
+- [Privacy](https://github.com/max-rh/sshelf/blob/master/PRIVACY.md) — what sshelf reads,
+  writes, runs, and sends, in plain terms. Nothing leaves your machine.
 
 ## Contributing
 

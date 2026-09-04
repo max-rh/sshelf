@@ -11,6 +11,9 @@ Reports are acknowledged and fixed before public disclosure.
 
 ## Threat model (summary)
 
+For the other half of the picture — what sshelf reads, writes, runs, and sends on your machine
+in normal use — see [`PRIVACY.md`](PRIVACY.md).
+
 `sshelf` can store SSH passwords so it can auto-supply them. **Prefer SSH keys / an agent
 wherever possible** — stored passwords are the least secure option offered.
 

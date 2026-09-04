@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<rect x="0" y="0" width="1024" height="1024" fill="#0B0F14"/>
+<rect x="232" y="316" width="560" height="392" rx="40" fill="#0B0F14" stroke="#FBBF24" stroke-width="12"/>
+<path d="M 238 356 Q 238 322 272 322 L 752 322 Q 786 322 786 356 L 786 442 L 238 442 Z" fill="#FBBF24"/>
+<circle cx="282" cy="382" r="14" fill="#0B0F14"/>
+<circle cx="322" cy="382" r="14" fill="#0B0F14"/>
+<circle cx="362" cy="382" r="14" fill="#0B0F14"/>
+<text x="300" y="585" font-family="'DejaVu Sans Mono','Liberation Mono',monospace" font-size="130" font-weight="bold" fill="#FBBF24" text-anchor="start" dominant-baseline="central">&gt;</text>
+<rect x="452" y="528" width="70" height="112" fill="#FBBF24"/>
+</svg>

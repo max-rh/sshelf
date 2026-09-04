@@ -5,6 +5,13 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Changed
+- **README rewritten as a landing page** — a re-recorded demo clip, one section and one real
+  screenshot per feature (`docs/assets/`), why the project exists, a comparison with the tools
+  people weigh it against, and the never-list stated as promises. New **`PRIVACY.md`** at the
+  repo root (what sshelf reads, writes, runs, and sends) and **`docs/llms.txt`**. Docs and
+  assets only — no behavior change.
+
 ## [0.13.0] — 2026-08-21
 
 ### Added

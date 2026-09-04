@@ -3,8 +3,45 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** Self-service diagnostics — `sshelf doctor`, plus an error-message pass
-so every failure names its own fix. Targets v0.13.0. (v0.12.0 tmux + transfer shipped.)
+**Current milestone:** Presentation and trust — the README as a landing page, a real capture
+per feature, `PRIVACY.md`, `llms.txt`. Docs and assets only. (v0.13.0 `doctor` shipped.)
+
+---
+
+## 2026-09-04 — README as a landing page, `PRIVACY.md`, `llms.txt`
+
+Docs and assets only: no code changed, no version bump, no behavior claim that isn't already
+true of v0.13.0.
+
+- **README rebuilt.** A one-line pitch and badge row (now including the docs site, ratatui, and
+  the MSRV), the demo clip, install, then a first-person "why I built this", one short section
+  per feature with a real capture, a comparison with the tools people weigh sshelf against, and
+  the never-list written as concrete promises. The hand-drawn ASCII screen is gone — the
+  captures replace it. `First five minutes` and the documentation block survive from the old
+  README because they were already doing their job.
+- **Nine captures, all real.** `docs/assets/` gains `launcher`, `transfer`, `forwards`, `sites`,
+  `wizard`, `doctor`, `export` (PNG), `tmux.gif`, and `logo.svg`; `docs/sshelf-readme.gif` was
+  re-recorded. Every one is VHS driving the actual release binary — same theme, font size and
+  width, so the page reads as one tool. Nothing is a mockup: the transfer and forward shots move
+  real bytes and bind real ports against a throwaway rootless `sshd` on localhost (the same
+  trick `src/testsupport.rs` uses for the e2e tests), and the tmux clip opens a real session.
+  Everything on screen is demo data — RFC-5737 addresses, `example.net`, `mike`/`deploy` — with
+  the machine's own home, hostname and user kept out of frame.
+- **Two things the recording turned up.** VHS can't send F1–F12, so the `F3`/`F4` screens are
+  captured with sshelf running inside a scratch tmux session and the key delivered by
+  `tmux send-keys`. And a host that inherits its site's bastion really does try the bastion:
+  pointing the tmux clip at a `prod-dc` member made the new window die on a DNS failure in under
+  a second — correct behavior, wrong host for a demo.
+- **`PRIVACY.md`** at the repo root: what sshelf reads, writes, runs, and sends, in that order,
+  plus where secrets live and how to check the claims yourself. Linked from the README's
+  never-list and from `SECURITY.md`, which now points at it for the non-attacker half of the
+  picture.
+- **`docs/llms.txt`** — the standard shape: description, a paragraph, and one line per guide
+  page. `mdbook build` copies it to the site root, so it serves at `/llms.txt`, and `docs/assets`
+  lands at `/assets` for the guide pages to reuse later.
+- **The comparison table is sourced, not remembered.** Every cell was re-read from the project's
+  own README (or site) in September 2026, and a cell the source doesn't state is a dash rather
+  than a guess.
 
 ---
 
