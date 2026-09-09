@@ -62,7 +62,8 @@ a thread that may be blocked. Single-file downloads land on a `.sshelf-part-<uli
 installed with a link, which fails rather than replacing anything, symlinks included; folders
 and uploads keep the listing check, and the remote listing is refreshed right before each send.
 A cancel that arrives while a listing is running is
-no longer swallowed by it, and `ssh -O check` and `ssh -O exit` are bounded too, so no call the
+no longer swallowed by it, and one that arrives before the child starts is honoured too (a
+failed spawn used to drop it, and with it the transfer parked behind it), and `ssh -O check` and `ssh -O exit` are bounded too, so no call the
 worker makes is unbounded any more. An upload into a listing the entry cap cut short is refused
 rather than guessed at, since a listing check is all an upload has. On a filesystem with no hard
 links (exFAT, FAT32, some network mounts) the download install checks the name and renames

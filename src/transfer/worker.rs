@@ -627,6 +627,7 @@ struct CappedOutput {
 }
 
 /// Why a short-lived `sftp` batch produced nothing.
+#[derive(Debug)]
 enum BatchError {
     /// The screen is closing, or its end of the command channel is gone. The command was
     /// consumed here, so the caller has to leave its own loop rather than wait for another.
@@ -677,6 +678,15 @@ fn run_sftp_batch(
     dbg: &DebugLog,
 ) -> Result<CappedOutput, BatchError> {
     dbg.log(&format!("sftp> {}", batch.trim_end()));
+    // A stop that is already waiting is honoured whether or not the child ever starts. The
+    // screen is blocked on hearing the cancel, and whatever is parked behind it (the upload
+    // the user just stopped) has to go with it; polling only after the spawn would lose both
+    // every time the spawn itself failed.
+    match cmds.poll_stop() {
+        Some(Stop::Shutdown) => return Err(BatchError::Stopped),
+        Some(Stop::Cancel) => return Err(BatchError::Cancelled),
+        None => {}
+    }
     let mut child = Command::new(program)
         .args(sftp_batch_args(socket, target))
         .stdin(Stdio::piped())
@@ -1266,13 +1276,50 @@ mod tests {
     /// `sftp` program: mutating `PATH` would be process-global, and tests run on threads.
     fn stub(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n[ \"${{SSHELF_STUB_PROBE:-}}\" = 1 ] && exit 0\n{body}\n"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            wait_until_runnable(&path);
         }
         path
+    }
+
+    /// Spin until the kernel agrees the freshly written stub can be executed.
+    ///
+    /// Not paranoia. This binary runs its tests on many threads, and between a `fork` and its
+    /// `exec` the child holds every descriptor the parent had open — including the one another
+    /// thread is using to write a stub. An `exec` landing in that window comes back `ETXTBSY`,
+    /// and a test about cancel semantics then fails for a reason that has nothing to do with
+    /// cancelling. Every stub answers `SSHELF_STUB_PROBE=1` by exiting before its body, so the
+    /// probe costs nothing and has no side effects.
+    #[cfg(unix)]
+    fn wait_until_runnable(path: &Path) {
+        for attempt in 0..100u32 {
+            match Command::new(path)
+                .env("SSHELF_STUB_PROBE", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Ok(status) if status.success() => return,
+                Ok(status) => panic!("stub {} answered its probe with {status}", path.display()),
+                Err(e) => {
+                    assert!(
+                        attempt < 99,
+                        "stub {} never became runnable: {e}",
+                        path.display()
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
     }
 
     /// A command channel nothing ever sends on. The sender is returned so it stays alive — a
@@ -1641,6 +1688,43 @@ mod tests {
     /// every upload is still running. The batch consumes it, so the batch also has to drop the
     /// transfer it was parked in front of — otherwise the worker runs, one command later, the
     /// very transfer the user just stopped.
+    /// The same cancel, with a child that never starts. A failed spawn must not swallow it:
+    /// the screen is waiting to hear the cancel, and the transfer parked behind it has to go
+    /// too, or the worker runs one command later the very thing the user stopped.
+    #[test]
+    fn a_cancel_is_honoured_even_when_the_child_never_starts() {
+        let (tx, cmds) = idle_commands();
+        tx.send(WorkerCmd::Transfer(TransferJob {
+            direction: Direction::Upload,
+            src: PathBuf::from("/home/me/report.pdf"),
+            dest_dir: PathBuf::from("/srv"),
+            recursive: false,
+            size_hint: 3,
+        }))
+        .unwrap();
+        tx.send(WorkerCmd::Cancel).unwrap();
+
+        let err = run_sftp_batch(
+            Path::new("/nonexistent/sftp"),
+            Path::new("/nonexistent/m.sock"),
+            "deploy@10.0.0.1",
+            "ls -la /srv\n",
+            Duration::from_secs(30),
+            &cmds,
+            &DebugLog(None),
+        )
+        .err()
+        .expect("a cancel ends the batch");
+        assert!(
+            matches!(err, BatchError::Cancelled),
+            "a spawn failure must not turn a cancel into an error, got {err:?}"
+        );
+        assert!(
+            cmds.deferred.borrow().is_empty(),
+            "the cancelled transfer must not survive a failed spawn"
+        );
+    }
+
     #[test]
     fn a_cancel_takes_the_transfer_parked_behind_the_running_batch_with_it() {
         let dir = scratch("batch-cancel");
@@ -1673,7 +1757,7 @@ mod tests {
         .expect("the cancel ends the batch");
         assert!(
             matches!(err, BatchError::Cancelled),
-            "a cancel is not a failure — the screen has to hear it as a cancel"
+            "a cancel is not a failure — the screen has to hear it as a cancel, got {err:?}"
         );
         assert!(
             started.elapsed() < Duration::from_secs(10),
