@@ -554,10 +554,14 @@ fn cmd_print_command(host_ref: &str) -> Result<()> {
     let host = resolve_host(&file.hosts, host_ref).with_context(|| {
         format!("no host with name or id '{host_ref}' — run `sshelf list` to see your hosts")
     })?;
-    println!(
-        "{}",
-        ssh::command_string(&host.with_site_defaults(&file.sites))
-    );
+    // Resolve the secret exactly as connect does, so the printed command is the one sshelf
+    // would run (a stored secret changes how a jump host is expressed).
+    let host = host.with_site_defaults(&file.sites);
+    let has_secret = secrets::get_password(&paths.vault_file(), &host.id)
+        .ok()
+        .flatten()
+        .is_some();
+    println!("{}", ssh::command_string(&host, has_secret));
     Ok(())
 }
 
@@ -633,7 +637,8 @@ fn hosts_to_json(hosts: &[&Host], sites: &[Site]) -> Result<String> {
         .iter()
         .map(|&h| HostJson {
             host: h,
-            command: ssh::command_string(&h.with_site_defaults(sites)),
+            // `false`: a listing must not read the secret store once per host.
+            command: ssh::command_string(&h.with_site_defaults(sites), false),
         })
         .collect();
     serde_json::to_string_pretty(&items).context("serializing hosts to JSON")
@@ -928,6 +933,14 @@ fn connect(host: &Host, paths: &Paths) -> Result<()> {
         .is_some();
     // Replaces this process on success; returns only on failure.
     let code = prompt_2fa_code(host);
+    // A chain of hops can't be constrained the way one can, so nothing is wired and ssh asks
+    // on the terminal instead. Say so before it does (D-029).
+    if matches!(
+        ssh::jump_plan(host, has_secret || code.is_some()),
+        ssh::JumpPlan::Terminal
+    ) {
+        eprintln!("sshelf: {}", ssh::MULTI_HOP_NOTICE);
+    }
     Err(ssh::exec_connect(host, has_secret, code.as_deref()))
 }
 

@@ -196,11 +196,13 @@ pub fn build_args(host: &Host, expand: bool, askpass: bool) -> Vec<String> {
 
 /// A copy-pasteable `ssh …` command string (identity-file `~` expanded, args shell-quoted).
 ///
-/// Built with the askpass helper **off**: a command you run yourself has no helper wired, so no
-/// jump hop can inherit one and `-J` is what you want to paste. A connect sshelf performs for a
-/// host with a stored secret may use a `ProxyCommand` instead — see `docs/ssh-command.md`.
-pub fn command_string(host: &Host) -> String {
-    let args = build_args(host, true, false);
+/// `askpass` is what the real connect would use, so a host with a stored secret and a jump host
+/// shows the same `ProxyCommand` sshelf would run. Callers that must not touch the secret store
+/// (`sshelf list --json`, which would otherwise read the keyring once per host) pass `false` and
+/// get the stored `-J` chain — which is also the right thing for a command run by hand, since
+/// there is no helper for a hop to inherit. See `docs/ssh-command.md`.
+pub fn command_string(host: &Host, askpass: bool) -> String {
+    let args = build_args(host, true, askpass);
     let joined =
         shlex::try_join(args.iter().map(|s| s.as_str())).unwrap_or_else(|_| args.join(" "));
     format!("ssh {joined}")
@@ -607,7 +609,7 @@ mod tests {
         h.user = Some("root".into());
         h.auth = AuthMethod::Key;
         h.identity_files = vec!["~/.ssh/id key".into()];
-        let s = command_string(&h);
+        let s = command_string(&h, false);
         assert!(s.starts_with("ssh "));
         assert!(s.contains("'/home/tester/.ssh/id key'"));
         assert!(!s.contains("'~"));

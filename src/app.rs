@@ -943,7 +943,9 @@ fn dispatch(app: &mut App, key: KeyEvent) {
             }
         }
         Outcome::Yank(idx) => {
-            let cmd = ssh::command_string(&app.hosts[idx].with_site_defaults(&app.sites));
+            let host = app.hosts[idx].with_site_defaults(&app.sites);
+            // Same flag the real connect would use, so a jump host reads the same either way.
+            let cmd = ssh::command_string(&host, app.has_secret(&host.id));
             if ssh::copy_to_clipboard(&cmd) {
                 app.set_status(format!("copied: {cmd}"));
             } else {
