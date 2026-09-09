@@ -243,8 +243,48 @@ pub fn build_forward_command(
 
 /// Where a forward's stderr is logged (a regular file, so a long-lived `ssh` never gets SIGPIPE
 /// from a closed pipe). Derived from the id, so `reconcile`/`kill` can clean it up too.
-fn log_path_for(id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("sshelf-fwd-{id}.log"))
+///
+/// Under our own data dir, not `/tmp`: the log carries the hostname, the forward spec, the user's
+/// `extra_args` and whatever ssh says about the connection, and a predictable name in a
+/// world-writable directory is a name anyone on the box can claim first.
+///
+/// The data dir is resolved here rather than passed in because [`kill`] and [`reconcile`] delete
+/// these logs as best-effort cleanup with nowhere to report a failure — the askpass helper
+/// resolves its own paths for the same reason. `None` only when there is no home directory.
+fn log_path_for(id: &str) -> Option<PathBuf> {
+    let paths = crate::paths::Paths::resolve().ok()?;
+    Some(log_path_in(&paths.data_dir, id))
+}
+
+/// The log path for `id` under an explicit data dir — split out so it can be checked without
+/// resolving (and therefore reading) the environment.
+fn log_path_in(data_dir: &Path, id: &str) -> PathBuf {
+    data_dir.join("logs").join(format!("fwd-{id}.log"))
+}
+
+/// Delete a finished forward's log. Best-effort: a missing file is the normal case.
+///
+/// It also unlinks the pre-0.13 `/tmp/sshelf-fwd-<id>.log` that older builds wrote. Those were
+/// left at the umask default in a shared directory and hold the same connection details as the
+/// new ones, so an upgrade should take them with it rather than leave them readable forever. The
+/// legacy name is only ever *removed*, never opened or written — unlinking a name removes the
+/// name, so a symlink someone planted there dies without its target being touched. Drop this a
+/// release or two after 0.13.
+fn remove_log(id: &str) {
+    if let Some(log) = log_path_for(id) {
+        let _ = std::fs::remove_file(log);
+    }
+    let _ = std::fs::remove_file(std::env::temp_dir().join(format!("sshelf-fwd-{id}.log")));
+}
+
+/// Create a forward's stderr log 0600, inside a 0700 `logs` directory it creates if needed.
+/// Exclusive, so a file or symlink already sitting at the name fails the spawn instead of being
+/// written through.
+fn create_log_file(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        crate::paths::ensure_private_dir(parent, true)?;
+    }
+    crate::store::create_exclusive(path, 0o600)
 }
 
 /// Spawn a detached forward for `host` (already resolved with site defaults) and wait briefly to
@@ -260,8 +300,9 @@ pub fn spawn_forward(
     spec.validate(kind)?;
 
     let id = ulid::Ulid::new().to_string();
-    let log_path = log_path_for(&id);
-    let errfile = std::fs::File::create(&log_path)
+    let log_path = log_path_for(&id)
+        .ok_or_else(|| "could not determine the data directory for the forward log".to_string())?;
+    let errfile = create_log_file(&log_path)
         .map_err(|e| format!("could not create forward log {}: {e}", log_path.display()))?;
 
     let mut cmd = Command::new("ssh");
@@ -366,7 +407,7 @@ pub fn kill(entry: &ForwardEntry) {
             let _ = signal(entry.pid, "KILL");
         }
     }
-    let _ = std::fs::remove_file(log_path_for(&entry.id));
+    remove_log(&entry.id);
 }
 
 fn signal(pid: i32, sig: &str) -> std::io::Result<()> {
@@ -387,7 +428,9 @@ pub fn reconcile(state: &mut ForwardsState) -> Vec<ForwardEntry> {
         if is_alive(e) {
             true
         } else {
-            let _ = std::fs::remove_file(log_path_for(&e.id));
+            // A missing log is fine — the file may already be gone. A forward recorded by an
+            // older build logged to `/tmp`, which `remove_log` reaps too.
+            remove_log(&e.id);
             dropped.push(e.clone());
             false
         }
@@ -631,6 +674,33 @@ mod tests {
             "/usr/bin/ssh -N -L 127.0.0.1:9999:x:1 a@b",
             token
         ));
+    }
+
+    #[test]
+    fn forward_logs_live_under_the_data_dir() {
+        // Built from an explicit data dir rather than `Paths::resolve()`: nothing here reads the
+        // process environment, which other tests in this binary are busy setting.
+        assert_eq!(
+            log_path_in(Path::new("/data/sshelf"), "01ABC"),
+            Path::new("/data/sshelf/logs/fwd-01ABC.log")
+        );
+    }
+
+    #[test]
+    fn forward_log_is_private_inside_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("sshelf-fwd-log-{}", ulid::Ulid::new()));
+        let logs = root.join("logs");
+        let path = logs.join("fwd-01ABC.log");
+        drop(create_log_file(&path).expect("log file should be created"));
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600, "expected 0600, got {:o}", mode(&path));
+        assert_eq!(mode(&logs), 0o700, "expected 0700, got {:o}", mode(&logs));
+        // A name that is already taken fails rather than being reused or followed.
+        assert!(create_log_file(&path).is_err());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
