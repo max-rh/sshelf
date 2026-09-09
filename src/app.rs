@@ -99,7 +99,8 @@ pub struct App {
     /// The 2FA verification-code popup, shown before connecting to a `requires_2fa` host.
     pub two_factor: Option<TwoFactorPopup>,
     /// A one-time 2FA code collected for the pending connect; passed to `ssh` after teardown.
-    pub pending_2fa_code: Option<String>,
+    /// Held zeroizing: it is a live secret from the moment it is typed until the handoff.
+    pub pending_2fa_code: Option<zeroize::Zeroizing<String>>,
     /// The dual-pane file-transfer screen, when open.
     pub transfer: Option<transfer::TransferScreen>,
     /// Transient status line (cleared on next keypress).
@@ -893,7 +894,7 @@ fn run_with(start_add: bool) -> Result<()> {
             .is_some();
         // Replaces this process on success; returns only on failure. A 2FA code, if the user
         // entered one in the popup, rides through the askpass helper.
-        let two_fa = app.pending_2fa_code.as_deref();
+        let two_fa = app.pending_2fa_code.as_ref().map(|c| c.as_str());
         // A chain of hops can't be constrained the way one can, so nothing is wired and ssh
         // asks on the terminal instead. Say so before it does (D-029).
         if matches!(

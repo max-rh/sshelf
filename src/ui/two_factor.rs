@@ -1,6 +1,10 @@
 //! The 2FA verification-code popup, shown just before connecting to a host flagged
 //! `requires_2fa`. The code is collected here — while the TUI is still alive — and handed to the
 //! exec'd `ssh` through the askpass helper; sshelf never proxies the live session. See D-022.
+//!
+//! The code is a live secret for the ~30 seconds it is valid, so the field is masked exactly as
+//! the host wizard's password field is, the submitted value travels in a `Zeroizing<String>`,
+//! and whatever was typed is wiped when the popup closes.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -8,6 +12,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+
+use zeroize::Zeroize;
 
 use super::centered;
 use super::widgets::TextField;
@@ -18,7 +24,7 @@ pub enum TwoFactorOutcome {
     Continue,
     Cancel,
     /// Connect now, supplying this one-time code to the verification prompt.
-    Submit(String),
+    Submit(zeroize::Zeroizing<String>),
 }
 
 pub struct TwoFactorPopup {
@@ -54,7 +60,7 @@ impl TwoFactorPopup {
                 if code.is_empty() {
                     self.error = Some("enter the verification code".into());
                 } else {
-                    return TwoFactorOutcome::Submit(code);
+                    return TwoFactorOutcome::Submit(zeroize::Zeroizing::new(code));
                 }
             }
             code => {
@@ -62,6 +68,12 @@ impl TwoFactorPopup {
             }
         }
         TwoFactorOutcome::Continue
+    }
+}
+
+impl Drop for TwoFactorPopup {
+    fn drop(&mut self) {
+        self.code.value.zeroize();
     }
 }
 
@@ -80,10 +92,12 @@ pub fn render(frame: &mut Frame, p: &TwoFactorPopup) {
         .fg(super::accent())
         .add_modifier(Modifier::BOLD);
 
+    // Masked like the wizard's password field: a shoulder or a screen recording gets the
+    // length and nothing else. The hint still shows while the field is empty.
     let value = if p.code.value.is_empty() {
         Span::styled("the code your authenticator app shows", dim)
     } else {
-        Span::raw(p.code.value.clone())
+        Span::raw("•".repeat(p.code.value.chars().count()))
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(LABEL, accent), value])),
@@ -140,7 +154,7 @@ mod tests {
         let mut p = TwoFactorPopup::new(2, "vpn".into());
         type_str(&mut p, "654321");
         match p.handle_key(k(KeyCode::Enter)) {
-            TwoFactorOutcome::Submit(code) => assert_eq!(code, "654321"),
+            TwoFactorOutcome::Submit(code) => assert_eq!(code.as_str(), "654321"),
             _ => panic!("expected Submit"),
         }
         assert_eq!(p.host_idx(), 2);
@@ -184,6 +198,11 @@ mod tests {
             .join("\n");
         assert!(snapshot.contains("2FA · prod-vpn"));
         assert!(snapshot.contains("Verification code:"));
-        assert!(snapshot.contains("123456"));
+        // The digits never reach the screen: only one bullet per character does.
+        assert!(
+            !snapshot.contains("123456"),
+            "the code must be masked:\n{snapshot}"
+        );
+        assert!(snapshot.contains("••••••"));
     }
 }
