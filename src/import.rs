@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ssh2_config::{ParseRule, SshConfig};
 
+use crate::display;
 use crate::model::{AuthMethod, Host, Site, find_site};
 
 /// What an importer produces, whatever its source (`~/.ssh/config`, a tailnet, …): the hosts
@@ -33,7 +34,7 @@ pub fn parse_file(path: &Path) -> Result<ImportResult> {
 }
 
 pub fn parse_str(text: &str) -> Result<ImportResult> {
-    let warnings = scan_unsupported(text);
+    let mut warnings = scan_unsupported(text);
 
     let mut reader = BufReader::new(text.as_bytes());
     let config = SshConfig::default()
@@ -42,12 +43,20 @@ pub fn parse_str(text: &str) -> Result<ImportResult> {
 
     let mut hosts = Vec::new();
     let mut seen = HashSet::new();
+    let mut controls = 0u32;
     for h in config.get_hosts() {
         for clause in &h.pattern {
             if clause.negated || is_wildcard(&clause.pattern) {
                 continue;
             }
             let alias = clause.pattern.clone();
+            // An alias that carries terminal control characters is refused rather than stored:
+            // the plain CLI could only ever print it as U+FFFD, and sshelf's own boundaries
+            // don't write what they can't show (see `crate::display`).
+            if display::has_control(&alias) {
+                controls += 1;
+                continue;
+            }
             if !seen.insert(alias.clone()) {
                 continue;
             }
@@ -65,6 +74,11 @@ pub fn parse_str(text: &str) -> Result<ImportResult> {
             }
             hosts.push(host);
         }
+    }
+    if controls > 0 {
+        warnings.push(format!(
+            "{controls} host(s) skipped: control characters in name"
+        ));
     }
     Ok(ImportResult { hosts, warnings })
 }
@@ -215,6 +229,24 @@ Host behind
         assert_eq!(hosts[1].site.as_deref(), Some("new-net"));
         assert_eq!(hosts[2].site.as_deref(), Some("new-net"));
         assert_eq!(hosts[3].site, None);
+    }
+
+    /// L-02: an alias crafted to repaint the terminal never enters the database, and the
+    /// import summary says how many were left out.
+    #[test]
+    fn an_alias_with_control_characters_is_skipped_and_counted() {
+        let text =
+            "Host good\n    HostName 10.0.0.1\n\nHost ev\u{1b}[2Jil\n    HostName 10.0.0.2\n";
+        let r = parse_str(text).unwrap();
+        assert_eq!(r.hosts.len(), 1);
+        assert_eq!(r.hosts[0].name, "good");
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w == "1 host(s) skipped: control characters in name"),
+            "{:?}",
+            r.warnings
+        );
     }
 
     #[test]

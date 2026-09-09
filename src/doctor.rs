@@ -15,9 +15,14 @@
 //!
 //! Every check is a pure function over already-loaded inputs, so the whole matrix is
 //! fixture-tested without a keyring, a config directory, or an `ssh` binary.
+//!
+//! Host and site names reach the report from `hosts.toml`, so each one is passed through
+//! [`crate::display::sanitize`] where it is interpolated. The *rendered* block is not
+//! sanitized: [`Check::render`] puts the remedy on its own line, and that newline is ours.
 
 use std::path::Path;
 
+use crate::display;
 use crate::model::{AuthMethod, Host, HostsFile};
 
 /// How a single check came out.
@@ -147,7 +152,10 @@ pub fn check_hosts_file(loaded: Result<&HostsFile, &str>, path: &Path) -> Check 
             // summary doesn't repeat it — and a TOML error's caret diagram is folded away, so
             // one check stays one line.
             return Check::fail(
-                format!("host database — could not be read: {}", single_line(e)),
+                format!(
+                    "host database — could not be read: {}",
+                    display::error_line(e)
+                ),
                 "Fix the TOML by hand (the message names the line and column), or move the file \
                  aside and re-import; sshelf never rewrites a file it can't parse.",
             );
@@ -158,10 +166,10 @@ pub fn check_hosts_file(loaded: Result<&HostsFile, &str>, path: &Path) -> Check 
     if !dup_names.is_empty() || !dup_ids.is_empty() {
         let mut parts = Vec::new();
         if !dup_names.is_empty() {
-            parts.push(format!("duplicate name(s): {}", dup_names.join(", ")));
+            parts.push(format!("duplicate name(s): {}", safe_list(&dup_names)));
         }
         if !dup_ids.is_empty() {
-            parts.push(format!("duplicate id(s): {}", dup_ids.join(", ")));
+            parts.push(format!("duplicate id(s): {}", safe_list(&dup_ids)));
         }
         return Check::fail(
             format!("host database — {}", parts.join("; ")),
@@ -180,17 +188,14 @@ pub fn check_hosts_file(loaded: Result<&HostsFile, &str>, path: &Path) -> Check 
     ))
 }
 
-/// Squash a multi-line error into one report line.
-///
-/// `toml`'s parse errors span several lines: a heading, a caret diagram pointing into the
-/// source, then the reason. The diagram lines are the ones containing `|`; dropping them keeps
-/// the two lines that matter (*where* and *what*) and leaves single-line errors untouched.
-fn single_line(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.contains('|'))
+/// Untrusted names, sanitized and joined for one report line. Every list in this module that
+/// comes out of `hosts.toml` or the secret store goes through it.
+fn safe_list(items: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    items
+        .into_iter()
+        .map(|item| display::sanitize(item.as_ref()))
         .collect::<Vec<_>>()
-        .join(" — ")
+        .join(", ")
 }
 
 /// Values that appear more than once, in first-seen order.
@@ -218,7 +223,13 @@ pub fn check_sites(file: &HostsFile) -> Check {
             let site = h.site.as_deref()?;
             crate::model::find_site(&file.sites, site)
                 .is_none()
-                .then(|| format!("{} → \"{site}\"", h.name))
+                .then(|| {
+                    format!(
+                        "{} → \"{}\"",
+                        display::sanitize(&h.name),
+                        display::sanitize(site)
+                    )
+                })
         })
         .collect();
     if dangling.is_empty() {
@@ -230,7 +241,7 @@ pub fn check_sites(file: &HostsFile) -> Check {
         .filter_map(|h| h.site.as_deref())
         .filter(|s| crate::model::find_site(&file.sites, s).is_none())
         .collect();
-    let first = missing.first().copied().unwrap_or("NAME");
+    let first = display::sanitize(missing.first().copied().unwrap_or("NAME"));
     Check::fail(
         format!(
             "sites — {} host(s) point at a site that isn't defined: {}",
@@ -292,7 +303,7 @@ pub fn check_orphaned_secrets(stored: Option<&[String]>, file: &HostsFile) -> Ch
         format!(
             "orphaned secrets — {} stored secret(s) belong to no host: {}",
             orphans.len(),
-            orphans.join(", ")
+            safe_list(&orphans)
         ),
         "Harmless, but they outlive their host: delete the vault file to clear them all, or \
          re-add a host with that id and delete it from the TUI (Ctrl-d), which removes its \
@@ -314,7 +325,7 @@ pub fn check_agent(hosts: &[Host], auth_sock: Option<&str>) -> Check {
     if agent_hosts.is_empty() {
         return Check::ok("ssh-agent — not needed (no host uses agent auth)");
     }
-    let listed = agent_hosts.join(", ");
+    let listed = safe_list(&agent_hosts);
     match auth_sock.filter(|s| !s.is_empty()) {
         None => Check::warn(
             format!(
@@ -360,6 +371,55 @@ pub fn check_export(existing: Option<&str>, fresh: &str, path: &Path) -> Check {
     }
 }
 
+/// What check 8 needs to know about the config directory, measured by the caller so this
+/// module still does no IO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirPermissions {
+    /// The permission bits — `st_mode & 0o777`.
+    pub mode: u32,
+    /// Whether the directory's owner is the user running sshelf.
+    pub owned_by_me: bool,
+}
+
+/// Check 8 — the config directory is private to you. Unix only; elsewhere it isn't reported.
+///
+/// `hosts.toml` holds no password, but it is the inventory of every machine you log into, and
+/// the age vault and the exported ssh_config fragment sit beside it. A directory another local
+/// account can write is one where a host's `extra_args` — executable configuration — can be
+/// rewritten under you, so the next connect runs someone else's `ProxyCommand`. Read-only like
+/// every other check (D-027): this names the `chmod`, it never runs one.
+pub fn check_config_dir_permissions(path: &Path, perms: DirPermissions) -> Check {
+    let mode = perms.mode & 0o777;
+    let mut problems: Vec<&str> = Vec::new();
+    if !perms.owned_by_me {
+        problems.push("owned by another user");
+    }
+    if mode & 0o020 != 0 {
+        problems.push("group-writable");
+    }
+    if mode & 0o002 != 0 {
+        problems.push("world-writable");
+    }
+    if problems.is_empty() {
+        return Check::ok(format!(
+            "config directory permissions — {} is yours, mode {mode:04o}",
+            path.display()
+        ));
+    }
+    Check::warn(
+        format!(
+            "config directory permissions — {} is {} (mode {mode:04o})",
+            path.display(),
+            problems.join(" and ")
+        ),
+        format!(
+            "Run `chmod 700 {}` as its owner — anything that can write that directory can \
+             rewrite your host database, and a host's extra args are executable configuration.",
+            path.display()
+        ),
+    )
+}
+
 /// Everything the report needs, gathered by the caller so every check stays pure.
 pub struct Inputs<'a> {
     pub ssh_version: Option<String>,
@@ -372,6 +432,9 @@ pub struct Inputs<'a> {
     pub export_existing: Option<String>,
     pub export_fresh: String,
     pub export_path: &'a Path,
+    pub config_dir: &'a Path,
+    /// `None` where unix permissions don't exist, or where the directory couldn't be read.
+    pub config_dir_permissions: Option<DirPermissions>,
 }
 
 /// Run every check, in the order they're reported.
@@ -387,6 +450,11 @@ pub fn run(input: &Inputs) -> Vec<Check> {
         ),
         check_secret_backend(input.backend, input.probe.clone()),
     ];
+    // Dropped entirely rather than guessed: a report line that says nothing is worse than no
+    // line at all (and on a non-unix build there is nothing to say).
+    if let Some(perms) = input.config_dir_permissions {
+        checks.push(check_config_dir_permissions(input.config_dir, perms));
+    }
     match &input.hosts {
         Ok(file) => {
             checks.push(check_sites(file));
@@ -439,6 +507,18 @@ mod tests {
 
     fn path() -> PathBuf {
         PathBuf::from("/home/u/.config/sshelf/hosts.toml")
+    }
+
+    fn config_dir() -> PathBuf {
+        PathBuf::from("/home/u/.config/sshelf")
+    }
+
+    /// A private, self-owned config directory — the shape that raises nothing.
+    fn private_dir() -> Option<DirPermissions> {
+        Some(DirPermissions {
+            mode: 0o700,
+            owned_by_me: true,
+        })
     }
 
     #[test]
@@ -526,13 +606,17 @@ mod tests {
     }
 
     #[test]
-    fn single_line_keeps_single_line_errors_intact() {
-        assert_eq!(
-            single_line("Permission denied (os error 13)"),
-            "Permission denied (os error 13)"
+    fn a_parse_error_is_reported_as_one_line() {
+        let check = check_hosts_file(
+            Err("parsing /tmp/hosts.toml: TOML parse error at line 3, column 25\n  |\n3 | oops\n"),
+            Path::new("/tmp/hosts.toml"),
         );
-        assert_eq!(single_line("  padded  \n\n"), "padded");
-        assert_eq!(single_line(""), "");
+        assert!(!check.summary.contains('\n'), "{:?}", check.summary);
+        assert!(
+            check.summary.ends_with("line 3, column 25"),
+            "{:?}",
+            check.summary
+        );
     }
 
     #[test]
@@ -668,8 +752,10 @@ mod tests {
             export_existing: Some("stale".into()),
             export_fresh: "fresh".into(),
             export_path: &PathBuf::from("/x/ssh_config"),
+            config_dir: &config_dir(),
+            config_dir_permissions: private_dir(),
         });
-        assert_eq!(checks.len(), 7);
+        assert_eq!(checks.len(), 8);
         for check in &checks {
             match check.level {
                 Level::Ok => assert!(check.remedy.is_none(), "{check:?}"),
@@ -685,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_hosts_file_reports_once_instead_of_seven_times() {
+    fn an_unreadable_hosts_file_reports_once_instead_of_once_per_check() {
         let checks = run(&Inputs {
             ssh_version: Some("OpenSSH_9.8p1, LibreSSL 3.3.6".into()),
             hosts: Err("parsing hosts.toml: expected `=` at line 4".into()),
@@ -697,8 +783,10 @@ mod tests {
             export_existing: None,
             export_fresh: String::new(),
             export_path: &PathBuf::from("/x/ssh_config"),
+            config_dir: &config_dir(),
+            config_dir_permissions: private_dir(),
         });
-        assert_eq!(checks.len(), 4);
+        assert_eq!(checks.len(), 5);
         assert_eq!(
             checks.iter().filter(|c| c.level == Level::Fail).count(),
             1,
@@ -721,10 +809,117 @@ mod tests {
             export_existing: None,
             export_fresh: String::new(),
             export_path: &PathBuf::from("/x/ssh_config"),
+            config_dir: &config_dir(),
+            config_dir_permissions: private_dir(),
         });
         assert!(healthy(&checks));
         assert!(checks.iter().all(|c| c.remedy.is_none()));
-        assert_eq!(summary(&checks), "0 failed, 0 warning(s), 7 ok");
+        assert_eq!(summary(&checks), "0 failed, 0 warning(s), 8 ok");
+    }
+
+    #[test]
+    fn a_config_directory_another_account_can_touch_is_a_warning() {
+        let dir = config_dir();
+        let mine = |mode| DirPermissions {
+            mode,
+            owned_by_me: true,
+        };
+
+        let private = check_config_dir_permissions(&dir, mine(0o700));
+        assert_eq!(private.level, Level::Ok);
+        assert!(
+            private.summary.starts_with("config directory permissions"),
+            "{private:?}"
+        );
+        assert!(private.summary.contains("0700"), "{private:?}");
+        assert!(private.remedy.is_none());
+
+        let wide_open = check_config_dir_permissions(&dir, mine(0o777));
+        assert_eq!(wide_open.level, Level::Warn);
+        assert!(
+            wide_open.summary.contains("group-writable"),
+            "{wide_open:?}"
+        );
+        assert!(
+            wide_open.summary.contains("world-writable"),
+            "{wide_open:?}"
+        );
+        assert!(wide_open.summary.contains("0777"), "{wide_open:?}");
+        assert!(wide_open.remedy.unwrap().contains("chmod 700"));
+
+        let theirs = check_config_dir_permissions(
+            &dir,
+            DirPermissions {
+                mode: 0o700,
+                owned_by_me: false,
+            },
+        );
+        assert_eq!(theirs.level, Level::Warn);
+        assert!(
+            theirs.summary.contains("owned by another user"),
+            "{theirs:?}"
+        );
+    }
+
+    /// The check is unix-only, so a caller that can't measure the directory leaves it out
+    /// rather than reporting a verdict it didn't take.
+    #[test]
+    fn an_unmeasurable_config_directory_drops_the_check() {
+        let file = file_with(vec![Host::new("web", "10.0.0.1")], vec![]);
+        let checks = run(&Inputs {
+            ssh_version: Some("OpenSSH_9.8p1, LibreSSL 3.3.6".into()),
+            hosts: Ok(&file),
+            hosts_path: &path(),
+            backend: crate::secrets::Backend::Keyring,
+            probe: Ok(()),
+            stored_ids: None,
+            auth_sock: Some("/dev/null".into()),
+            export_existing: None,
+            export_fresh: String::new(),
+            export_path: &PathBuf::from("/x/ssh_config"),
+            config_dir: &config_dir(),
+            config_dir_permissions: None,
+        });
+        assert_eq!(checks.len(), 7);
+        assert!(
+            !checks
+                .iter()
+                .any(|c| c.summary.contains("config directory")),
+            "{checks:?}"
+        );
+    }
+
+    /// L-02: a crafted name reaches the report from `hosts.toml`, so every check that
+    /// interpolates one neutralizes it — while `render` keeps the newline it puts in itself.
+    #[test]
+    fn crafted_names_cannot_repaint_the_report() {
+        let hostile = "web\u{1b}[2J\u{202e}";
+        let mut a = Host::new(hostile, "10.0.0.1");
+        let mut b = Host::new(hostile, "10.0.0.2");
+        a.id = "ID\u{9b}".into();
+        b.id = "ID\u{9b}".into();
+        let duplicated = check_hosts_file(Ok(&file_with(vec![a, b], vec![])), &path());
+        assert!(!duplicated.summary.contains('\u{1b}'), "{duplicated:?}");
+        assert!(!duplicated.summary.contains('\u{9b}'), "{duplicated:?}");
+        assert!(duplicated.summary.contains('\u{fffd}'), "{duplicated:?}");
+
+        let mut dangling = Host::new(hostile, "10.0.0.1");
+        dangling.site = Some("prod\u{1b}[31m".into());
+        let sites = check_sites(&file_with(vec![dangling], vec![]));
+        assert!(!sites.summary.contains('\u{1b}'), "{sites:?}");
+        assert!(!sites.remedy.unwrap().contains('\u{1b}'));
+
+        let agent = check_agent(&[Host::new(hostile, "h")], None);
+        assert!(!agent.summary.contains('\u{1b}'), "{agent:?}");
+
+        let orphans = check_orphaned_secrets(
+            Some(&["GONE\u{1b}[2J".to_string()]),
+            &file_with(vec![], vec![]),
+        );
+        assert!(!orphans.summary.contains('\u{1b}'), "{orphans:?}");
+
+        // The one newline in a rendered block is still sshelf's own.
+        assert_eq!(Check::warn("s", "r").render().lines().count(), 2);
     }
 
     #[test]

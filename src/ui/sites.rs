@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 use super::centered;
 use super::widgets::TextField;
+use crate::display;
 use crate::model::Site;
 
 /// Form fields, in display order: (label, placeholder).
@@ -235,6 +236,11 @@ impl SiteForm {
         let name = self.fields[0].value.trim().to_string();
         if name.is_empty() {
             return Err("Name is required".into());
+        }
+        // `sshelf sites` prints every one of these straight to a terminal, so a control
+        // character is refused here rather than stored (`crate::display`).
+        if self.fields.iter().any(|f| display::has_control(&f.value)) {
+            return Err(display::CONTROL_REJECTED.into());
         }
         let dup = existing
             .iter()
@@ -517,6 +523,26 @@ mod tests {
         // The form stays open with an error; the site list is unchanged.
         assert!(matches!(m.mode, Mode::Form(_)));
         assert_eq!(m.sites.len(), 1);
+    }
+
+    /// L-02: the site form is the other boundary sshelf owns.
+    #[test]
+    fn a_name_with_control_characters_is_refused() {
+        let mut m = SitesManager::new(vec![]);
+        m.handle_key(k(KeyCode::Char('a'))); // open the add form
+        let Mode::Form(form) = &mut m.mode else {
+            panic!("the add form should be open");
+        };
+        form.fields[0] = TextField::with("dc\u{1b}[2J");
+        m.handle_key(ctrl(KeyCode::Char('s')));
+        match &m.mode {
+            Mode::Form(form) => assert_eq!(
+                form.error.as_deref(),
+                Some("control characters are not allowed")
+            ),
+            _ => panic!("the form stays open on a validation error"),
+        }
+        assert!(m.sites.is_empty(), "nothing is stored");
     }
 
     #[test]

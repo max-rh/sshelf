@@ -22,6 +22,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use super::browse::{self, BrowseOutcome, FileBrowser};
 use super::centered;
 use super::widgets::TextField;
+use crate::display;
 use crate::model::{AuthMethod, Host};
 
 /// Columns before a field's value: marker(2) + padded label(14) + space(1).
@@ -466,6 +467,15 @@ impl Wizard {
         if hostname.is_empty() {
             return self.fail("Hostname is required", Field::Hostname);
         }
+        // The plain CLI prints these fields straight to a terminal, so a control character in
+        // one is refused here rather than stored (`crate::display`). Editing a host imported
+        // from a crafted `~/.ssh/config` is how a value like that reaches the form.
+        if let Some(field) = self.active().into_iter().find(|f| {
+            self.text_field(*f)
+                .is_some_and(|t| display::has_control(&t.value))
+        }) {
+            return self.fail(display::CONTROL_REJECTED, field);
+        }
         let port = {
             let t = self.port.value.trim();
             if t.is_empty() {
@@ -905,6 +915,37 @@ mod tests {
         let mut w = with_keys(&[]);
         assert!(matches!(w.try_save(), WizardOutcome::Continue));
         assert!(w.error.is_some());
+    }
+
+    /// L-02: the form is one of the two boundaries sshelf owns, so it refuses what the
+    /// plain CLI could only print as U+FFFD.
+    #[test]
+    fn a_name_with_control_characters_is_refused() {
+        let mut w = with_keys(&[]);
+        w.name = TextField::with("web\u{1b}[2J");
+        w.hostname = TextField::with("10.0.0.1");
+        assert!(matches!(w.try_save(), WizardOutcome::Continue));
+        assert_eq!(
+            w.error.as_deref(),
+            Some("control characters are not allowed")
+        );
+        assert!(
+            w.active()[w.focus] == Field::Name,
+            "focus moves to the offending field"
+        );
+
+        // A bidirectional override is refused the same way, wherever it sits.
+        w.name = TextField::with("web");
+        w.tags = TextField::with("prod\u{202e}");
+        assert!(matches!(w.try_save(), WizardOutcome::Continue));
+        assert_eq!(
+            w.error.as_deref(),
+            Some("control characters are not allowed")
+        );
+
+        // Clean values still save.
+        w.tags = TextField::with("prod");
+        assert!(matches!(w.try_save(), WizardOutcome::Save { .. }));
     }
 
     #[test]

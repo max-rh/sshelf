@@ -17,6 +17,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::display;
 use crate::import::ImportResult;
 use crate::model::Host;
 
@@ -108,16 +109,33 @@ pub fn parse_status_json(text: &str) -> Result<ImportResult> {
              empty) — check `tailscale status` and make sure this machine is fully logged in"
         );
     }
-    let site = if tailnet.name.is_empty() {
-        first_label(&suffix).to_string()
-    } else {
-        tailnet.name.clone()
+    let mut warnings: Vec<String> = Vec::new();
+    // The site name is not just printed — `import::missing_sites` turns it into a `[[site]]`
+    // record in `hosts.toml`, and the site form refuses control characters, so an unchecked
+    // `CurrentTailnet.Name` would write a record sshelf itself could no longer edit. The
+    // MagicDNS suffix is the fallback, and it is checked too: both come from the same JSON.
+    let site = match tailnet.name.trim() {
+        "" => first_label(&suffix).to_string(),
+        name if display::has_control(name) => {
+            warnings.push(
+                "the tailnet's name carries terminal control characters — named the site after \
+                 its MagicDNS suffix instead"
+                    .to_string(),
+            );
+            first_label(&suffix).to_string()
+        }
+        name => name.to_string(),
     };
+    if display::has_control(&site) {
+        bail!(
+            "the tailnet's name and its MagicDNS suffix both carry terminal control characters \
+             — nothing was imported; check what `tailscale status --json` reports"
+        );
+    }
 
     let mut hosts: Vec<Host> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let (mut foreign, mut expired, mut unusable) = (0usize, 0usize, 0usize);
+    let (mut foreign, mut expired, mut unusable, mut controls) = (0usize, 0usize, 0usize, 0usize);
 
     for peer in status.peer.unwrap_or_default().values() {
         if peer.expired.unwrap_or(false) {
@@ -139,6 +157,12 @@ pub fn parse_status_json(text: &str) -> Result<ImportResult> {
             unusable += 1;
             continue;
         };
+        // A peer name that carries terminal control characters is left out rather than
+        // stored: the plain CLI could only ever print it as U+FFFD (see `crate::display`).
+        if display::has_control(&name) {
+            controls += 1;
+            continue;
+        }
         if !seen.insert(name.clone()) {
             warnings.push(format!(
                 "two peers map to the name {name:?} — kept the first, skipped the other"
@@ -153,7 +177,7 @@ pub fn parse_status_json(text: &str) -> Result<ImportResult> {
     // MagicDNS names are unique inside a tailnet, so this is a stable, tidy order.
     hosts.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let excluded = foreign + expired + unusable;
+    let excluded = foreign + expired + unusable + controls;
     if excluded > 0 {
         let mut parts = Vec::new();
         if foreign > 0 {
@@ -164,6 +188,9 @@ pub fn parse_status_json(text: &str) -> Result<ImportResult> {
         }
         if unusable > 0 {
             parts.push(format!("{unusable} with no usable name or address"));
+        }
+        if controls > 0 {
+            parts.push(format!("{controls} skipped: control characters in name"));
         }
         warnings.insert(
             0,
@@ -439,6 +466,82 @@ mod tests {
         assert!(w.starts_with("3 peer(s) excluded"), "{w}");
         assert!(w.contains("2 outside this tailnet"), "{w}");
         assert!(w.contains("1 with an expired node key"), "{w}");
+    }
+
+    /// L-02: a peer whose MagicDNS label carries terminal control characters never enters the
+    /// database, and the excluded count says so.
+    #[test]
+    fn a_peer_name_with_control_characters_is_skipped_and_counted() {
+        let json = r#"{
+          "BackendState": "Running",
+          "CurrentTailnet": {
+            "Name": "homelab",
+            "MagicDNSSuffix": "tail4f9a2.ts.net",
+            "MagicDNSEnabled": true
+          },
+          "Peer": {
+            "nodekey:aa": {
+              "HostName": "nas",
+              "DNSName": "nas.tail4f9a2.ts.net.",
+              "TailscaleIPs": ["100.64.0.11"]
+            },
+            "nodekey:bb": {
+              "HostName": "evil",
+              "DNSName": "ev\u001b[2Jil.tail4f9a2.ts.net.",
+              "TailscaleIPs": ["100.64.0.12"]
+            }
+          }
+        }"#;
+        let r = parse_status_json(json).unwrap();
+        let names: Vec<&str> = r.hosts.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["nas"]);
+        let w = &r.warnings[0];
+        assert!(w.starts_with("1 peer(s) excluded"), "{w}");
+        assert!(w.contains("1 skipped: control characters in name"), "{w}");
+    }
+
+    /// L-02: the site name is a record sshelf writes, so a crafted `CurrentTailnet.Name`
+    /// falls back to the MagicDNS suffix instead of being persisted.
+    #[test]
+    fn a_tailnet_name_with_control_characters_falls_back_to_the_suffix() {
+        let json = r#"{
+          "BackendState": "Running",
+          "CurrentTailnet": {
+            "Name": "corp\u001b[2J",
+            "MagicDNSSuffix": "tail4f9a2.ts.net",
+            "MagicDNSEnabled": true
+          },
+          "Peer": {
+            "nodekey:aa": {
+              "HostName": "nas",
+              "DNSName": "nas.tail4f9a2.ts.net.",
+              "TailscaleIPs": ["100.64.0.11"]
+            }
+          }
+        }"#;
+        let r = parse_status_json(json).unwrap();
+        assert_eq!(r.hosts[0].site.as_deref(), Some("tail4f9a2"));
+        assert!(
+            r.warnings.iter().any(|w| w.contains("MagicDNS suffix")),
+            "{:?}",
+            r.warnings
+        );
+    }
+
+    /// …and when the suffix is crafted too there is no clean name left, so nothing is imported.
+    #[test]
+    fn a_crafted_name_and_suffix_import_nothing() {
+        let json = r#"{
+          "BackendState": "Running",
+          "CurrentTailnet": {
+            "Name": "corp\u001b[2J",
+            "MagicDNSSuffix": "tail\u001b[2J.ts.net",
+            "MagicDNSEnabled": true
+          },
+          "Peer": {}
+        }"#;
+        let e = format!("{:#}", parse_status_json(json).unwrap_err());
+        assert!(e.contains("both carry terminal control characters"), "{e}");
     }
 
     #[test]

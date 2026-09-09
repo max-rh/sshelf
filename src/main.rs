@@ -8,6 +8,7 @@
 mod app;
 mod askpass;
 mod config;
+mod display;
 mod doctor;
 mod export;
 mod forwards;
@@ -26,13 +27,17 @@ mod transfer;
 mod ui;
 mod vault;
 
-use std::path::PathBuf;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::CompleteEnv;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::config::Config;
 use crate::model::{AuthMethod, Host, Site};
@@ -288,7 +293,23 @@ impl AddArgs {
     }
 }
 
-fn main() -> Result<()> {
+/// The process entry point exists only to print the error safely.
+///
+/// Not `fn main() -> Result<()>`: the runtime's own printer writes the `anyhow` chain to the
+/// terminal unfiltered, and that chain quotes untrusted text — a `toml` parse error repeats
+/// the offending line of `hosts.toml` verbatim, escape sequences and all. Every plain-CLI
+/// command shares this one exit, so sanitizing here covers all of them (L-02).
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {}", display::error_line(&format!("{e:#}")));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     // ssh invokes us as `sshelf "<prompt>"` with SSHELF_ASKPASS=1 in the environment.
     // Checked before clap, since the prompt is a positional arg, not a flag.
     if std::env::var_os("SSHELF_ASKPASS").is_some() {
@@ -401,7 +422,7 @@ fn cmd_import(dry_run: bool, tailscale: bool) -> Result<()> {
 /// reference, persist, and refresh the exported ssh_config fragment.
 fn apply_import(result: import::ImportResult, dry_run: bool) -> Result<()> {
     for w in &result.warnings {
-        println!("  warning: {w}");
+        println!("  warning: {}", display::sanitize(w));
     }
 
     let paths = Paths::resolve()?;
@@ -430,10 +451,14 @@ fn apply_import(result: import::ImportResult, dry_run: bool) -> Result<()> {
     let preview_sites: Vec<Site> = file.sites.iter().chain(new_sites.iter()).cloned().collect();
     println!("{} new host(s):", to_add.len());
     for h in &to_add {
-        println!("  {:<20} {}", h.name, h.endpoint_in(&preview_sites));
+        println!(
+            "  {:<20} {}",
+            display::sanitize(&h.name),
+            display::sanitize(&h.endpoint_in(&preview_sites))
+        );
     }
     for s in &new_sites {
-        println!("  + site '{}'", s.name);
+        println!("  + site '{}'", display::sanitize(&s.name));
     }
     if dry_run {
         println!("(dry run — nothing written)");
@@ -479,7 +504,10 @@ fn cmd_export(stdout: bool) -> Result<()> {
         display
     );
     for name in &skipped {
-        println!("  skipped {name:?} — the name can't be an ssh_config Host pattern");
+        println!(
+            "  skipped {:?} — the name can't be an ssh_config Host pattern",
+            display::sanitize(name)
+        );
     }
     if file.hosts.is_empty() {
         println!("(no hosts yet — `sshelf add` or `sshelf import` first)");
@@ -537,11 +565,15 @@ fn cmd_set_password(host_ref: &str) -> Result<()> {
         anyhow::bail!(
             "nothing on stdin — nothing stored; pipe the password in, e.g. \
              `printf %s \"$PASS\" | sshelf set-password {}`",
-            host.name
+            display::sanitize(&host.name)
         );
     }
     secrets::store_password(&paths.vault_file(), &host.id, password)?;
-    println!("stored password for \"{}\" ({})", host.name, host.id);
+    println!(
+        "stored password for \"{}\" ({})",
+        display::sanitize(&host.name),
+        display::sanitize(&host.id)
+    );
     Ok(())
 }
 
@@ -600,21 +632,24 @@ fn cmd_list(query: &str, json: bool) -> Result<()> {
 
 /// One plain-output `sshelf list` row: `name  user@host:port  auth  ·site·  [tags]`. The
 /// endpoint resolves the host's site defaults, so an inherited user is the one printed.
+///
+/// Every field here comes out of `hosts.toml` and goes straight to a terminal, so every one of
+/// them is sanitized first — only the auth method is sshelf's own word (see [`display`]).
 fn list_row(h: &Host, sites: &[Site]) -> String {
     let site = h
         .site
         .as_deref()
-        .map(|s| format!("  ·{s}·"))
+        .map(|s| format!("  ·{}·", display::sanitize(s)))
         .unwrap_or_default();
     let tags = if h.tags.is_empty() {
         String::new()
     } else {
-        format!("  [{}]", h.tags.join(", "))
+        format!("  [{}]", display::sanitize(&h.tags.join(", ")))
     };
     format!(
         "{:<20}  {:<28}  {}{}{}",
-        h.name,
-        h.endpoint_in(sites),
+        display::sanitize(&h.name),
+        display::sanitize(&h.endpoint_in(sites)),
         h.auth.as_str(),
         site,
         tags
@@ -659,12 +694,13 @@ fn cmd_add(args: AddArgs) -> Result<()> {
     if file.hosts.iter().any(|h| h.name == host.name) {
         anyhow::bail!(
             "a host named '{}' already exists — pick another name (or edit it in the TUI)",
-            host.name
+            display::sanitize(&host.name)
         );
     }
     if let Some(site) = &host.site
         && crate::model::find_site(&file.sites, site).is_none()
     {
+        let site = display::sanitize(site);
         println!(
             "note: site '{site}' isn't defined yet — add it with `sshelf sites add {site}` (or F3 in the TUI)"
         );
@@ -698,6 +734,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
     if let Some(s) = &secret {
         secrets::store_password(&paths.vault_file(), &id, s)?;
     }
+    let name = display::sanitize(&name);
     println!("added '{name}' ({id})");
     if auth == AuthMethod::Password && secret.is_none() {
         println!(
@@ -714,7 +751,18 @@ fn cmd_add(args: AddArgs) -> Result<()> {
 /// (`secrets::probe`), which round-trips a throwaway entry and deletes it again.
 fn cmd_doctor() -> Result<()> {
     let paths = Paths::resolve()?;
-    paths.ensure_dirs()?;
+    // Measured BEFORE `ensure_dirs`, which chmods the directory to 0700: read afterwards, the
+    // check could only ever confirm the mode sshelf had just forced.
+    let config_dir_permissions = config_dir_permissions(&paths.config_dir);
+    // And best-effort, because on a directory owned by another user the chmod fails with
+    // EPERM — which is precisely the state the report below exists to explain, not a reason to
+    // abort before printing it.
+    if let Err(e) = paths.ensure_dirs() {
+        eprintln!(
+            "sshelf: warning: {}",
+            display::error_line(&format!("{e:#}"))
+        );
+    }
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
     let hosts_path = cfg.hosts_path(&paths);
@@ -740,6 +788,8 @@ fn cmd_doctor() -> Result<()> {
         export_existing: std::fs::read_to_string(&export_path).ok(),
         export_fresh,
         export_path: &export_path,
+        config_dir: &paths.config_dir,
+        config_dir_permissions,
     });
 
     println!("sshelf doctor — checking this machine and your host database\n");
@@ -754,6 +804,27 @@ fn cmd_doctor() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// The config directory's permission bits plus whether its owner is the user running sshelf.
+///
+/// A `stat`, and nothing else — `doctor` stays read-only (D-027). `None` means the check is
+/// left out of the report: on a platform without unix permissions there is nothing to say, and
+/// on a directory that can't be read a verdict would be invented rather than measured.
+#[cfg(unix)]
+fn config_dir_permissions(dir: &Path) -> Option<doctor::DirPermissions> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(dir).ok()?;
+    Some(doctor::DirPermissions {
+        mode: meta.mode() & 0o777,
+        // SAFETY: `getuid` always succeeds, takes no argument, and touches no memory.
+        owned_by_me: meta.uid() == unsafe { libc::getuid() },
+    })
+}
+
+#[cfg(not(unix))]
+fn config_dir_permissions(_dir: &Path) -> Option<doctor::DirPermissions> {
+    None
 }
 
 /// `ssh -V`, which OpenSSH prints on **stderr**. `None` if the binary can't be run at all.
@@ -827,7 +898,12 @@ fn cmd_sites_list(json: bool) -> Result<()> {
         } else {
             parts.join("  ")
         };
-        println!("{:<20}  {} host(s)  {}", s.name, members, defaults);
+        println!(
+            "{:<20}  {} host(s)  {}",
+            display::sanitize(&s.name),
+            members,
+            display::sanitize(&defaults)
+        );
     }
     Ok(())
 }
@@ -847,8 +923,9 @@ fn cmd_sites_add(
     let mut file = store::load_hosts(&hosts_path)?;
     if crate::model::find_site(&file.sites, &name).is_some() {
         anyhow::bail!(
-            "a site named '{name}' already exists — pick another name, or edit that one with F3 \
-             in the TUI"
+            "a site named '{}' already exists — pick another name, or edit that one with F3 \
+             in the TUI",
+            display::sanitize(&name)
         );
     }
     file.sites.push(Site {
@@ -861,7 +938,7 @@ fn cmd_sites_add(
     store::save_hosts(&hosts_path, &file)?;
     // Site defaults are resolved into the exported blocks, so a new site refreshes it too.
     warn_export_refresh(export::refresh_if_exported(&paths, &file));
-    println!("added site '{name}'");
+    println!("added site '{}'", display::sanitize(&name));
     Ok(())
 }
 
@@ -887,10 +964,10 @@ fn cmd_connect(host_ref: &str) -> Result<()> {
         if order.is_empty() {
             anyhow::bail!("no host named '{host_ref}' — run `sshelf list` to see your hosts");
         }
-        let names: Vec<&str> = order
+        let names: Vec<String> = order
             .iter()
             .take(5)
-            .map(|&i| hosts[i].name.as_str())
+            .map(|&i| display::sanitize(&hosts[i].name))
             .collect();
         anyhow::bail!(
             "no host named '{host_ref}' — did you mean: {}",
@@ -931,8 +1008,20 @@ fn connect(host: &Host, paths: &Paths) -> Result<()> {
         .ok()
         .flatten()
         .is_some();
-    // Replaces this process on success; returns only on failure.
-    let code = prompt_2fa_code(host);
+    let code = match prompt_2fa_code(host) {
+        CodePrompt::None => None,
+        CodePrompt::Code(code) => Some(code),
+        // In raw mode Ctrl-C is a key press, not a signal, so the abort it used to mean has to
+        // be done by hand — and it has to happen *before* the exec, or backing out of the
+        // prompt would connect anyway. 130 is the shell's code for "interrupted".
+        CodePrompt::Cancelled => {
+            eprintln!(
+                "cancelled — not connecting to {}",
+                display::sanitize(&host.name)
+            );
+            std::process::exit(130);
+        }
+    };
     // A chain of hops can't be constrained the way one can, so nothing is wired and ssh asks
     // on the terminal instead. Say so before it does (D-029).
     if matches!(
@@ -941,25 +1030,162 @@ fn connect(host: &Host, paths: &Paths) -> Result<()> {
     ) {
         eprintln!("sshelf: {}", ssh::MULTI_HOP_NOTICE);
     }
-    Err(ssh::exec_connect(host, has_secret, code.as_deref()))
+    // Replaces this process on success; returns only on failure. The code stays in its
+    // zeroizing buffer right up to the handoff.
+    Err(ssh::exec_connect(
+        host,
+        has_secret,
+        code.as_deref().map(String::as_str),
+    ))
+}
+
+/// How asking for a one-time code ended.
+///
+/// Cancelling is deliberately not the same as "no code": before this prompt read with echo
+/// off, Ctrl-C raised SIGINT and killed sshelf outright, and a user who realises mid-code that
+/// they are pointed at the wrong host must still be able to stop rather than be exec'd into it.
+enum CodePrompt {
+    /// Not a 2FA host, or nothing usable was read — connect without a code.
+    None,
+    /// The code the user typed.
+    Code(Zeroizing<String>),
+    /// Esc, Ctrl-C or Ctrl-D: back out without connecting.
+    Cancelled,
 }
 
 /// For a host flagged `requires_2fa`, prompt on the terminal for the one-time code before the
-/// `exec()` handoff (the CLI has no TUI popup). Returns `None` for non-2FA hosts or on read error.
-fn prompt_2fa_code(host: &Host) -> Option<String> {
+/// `exec()` handoff (the CLI has no TUI popup). [`CodePrompt::None`] for non-2FA hosts and when
+/// the read fails; [`CodePrompt::Cancelled`] when the user backs out.
+///
+/// On a terminal the code is read with echo **off**, so it never reaches scrollback, a
+/// terminal log, or a screen recording. A piped stdin keeps the plain line read, because
+/// scripts feed the code in that way. Either way the value lives in a zeroizing buffer until
+/// the connect path takes it — it still crosses to `ssh` through the environment, which is the
+/// trade-off D-022 documents and does not change here.
+fn prompt_2fa_code(host: &Host) -> CodePrompt {
     if !host.requires_2fa {
-        return None;
+        return CodePrompt::None;
     }
     use std::io::Write;
-    eprint!("Verification code for {}: ", host.name);
+    eprint!("Verification code for {}: ", display::sanitize(&host.name));
     let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(n) if n > 0 => {
-            let code = line.trim().to_string();
-            (!code.is_empty()).then_some(code)
+    let code = if std::io::stdin().is_terminal() {
+        read_code_hidden()
+    } else {
+        read_code_piped()
+    };
+    // Nothing echoed the Enter that ended the code (and a pipe never sends one), so the next
+    // thing printed would otherwise land on the prompt line.
+    eprintln!();
+    match code {
+        // An empty code is the user pressing Enter at the prompt: nothing to pass on, but not
+        // a cancel either.
+        CodePrompt::Code(c) if c.is_empty() => CodePrompt::None,
+        other => other,
+    }
+}
+
+/// Read the code from a terminal with echo off, one key event at a time.
+///
+/// Nothing is echoed, so there is no cursor to maintain: Backspace simply drops the last
+/// character. Esc, Ctrl-C and Ctrl-D cancel — in raw mode none of the three reaches the
+/// terminal driver, so each one has to be handled as an ordinary key press.
+fn read_code_hidden() -> CodePrompt {
+    use ratatui::crossterm::event::{self, Event, KeyEventKind};
+    use ratatui::crossterm::terminal::enable_raw_mode;
+
+    // A terminal that won't go into raw mode is one this can't read from safely; the connect
+    // goes ahead without a code rather than pretending the user backed out.
+    if enable_raw_mode().is_err() {
+        return CodePrompt::None;
+    }
+    let _cooked = CookedMode;
+    // Sized up front, so a growing code doesn't leave older copies of itself behind in
+    // reallocated buffers that nothing will zero.
+    let mut code = Zeroizing::new(String::with_capacity(32));
+    loop {
+        let Ok(event) = event::read() else {
+            return CodePrompt::None;
+        };
+        let Event::Key(key) = event else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
         }
-        _ => None,
+        match code_edit(key) {
+            CodeEdit::Push(c) => code.push(c),
+            CodeEdit::Backspace => {
+                code.pop();
+            }
+            CodeEdit::Accept => return CodePrompt::Code(code),
+            CodeEdit::Cancel => return CodePrompt::Cancelled,
+            CodeEdit::Ignore => {}
+        }
+    }
+}
+
+/// The piped fallback: a script feeds the code on stdin, where there is no echo to turn off.
+/// EOF with nothing typed is the pipe running dry, not a user backing out, so it connects
+/// without a code exactly as it did before.
+fn read_code_piped() -> CodePrompt {
+    let mut line = Zeroizing::new(String::new());
+    match std::io::stdin().read_line(&mut line) {
+        Ok(n) if n > 0 => CodePrompt::Code(Zeroizing::new(line.trim().to_string())),
+        _ => CodePrompt::None,
+    }
+}
+
+/// The fifth hard invariant in miniature: raw mode is undone however the read ends — a return,
+/// an unreadable event, or a panic unwinding through it — so the terminal is never left with
+/// echo off.
+struct CookedMode;
+
+impl Drop for CookedMode {
+    fn drop(&mut self) {
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+    }
+}
+
+/// What one key press does to the code being typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeEdit {
+    /// Append this character.
+    Push(char),
+    /// Drop the last character.
+    Backspace,
+    /// Enter — the code is complete.
+    Accept,
+    /// Esc, Ctrl-C or Ctrl-D — back out; nothing connects.
+    Cancel,
+    /// Arrows, function keys, other chords: no effect.
+    Ignore,
+}
+
+/// Map a key press to its edit. Split out of [`read_code_hidden`] so the editing rules are
+/// testable without a terminal; the reader around them is verified by hand.
+///
+/// Chords other than Ctrl-C and Ctrl-D are ignored rather than typed, so a reflexive Ctrl-v
+/// can't end up inside the code. Shift is not a chord — it's how an uppercase character
+/// arrives.
+fn code_edit(key: KeyEvent) -> CodeEdit {
+    match key.code {
+        KeyCode::Enter => CodeEdit::Accept,
+        KeyCode::Esc => CodeEdit::Cancel,
+        // Ctrl-C is the interrupt raw mode swallowed; Ctrl-D is the EOF the old `read_line`
+        // answered. Both have to end the prompt, or it hangs with no way out.
+        KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            CodeEdit::Cancel
+        }
+        KeyCode::Backspace => CodeEdit::Backspace,
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            CodeEdit::Push(c)
+        }
+        _ => CodeEdit::Ignore,
     }
 }
 
@@ -994,10 +1220,18 @@ fn host_name_candidates() -> Vec<CompletionCandidate> {
     }
 }
 
+/// The shell writes the description straight to the terminal, so the help text is sanitized.
+/// The candidate **value** is not: it is what the shell inserts on the command line and what
+/// `sshelf <name>` then has to resolve, so it stays exactly as stored — mangling it would
+/// complete to a name no host has, the machine-readable half of the same rule that leaves
+/// `--json` alone.
 fn host_candidates_from(hosts: &[Host], sites: &[Site]) -> Vec<CompletionCandidate> {
     hosts
         .iter()
-        .map(|h| CompletionCandidate::new(&h.name).help(Some(h.endpoint_in(sites).into())))
+        .map(|h| {
+            CompletionCandidate::new(&h.name)
+                .help(Some(display::sanitize(&h.endpoint_in(sites)).into()))
+        })
         .collect()
 }
 
@@ -1013,6 +1247,7 @@ fn site_name_candidates() -> Vec<CompletionCandidate> {
         Ok(file) => file
             .sites
             .iter()
+            // As stored: the value is what `--site` has to match (see `host_candidates_from`).
             .map(|s| CompletionCandidate::new(&s.name))
             .collect(),
         Err(_) => Vec::new(),
@@ -1353,6 +1588,74 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("deploy@10.0.0.1")
+        );
+    }
+
+    /// L-02: a crafted `hosts.toml` can't move the cursor through `sshelf list`, while the
+    /// JSON contract keeps handing scripts the value exactly as it is stored.
+    #[test]
+    fn a_crafted_host_is_neutralised_in_the_plain_row_but_not_in_json() {
+        let crafted = "web\u{1b}[2J\u{202e}";
+        let mut h = Host::new(crafted, "10.0.0.1\u{9b}6n");
+        h.tags = vec!["prod\u{85}".into()];
+        h.site = Some("dc\u{1b}[31m".into());
+
+        let row = list_row(&h, &[]);
+        for bad in ['\u{1b}', '\u{9b}', '\u{85}', '\u{202e}'] {
+            assert!(!row.contains(bad), "{bad:?} survived into {row:?}");
+        }
+        assert!(row.contains('\u{fffd}'), "{row:?}");
+        // The row is still a row: the readable text around the escapes is untouched.
+        assert!(row.contains("web"), "{row:?}");
+        assert!(row.contains("agent"), "{row:?}");
+
+        // Completion help is written to the terminal by the shell, so it's sanitized too —
+        // but the candidate *value* is what the shell types back, so it stays as stored.
+        let candidates = host_candidates_from(std::slice::from_ref(&h), &[]);
+        let help = candidates[0].get_help().unwrap().to_string();
+        assert!(!help.contains('\u{1b}'), "{help:?}");
+        assert_eq!(candidates[0].get_value(), std::ffi::OsStr::new(crafted));
+
+        // …and the machine-readable path is byte-for-byte what was stored.
+        let json = hosts_to_json(&[&h], &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["name"], crafted);
+        assert_eq!(parsed[0]["hostname"], "10.0.0.1\u{9b}6n");
+        assert!(
+            !json.contains('\u{1b}'),
+            "the serializer escapes it on the way out: {json}"
+        );
+    }
+
+    /// L-07: the editing rules of the CLI's echo-off 2FA reader, without a terminal.
+    #[test]
+    fn typing_a_verification_code_maps_keys_to_edits() {
+        let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert_eq!(code_edit(plain(KeyCode::Char('4'))), CodeEdit::Push('4'));
+        assert_eq!(code_edit(plain(KeyCode::Backspace)), CodeEdit::Backspace);
+        assert_eq!(code_edit(plain(KeyCode::Enter)), CodeEdit::Accept);
+        assert_eq!(code_edit(plain(KeyCode::Esc)), CodeEdit::Cancel);
+        // In raw mode Ctrl-C is a key press, not a signal — it has to cancel by hand.
+        assert_eq!(
+            code_edit(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            CodeEdit::Cancel
+        );
+        // Ctrl-D is the EOF the old `read_line` answered; raw mode swallows it, so it has to
+        // cancel by hand or the prompt has no way out.
+        assert_eq!(
+            code_edit(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            CodeEdit::Cancel
+        );
+        // Other chords and navigation keys don't end up inside the code.
+        assert_eq!(
+            code_edit(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+            CodeEdit::Ignore
+        );
+        assert_eq!(code_edit(plain(KeyCode::Left)), CodeEdit::Ignore);
+        // Shift is not a chord: it is how an uppercase character arrives.
+        assert_eq!(
+            code_edit(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            CodeEdit::Push('A')
         );
     }
 
