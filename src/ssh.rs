@@ -90,7 +90,11 @@ fn parse_jump(s: &str) -> Option<JumpTarget<'_>> {
             None => (rest, None),
         }
     };
-    (!host.is_empty()).then_some(JumpTarget { user, host, port })
+    // A leading `-` in either position would be read by `ssh` as an option rather than as a
+    // name. Nothing in the allowlist makes that dangerous on its own, but a hostname is not an
+    // option, so refuse it and take the terminal path instead.
+    let dashed = host.starts_with('-') || user.is_some_and(|u| u.starts_with('-'));
+    (!host.is_empty() && !dashed).then_some(JumpTarget { user, host, port })
 }
 
 /// The `ProxyCommand` for one hop. `BatchMode=yes` alone disables password prompts; the two
@@ -890,6 +894,7 @@ mod tests {
             "bastion:notaport",
             "2001:db8::1",
             "@bastion",
+            "-A",
         ] {
             h.jump_hosts = vec![jump.to_string()];
             assert_eq!(
@@ -917,6 +922,10 @@ mod tests {
         assert_eq!((j.user, j.host, j.port), (None, "2001:db8::1", Some(2222)));
         assert!(parse_jump("").is_none());
         assert!(parse_jump("host:99999").is_none());
+        // Neither part may look like an option to `ssh`.
+        assert!(parse_jump("-A").is_none());
+        assert!(parse_jump("-oSomething").is_none());
+        assert!(parse_jump("-l@host").is_none());
     }
 
     #[test]
