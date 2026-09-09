@@ -655,7 +655,7 @@ impl App {
         // argv), so don't ask the keyring anything we won't use.
         let has_code = self.pending_2fa_code.is_some();
         let wire_askpass = !has_code && self.has_secret(&host.id);
-        if let Err(reason) = ssh::tmux_fallback(wire_askpass, has_code) {
+        if let Err(reason) = ssh::tmux_fallback(&host, wire_askpass, has_code) {
             self.connect_note = Some(reason.message().to_string());
             return self.queue_exec_connect(idx);
         }
@@ -894,6 +894,14 @@ fn run_with(start_add: bool) -> Result<()> {
         // Replaces this process on success; returns only on failure. A 2FA code, if the user
         // entered one in the popup, rides through the askpass helper.
         let two_fa = app.pending_2fa_code.as_deref();
+        // A chain of hops can't be constrained the way one can, so nothing is wired and ssh
+        // asks on the terminal instead. Say so before it does (D-029).
+        if matches!(
+            ssh::jump_plan(&host, has_secret || two_fa.is_some()),
+            ssh::JumpPlan::Terminal
+        ) {
+            eprintln!("sshelf: {}", ssh::MULTI_HOP_NOTICE);
+        }
         return Err(ssh::exec_connect(&host, has_secret, two_fa));
     }
     Ok(())
@@ -1143,7 +1151,10 @@ mod tests {
         // No tmux window: the code would have had to ride tmux's argv.
         assert_eq!(app.pending_connect, Some(1));
         assert!(app.should_quit);
-        assert_eq!(app.pending_2fa_code.as_deref(), Some("654321"));
+        assert_eq!(
+            app.pending_2fa_code.as_ref().map(|c| c.as_str()),
+            Some("654321")
+        );
         let note = app.connect_note.expect("the skipped window is explained");
         assert!(note.starts_with("2FA host — connecting here"), "{note}");
     }
@@ -1158,7 +1169,10 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert!(app.two_factor.is_none());
         assert_eq!(app.pending_connect, Some(1));
-        assert_eq!(app.pending_2fa_code.as_deref(), Some("654321"));
+        assert_eq!(
+            app.pending_2fa_code.as_ref().map(|c| c.as_str()),
+            Some("654321")
+        );
         assert!(app.should_quit);
     }
 

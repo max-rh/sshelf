@@ -47,7 +47,7 @@ pub fn target(host: &Host) -> String {
 /// `-N` holds the connection without a remote command; the master is created at `control_path`
 /// and [`crate::ssh::build_args`] is reused verbatim so keys/agent/ProxyJump/port and the
 /// stored secret (via `SSH_ASKPASS`, wired by the caller) all apply exactly as on connect.
-pub fn master_args(host: &Host, control_path: &Path) -> Vec<String> {
+pub fn master_args(host: &Host, control_path: &Path, askpass: bool) -> Vec<String> {
     let mut a = vec![
         "-N".to_string(),
         "-o".to_string(),
@@ -55,7 +55,7 @@ pub fn master_args(host: &Host, control_path: &Path) -> Vec<String> {
         "-o".to_string(),
         format!("ControlPath={}", control_path.display()),
     ];
-    a.extend(crate::ssh::build_args(host, true));
+    a.extend(crate::ssh::build_args(host, true, askpass));
     a
 }
 
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn master_args_open_a_controlmaster_and_reuse_build_args() {
-        let a = master_args(&host(), Path::new("/tmp/cm.sock"));
+        let a = master_args(&host(), Path::new("/tmp/cm.sock"), false);
         // Opens a master at our socket, holds the connection (`-N`)…
         assert!(a.contains(&"-N".to_string()));
         assert!(a.windows(2).any(|w| w == ["-o", "ControlMaster=yes"]));
@@ -244,7 +244,7 @@ mod tests {
         // sftp/scp ride that one connection — no per-command jump setup.
         let mut h = host();
         h.jump_hosts = vec!["bastion".into()];
-        let a = master_args(&h, Path::new("/tmp/cm"));
+        let a = master_args(&h, Path::new("/tmp/cm"), false);
         let j = a.iter().position(|s| s == "-J").expect("jump flag present");
         assert_eq!(a[j + 1], "bastion");
     }
@@ -255,7 +255,7 @@ mod tests {
         // (wired by the caller through ssh::configure_askpass), exactly as for connect.
         let mut h = host();
         h.auth = AuthMethod::Password;
-        let a = master_args(&h, Path::new("/tmp/cm"));
+        let a = master_args(&h, Path::new("/tmp/cm"), false);
         assert!(!a.iter().any(|s| s == "-i"));
         assert_eq!(a.last().unwrap(), "deploy@10.0.0.1");
     }

@@ -143,7 +143,7 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
     ));
     dbg.log(&format!(
         "$ ssh {}",
-        master_args(&host, socket.path()).join(" ")
+        master_args(&host, socket.path(), has_secret).join(" ")
     ));
 
     let mut master = match open_master(&host, has_secret, socket.path()) {
@@ -210,7 +210,7 @@ fn run(host: Host, has_secret: bool, cmd_rx: Receiver<WorkerCmd>, events: Sender
 /// secret authenticates it exactly as a normal connect would.
 fn open_master(host: &Host, has_secret: bool, socket: &Path) -> std::io::Result<Child> {
     let mut cmd = Command::new("ssh");
-    cmd.args(master_args(host, socket));
+    cmd.args(master_args(host, socket, has_secret));
     ssh::configure_askpass(&mut cmd, host, has_secret, None);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())

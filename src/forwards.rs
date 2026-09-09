@@ -222,14 +222,22 @@ pub fn forward_args(kind: ForwardKind, spec: &ForwardSpec) -> Vec<String> {
 
 /// The full argv (excluding the program name) for a forward: the constant `-N
 /// -o ExitOnForwardFailure=yes`, the forward spec, then the host's normal `ssh` args.
-pub fn build_forward_command(host: &Host, kind: ForwardKind, spec: &ForwardSpec) -> Vec<String> {
+///
+/// `askpass` says whether the helper will be wired for this forward, which is what decides how
+/// the jump chain is expressed (see [`ssh::jump_plan`]).
+pub fn build_forward_command(
+    host: &Host,
+    kind: ForwardKind,
+    spec: &ForwardSpec,
+    askpass: bool,
+) -> Vec<String> {
     let mut a = vec![
         "-N".to_string(),
         "-o".to_string(),
         "ExitOnForwardFailure=yes".to_string(),
     ];
     a.extend(forward_args(kind, spec));
-    a.extend(ssh::build_args(host, true));
+    a.extend(ssh::build_args(host, true, askpass));
     a
 }
 
@@ -257,7 +265,7 @@ pub fn spawn_forward(
         .map_err(|e| format!("could not create forward log {}: {e}", log_path.display()))?;
 
     let mut cmd = Command::new("ssh");
-    cmd.args(build_forward_command(host, kind, &spec));
+    cmd.args(build_forward_command(host, kind, &spec, has_secret));
     ssh::configure_askpass(&mut cmd, host, has_secret, None);
     cmd.process_group(0) // own process group → survives terminal close
         .stdin(Stdio::null())
@@ -511,7 +519,7 @@ mod tests {
     fn build_command_prepends_exit_on_forward_failure() {
         let mut h = Host::new("web", "10.0.0.1");
         h.user = Some("deploy".into());
-        let argv = build_forward_command(&h, ForwardKind::Local, &local(8080, "db", 3306));
+        let argv = build_forward_command(&h, ForwardKind::Local, &local(8080, "db", 3306), false);
         assert_eq!(argv[0], "-N");
         assert_eq!(&argv[1..3], &["-o", "ExitOnForwardFailure=yes"]);
         assert!(
