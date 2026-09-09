@@ -138,6 +138,41 @@ fn lists_and_transfers_both_directions() {
         b"spaced"
     );
 
+    // Downloading onto a name the destination already holds must skip, not overwrite — the
+    // worker installs a single file with a no-replace `link()`, so this holds even though the
+    // screen's listing check never ran here.
+    std::fs::write(dl.join("hello.txt"), b"mine, thanks").unwrap();
+    session.send(WorkerCmd::Transfer(TransferJob {
+        direction: Direction::Download,
+        src: remote.join("hello.txt"),
+        dest_dir: dl.clone(),
+        recursive: false,
+        size_hint: 0,
+    }));
+    match recv_until(&events, |e| {
+        matches!(
+            e,
+            WorkerEvent::Skipped(_) | WorkerEvent::Done | WorkerEvent::Error(_)
+        )
+    }) {
+        WorkerEvent::Skipped(name) => assert_eq!(name, "hello.txt"),
+        WorkerEvent::Done => panic!("an existing local file must never be overwritten"),
+        WorkerEvent::Error(e) => panic!("the skip should not read as a failure: {e}"),
+        _ => unreachable!(),
+    }
+    assert_eq!(
+        std::fs::read(dl.join("hello.txt")).unwrap(),
+        b"mine, thanks",
+        "the file that was already there is untouched"
+    );
+    // …and the temporary the download wrote is gone with it.
+    let leftovers: Vec<String> = std::fs::read_dir(&dl)
+        .unwrap()
+        .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n.starts_with(".sshelf-part-"))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+
     // Upload a single file.
     let up = sshd.dir.join("upload.txt");
     std::fs::write(&up, b"hello from local").unwrap();
@@ -288,12 +323,12 @@ fn marks_queue_transfers_and_mkdir_works_on_both_sides() {
         "a skip must never overwrite the destination"
     );
 
-    // The queue refreshes the destination when it drains; wait for that listing to land.
+    // Each queued upload refreshes the destination, and the queue refreshes it once more when
+    // it drains; wait for the listing that has everything, not just an intermediate one.
     pump(&mut screen, "the refreshed remote listing", |s| {
-        s.remote_pane()
-            .rows()
+        ["dup.txt", "one.txt", "two.txt", "sub"]
             .iter()
-            .any(|(e, ..)| e.name == "one.txt")
+            .all(|name| s.remote_pane().rows().iter().any(|(e, ..)| e.name == *name))
     });
 
     // ---- download: the other direction, into an empty local directory ----

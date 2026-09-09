@@ -86,6 +86,11 @@ pub struct Pane {
     pub loading: bool,
     /// The last listing error, shown in place of entries.
     pub error: Option<String>,
+    /// The listing was cut short (the worker's entry cap), so [`contains`](Pane::contains) can
+    /// answer "no" about a name that is really there. Set by the caller after
+    /// [`set_entries`](Pane::set_entries), which clears it: a fresh listing is whole until the
+    /// worker says otherwise.
+    pub truncated: bool,
 }
 
 impl Pane {
@@ -98,6 +103,7 @@ impl Pane {
             marks: HashSet::new(),
             loading: true,
             error: None,
+            truncated: false,
         }
     }
 
@@ -111,6 +117,7 @@ impl Pane {
         self.marks.clear();
         self.loading = true;
         self.error = None;
+        self.truncated = false;
     }
 
     /// The parent of the current directory, if any (for "go up").
@@ -131,6 +138,7 @@ impl Pane {
         self.marks.clear();
         self.loading = false;
         self.error = None;
+        self.truncated = false;
         let visible = self.visible().len();
         if self.selected >= visible {
             self.selected = visible.saturating_sub(1);
@@ -143,6 +151,7 @@ impl Pane {
         self.marks.clear();
         self.loading = false;
         self.error = Some(message);
+        self.truncated = false;
     }
 
     /// Indices into the full entry list that match the current filter, best-first.
@@ -167,7 +176,9 @@ impl Pane {
     }
 
     /// Whether the (unfiltered) listing already holds an entry named `name`, ignoring the
-    /// synthetic `..`. Used to avoid silently clobbering a destination on transfer.
+    /// synthetic `..`. Used to avoid silently clobbering a destination on transfer — which is
+    /// only as good as the listing, so a caller relying on that has to check
+    /// [`truncated`](Pane::truncated) too.
     pub fn contains(&self, name: &str) -> bool {
         self.entries
             .iter()

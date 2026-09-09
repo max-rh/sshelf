@@ -25,8 +25,11 @@ use std::path::{Path, PathBuf};
 use crate::model::Host;
 
 /// Env var (also set by `--transfer-log <FILE>`) naming a file the worker appends transfer
-/// diagnostics to: the `ssh`/`sftp` commands and their stderr. No secrets are logged — the
-/// password reaches `ssh` via `SSH_ASKPASS`, never argv.
+/// diagnostics to: the `ssh` and `sftp` commands it runs, the local and remote paths they touch,
+/// their stderr, and every value the host's `extra_args` contributes. None of that is a secret —
+/// a stored password reaches `ssh` via `SSH_ASKPASS` and never appears in argv, so it is never
+/// logged — but together it describes the connection in full, so point this somewhere private.
+/// The worker opens the file `0600` and refuses to follow a symlink at that path.
 pub(crate) const LOG_ENV: &str = "SSHELF_TRANSFER_LOG";
 
 /// Direction of a transfer, named by where the bytes end up.
@@ -159,15 +162,22 @@ pub enum WorkerEvent {
     /// The master connection finished opening — `Ok(home)` carries the remote working directory
     /// to start browsing from, `Err(msg)` reports why it failed.
     Ready(Result<PathBuf, String>),
-    /// A remote-directory listing completed.
+    /// A remote-directory listing completed. `truncated` says the worker stopped short of the
+    /// whole directory — the screen has to say so rather than show a partial listing as whole.
     Listing {
         path: PathBuf,
         entries: Vec<RemoteEntry>,
+        truncated: bool,
     },
     /// Progress on the in-flight transfer.
     Progress(Progress),
     /// The in-flight transfer completed successfully.
     Done,
+    /// The transfer was passed over rather than run: the destination name appeared between the
+    /// screen's listing check and the moment the download was installed, and v1 never
+    /// overwrites. Carries the entry's name, so the screen reports it exactly as its own check
+    /// would — a skip, not a failure, so a batch send carries on.
+    Skipped(String),
     /// The in-flight transfer was cancelled at the UI's request and is fully torn down. The
     /// screen needs this to leave its "transfer running" state (Esc would otherwise strand it).
     Cancelled,

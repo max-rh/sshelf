@@ -23,7 +23,7 @@ use crate::model::Host;
 use crate::ui::widgets::TextField;
 
 use super::pane::{Pane, PaneEntry, Side, read_local_dir};
-use super::worker::TransferSession;
+use super::worker::{MAX_ENTRIES, TransferSession};
 use super::{Direction, Progress, TransferJob, WorkerCmd, WorkerEvent, target, validate_dir_name};
 
 /// State of the one in-flight transfer.
@@ -38,7 +38,8 @@ struct Active {
 enum Skip {
     /// sshelf copies files and directories, not the links pointing at them.
     Symlink,
-    /// v1 never overwrites (see `docs/transfer.md`).
+    /// v1 never overwrites (see `docs/transfer.md`). Raised here from the last listing, and
+    /// again by the worker when a single-file download finds the name taken at install time.
     Exists,
 }
 
@@ -224,11 +225,23 @@ impl TransferScreen {
                     self.connecting = false;
                     self.remote.set_error(format!("connection failed: {e}"));
                 }
-                WorkerEvent::Listing { path, entries } => {
+                WorkerEvent::Listing {
+                    path,
+                    entries,
+                    truncated,
+                } => {
                     // Ignore a listing for a directory we've since navigated away from.
                     if path == self.remote.cwd {
                         self.remote
                             .set_entries(entries.into_iter().map(Into::into).collect());
+                        // Carried on the pane, not just said once: an upload has nothing but
+                        // this listing standing between it and overwriting something, and a
+                        // status line is gone by the next keypress.
+                        self.remote.truncated = truncated;
+                        if truncated {
+                            self.status =
+                                Some(format!("listing truncated at {MAX_ENTRIES} entries"));
+                        }
                         if let Some(name) = self.pending_select.take() {
                             self.remote.select_name(&name);
                         }
@@ -243,6 +256,19 @@ impl TransferScreen {
                     self.active = None;
                     if let Some(q) = &mut self.queue {
                         q.at += 1;
+                    }
+                    self.start_next();
+                }
+                WorkerEvent::Skipped(name) => {
+                    // The worker refused to overwrite a name that appeared after the check.
+                    // Same outcome as the check's own skip: step over it and carry on.
+                    self.active = None;
+                    match &mut self.queue {
+                        Some(q) => {
+                            q.skipped.push((name, Skip::Exists));
+                            q.at += 1;
+                        }
+                        None => self.status = Some(Skip::Exists.message(&name)),
                     }
                     self.start_next();
                 }
@@ -285,6 +311,23 @@ impl TransferScreen {
             n => format!("{reason} — {n} queued item(s) not sent"),
         });
         self.refresh(q.dest);
+    }
+
+    /// Drop the queue before starting an item, because sending it would not be safe. Separate
+    /// from [`stop_queue`](Self::stop_queue): nothing is in flight, so the item this was about
+    /// to start is one of the ones that never went.
+    fn refuse_queue(&mut self, reason: String) {
+        self.active = None;
+        let Some(q) = self.queue.take() else {
+            self.status = Some(reason);
+            return;
+        };
+        self.status = Some(match q.items.len().saturating_sub(q.at) {
+            0 => reason,
+            n => format!("{reason} — {n} item(s) not sent"),
+        });
+        // No refresh: nothing moved, so the destination is exactly as the user last saw it —
+        // and a fresh listing landing here would only push the reason off the status line.
     }
 
     /// `Enter`/`→`: descend into a directory, go up on `..`, or send a plain file.
@@ -403,6 +446,25 @@ impl TransferScreen {
                     q.at += 1;
                 }
                 continue;
+            }
+
+            // An upload's only guard is that listing, so a listing the worker cut short is one
+            // sshelf cannot send into at all: the name may be there past the cap, and `put` has
+            // no no-replace mode to fall back on. Downloads are unaffected — they install with
+            // `link()`, which answers for itself.
+            if direction == Direction::Upload && self.pane(dest).truncated {
+                return self.refuse_queue(format!(
+                    "the destination listing is incomplete (cut at {MAX_ENTRIES} entries) — sshelf can't promise not to overwrite there"
+                ));
+            }
+
+            // A download installs itself with a no-replace step, so its check is exact. An
+            // upload has no such thing over the `sftp` CLI and keeps the listing check, so keep
+            // that listing as fresh as it cheaply can be: the worker serves commands in order,
+            // so this one lands immediately before the upload and the next item is checked
+            // against what it brings back.
+            if direction == Direction::Upload && dest_dir == self.remote.cwd {
+                self.session.send(WorkerCmd::ListRemote(dest_dir.clone()));
             }
 
             self.active = Some(Active {
@@ -740,13 +802,16 @@ mod tests {
         let (mut screen, cmds, _events) = TransferScreen::detached(dir, &[]);
         screen.local.move_sel(1); // sub/
         screen.on_key(ctrl(KeyCode::Char('s')));
-        match cmds.try_recv().unwrap() {
-            WorkerCmd::Transfer(job) => {
-                assert!(job.recursive);
-                assert_eq!(job.size_hint, 0); // a directory's total isn't known up front
-            }
-            _ => panic!("expected a transfer"),
-        }
+        // The destination refresh goes first; the transfer is behind it.
+        let job = cmds
+            .try_iter()
+            .find_map(|c| match c {
+                WorkerCmd::Transfer(job) => Some(job),
+                _ => None,
+            })
+            .expect("expected a transfer");
+        assert!(job.recursive);
+        assert_eq!(job.size_hint, 0); // a directory's total isn't known up front
     }
 
     #[test]
@@ -981,6 +1046,7 @@ mod tests {
                         size: 0,
                     },
                 ],
+                truncated: false,
             },
         );
         assert_eq!(
@@ -1005,6 +1071,141 @@ mod tests {
         // A mkdir failure is not a listing failure — the pane keeps showing the directory.
         assert!(screen.remote_pane().error.is_none());
         assert!(!screen.remote_pane().rows().is_empty());
+    }
+
+    #[test]
+    fn a_worker_skip_steps_over_the_entry_without_stopping_the_queue() {
+        let dir = scratch();
+        // Nothing is in the destination listing, so all three are sent — and `a.txt` turns out
+        // to be there anyway by the time the worker installs it.
+        let (mut screen, cmds, events) = TransferScreen::detached(dir, &[]);
+        mark_all_three(&mut screen);
+        screen.on_key(ctrl(KeyCode::Char('s')));
+
+        assert_eq!(sent_names(&cmds), vec!["sub"]);
+        deliver(&mut screen, &events, WorkerEvent::Done);
+        assert_eq!(sent_names(&cmds), vec!["a.txt"]);
+        deliver(&mut screen, &events, WorkerEvent::Skipped("a.txt".into()));
+        // The queue moved on rather than stopping, exactly as the listing check's skip does.
+        assert_eq!(sent_names(&cmds), vec!["b.txt"]);
+        deliver(&mut screen, &events, WorkerEvent::Done);
+
+        let status = screen.status().unwrap();
+        assert!(status.starts_with("sent 2 of 3"), "{status}");
+        assert!(status.contains("a.txt (already there)"), "{status}");
+    }
+
+    #[test]
+    fn a_single_send_the_worker_skips_explains_itself_in_full() {
+        let dir = scratch();
+        let (mut screen, cmds, events) = TransferScreen::detached(dir, &[]);
+        screen.local.move_sel(2); // a.txt
+        screen.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(sent_names(&cmds), vec!["a.txt"]);
+
+        deliver(&mut screen, &events, WorkerEvent::Skipped("a.txt".into()));
+        assert!(screen.active().is_none(), "the screen must not stay stuck");
+        let status = screen.status().unwrap();
+        assert!(status.contains("\"a.txt\" already exists"), "{status}");
+        assert!(status.contains("rename or remove"), "{status}");
+    }
+
+    #[test]
+    fn a_truncated_listing_says_so() {
+        let dir = scratch();
+        let (mut screen, _cmds, events) = TransferScreen::detached(dir, &[]);
+        deliver(
+            &mut screen,
+            &events,
+            WorkerEvent::Listing {
+                path: PathBuf::from("/srv"),
+                entries: vec![crate::transfer::RemoteEntry {
+                    name: "one".into(),
+                    is_dir: false,
+                    is_symlink: false,
+                    size: 4,
+                }],
+                truncated: true,
+            },
+        );
+        assert_eq!(screen.status(), Some("listing truncated at 50000 entries"));
+        assert!(
+            !screen.remote_pane().rows().is_empty(),
+            "what did arrive is still shown"
+        );
+    }
+
+    /// The listing is the only thing standing between an upload and overwriting a remote file,
+    /// so a listing the worker cut short is one nothing may be sent into.
+    #[test]
+    fn an_upload_into_a_listing_that_was_cut_short_is_refused() {
+        let dir = scratch();
+        let (mut screen, cmds, events) = TransferScreen::detached(dir, &[]);
+        deliver(
+            &mut screen,
+            &events,
+            WorkerEvent::Listing {
+                path: PathBuf::from("/srv"),
+                entries: Vec::new(),
+                truncated: true,
+            },
+        );
+
+        mark_all_three(&mut screen);
+        screen.on_key(ctrl(KeyCode::Char('s')));
+
+        assert_eq!(cmds.try_iter().count(), 0, "nothing may go out");
+        assert!(screen.active().is_none());
+        let status = screen.status().unwrap();
+        assert!(status.contains("incomplete"), "{status}");
+        assert!(status.contains("3 item(s) not sent"), "{status}");
+    }
+
+    /// …but a download out of that same directory is fine: it installs with a no-replace step
+    /// of its own, which does not care what the listing did or didn't show.
+    #[test]
+    fn a_download_out_of_a_listing_that_was_cut_short_still_goes() {
+        let dir = scratch();
+        let (mut screen, cmds, events) = TransferScreen::detached(dir, &[("far.txt", false)]);
+        deliver(
+            &mut screen,
+            &events,
+            WorkerEvent::Listing {
+                path: PathBuf::from("/srv"),
+                entries: vec![crate::transfer::RemoteEntry {
+                    name: "far.txt".into(),
+                    is_dir: false,
+                    is_symlink: false,
+                    size: 4,
+                }],
+                truncated: true,
+            },
+        );
+
+        screen.on_key(k(KeyCode::Tab)); // focus the remote pane
+        screen.on_key(k(KeyCode::Down)); // past `..`, onto far.txt
+        screen.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(sent_names(&cmds), vec!["far.txt"]);
+    }
+
+    #[test]
+    fn a_queued_upload_refreshes_the_destination_first() {
+        let dir = scratch();
+        let (mut screen, cmds, _events) = TransferScreen::detached(dir, &[]);
+        screen.local.move_sel(2); // a.txt
+        screen.on_key(ctrl(KeyCode::Char('s')));
+
+        // Uploads have only the listing check, so the listing goes out immediately before the
+        // transfer — the worker runs them in that order.
+        let sent: Vec<&'static str> = cmds
+            .try_iter()
+            .map(|c| match c {
+                WorkerCmd::ListRemote(_) => "list",
+                WorkerCmd::Transfer(_) => "transfer",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(sent, vec!["list", "transfer"]);
     }
 
     #[test]
