@@ -5,7 +5,9 @@
 # creates the GitHub Release — with the body taken from this version's CHANGELOG.md section, so
 # the release page shows exactly what changed since the previous tag.
 #
-# REQUIRES a `RELEASE_TOKEN` secret in the `release` GitHub environment: a fine-grained PAT with
+# NEEDS a `RELEASE_TOKEN` secret, which belongs in the `release` GitHub environment rather than in
+# repository secrets: a job that names an environment reads both, so a repository-level copy also
+# works, but then every other workflow in the repo can read it too. It is a fine-grained PAT with
 # "Contents: read and write" on this repo, owned by someone who can push to `master`. Two reasons
 # it must be a PAT, not the default GITHUB_TOKEN: (1) a tag pushed with GITHUB_TOKEN does NOT
 # trigger other workflows, so the dist Release would never run; (2) it must bypass branch

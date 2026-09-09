@@ -99,8 +99,13 @@ old shape-only behaviour makes `askpass::tests::classify_matrix`,
 nothing from a key host. That file drives a real `sshelf` process through a stub `ssh` that asks
 the prompts a hostile endpoint would.
 
-**For Max, outside this session.** Create the GitHub environment named `release` and move the
-`RELEASE_TOKEN` secret into it; `cut-release.yml` will not find the secret until that is done.
+**For Max, outside this session.** Create the GitHub environment named `release`, put
+`RELEASE_TOKEN` in it, and delete the repository-level copy. This is not a blocker: a job that
+names an environment still reads repository secrets, and GitHub creates a missing environment
+on the first run, so a cut would work today. It is the point of the change that is missing.
+While the token is a repository secret, every workflow in the repo can read it; moving it is
+what confines it to the one job that pushes, and a required reviewer on the environment puts a
+human in front of that push.
 Turn on Dependabot alerts, which the review noted are disabled. File the upstream issue asking
 `ssh2-config` to move its OpenSSH-cloning build script into an explicit developer tool and drop
 `git2` from its published build dependencies, and decide whether the askpass finding warrants a
