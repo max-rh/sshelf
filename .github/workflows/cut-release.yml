@@ -5,10 +5,15 @@
 # creates the GitHub Release — with the body taken from this version's CHANGELOG.md section, so
 # the release page shows exactly what changed since the previous tag.
 #
-# REQUIRES a repository secret `RELEASE_TOKEN`: a fine-grained PAT with "Contents: read and write"
-# on this repo, owned by someone who can push to `master`. Two reasons it must be a PAT, not the
-# default GITHUB_TOKEN: (1) a tag pushed with GITHUB_TOKEN does NOT trigger other workflows, so
-# the dist Release would never run; (2) it must bypass branch protection on `master`.
+# REQUIRES a `RELEASE_TOKEN` secret in the `release` GitHub environment: a fine-grained PAT with
+# "Contents: read and write" on this repo, owned by someone who can push to `master`. Two reasons
+# it must be a PAT, not the default GITHUB_TOKEN: (1) a tag pushed with GITHUB_TOKEN does NOT
+# trigger other workflows, so the dist Release would never run; (2) it must bypass branch
+# protection on `master`.
+#
+# The token is deliberately confined to the last step. `actions/checkout` runs with
+# `persist-credentials: false`, so the build and test steps run against a tree that carries no
+# credential, and the push supplies the PAT in the remote URL for that one command.
 name: Cut release
 
 on:
@@ -19,29 +24,33 @@ on:
         required: true
         type: string
 
+# The push uses RELEASE_TOKEN, so GITHUB_TOKEN never needs write here.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   cut:
+    # Releases are only ever cut from master.
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    # Holds RELEASE_TOKEN, so the secret can be gated on a reviewer and an actor allowlist.
+    environment: release
     steps:
-      - name: Only run on master
-        run: |
-          [ "${{ github.ref_name }}" = "master" ] \
-            || { echo "::error::run this workflow on the master branch"; exit 1; }
-
+      # The dispatch input reaches the shell as a variable, never as text spliced into this
+      # script, so metacharacters in it stay inert until the SemVer check has run.
       - name: Normalize + validate version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          V="${{ inputs.version }}"; V="${V#v}"
+          V="$INPUT_VERSION"; V="${V#v}"
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' \
             || { echo "::error::'$V' is not a SemVer version"; exit 1; }
           echo "VERSION=$V" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # full history + tags (for the previous tag + pushing)
-          token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: false
 
       - name: Refuse to re-release an existing tag
         run: |
@@ -49,7 +58,7 @@ jobs:
             echo "::error::tag v$VERSION already exists"; exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Test before releasing
         run: cargo test --locked
@@ -83,13 +92,19 @@ jobs:
           p.write_text(text)
           PY
 
+      # The only step that sees RELEASE_TOKEN. It goes into the push URL rather than into the
+      # repository's git config, so nothing that runs later can read it back out of the tree.
       - name: Commit, tag, and push (the tag triggers the dist Release workflow)
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
+          set -euo pipefail
           git config user.name "max-rh"
           git config user.email "25219094+max-rh@users.noreply.github.com"
           git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "release: v$VERSION"
           git tag -a "v$VERSION" -m "v$VERSION"
-          git push origin "HEAD:${{ github.ref_name }}"
-          git push origin "v$VERSION"
+          remote="https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push "$remote" "HEAD:refs/heads/master"
+          git push "$remote" "refs/tags/v$VERSION"
           echo "Pushed v$VERSION — the dist Release workflow will build and publish it." >> "$GITHUB_STEP_SUMMARY"

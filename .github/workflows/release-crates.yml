@@ -5,9 +5,18 @@
 # `cargo publish` builds + uploads the crate source from the tag, so it needs none of the release
 # binaries. Needs a CARGO_REGISTRY_TOKEN repo secret; without it the publish is skipped (so the
 # workflow stays green until you add the token).
+#
+# It checks out `head_sha`, the commit the Release run actually built, and then asserts the tag
+# still resolves to it. Checking out the tag name would let a moved tag put a different commit
+# on crates.io than the one the release artifacts came from.
 name: release-crates
 
-on:
+# zizmor flags workflow_run as a dangerous trigger, and for the usual reason: it runs with the
+# default branch's permissions on a run someone else's fork PR may have started. That reason
+# does not reach here. The job only runs for a push-triggered "Release" that succeeded on a `v`
+# tag, it checks out that run's head commit rather than any ref an attacker controls, and it
+# asserts the tag still resolves to that commit before publishing.
+on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: ["Release"]
     types: [completed]
@@ -23,12 +32,26 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.workflow_run.head_branch }} # the release tag
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          ref: ${{ github.event.workflow_run.head_sha }} # the commit the Release run built
+          persist-credentials: false
+      - name: Verify the release tag still points at that commit
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          resolved="$(git rev-parse "refs/tags/${TAG}^{}")"
+          if [ "$resolved" != "${HEAD_SHA}" ]; then
+            echo "::error::${TAG} now points at ${resolved}, but the Release run built ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "${TAG} still points at ${HEAD_SHA}"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

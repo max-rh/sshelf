@@ -5,6 +5,10 @@ on:
     branches: [master, main]
   pull_request:
 
+# Nothing in CI writes to the repo; the release workflows ask for more where they need it.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,11 +21,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Refuse to build with RELOAD_SSH_ALGO set
+        run: |
+          [ -z "${RELOAD_SSH_ALGO+x}" ] || { echo "::error::RELOAD_SSH_ALGO must not be set"; exit 1; }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -35,9 +44,14 @@ jobs:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Refuse to build with RELOAD_SSH_ALGO set
+        run: |
+          [ -z "${RELOAD_SSH_ALGO+x}" ] || { echo "::error::RELOAD_SSH_ALGO must not be set"; exit 1; }
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1.88
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Check on the minimum supported Rust version
         run: cargo check --locked --all-targets
 
@@ -45,21 +59,45 @@ jobs:
     name: dependency audit (cargo-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
         with:
           tool: cargo-audit
+      # Unsound and yanked crates fail the build. `unmaintained` stays a warning: the only hit
+      # is proc-macro-error, which has no fixed release to move to.
+      # The three ignores below have no fix reachable from this lockfile:
+      #   RUSTSEC-2026-0183, RUSTSEC-2026-0184 - git2 0.20.4, an inactive build dependency of
+      #     ssh2-config; the fix is 0.21.0, which ssh2-config 0.7.1 does not accept (2026-09-09).
+      #   RUSTSEC-2026-0253 - lru 0.16.4, pinned by ratatui-core 0.1.0; the fix is 0.18.2,
+      #     outside the range ratatui-core accepts (2026-09-09).
+      # Re-check these whenever ratatui or ssh2-config moves, and drop the ignore that clears.
+      # Two more unsound advisories, RUSTSEC-2026-0190 (anyhow) and RUSTSEC-2026-0221
+      # (event-listener), are not ignored here because they are fixed rather than worked
+      # around: this job needs Cargo.lock to carry anyhow >= 1.0.103 and event-listener
+      # >= 5.4.2. If the job goes red on those two, the lockfile is behind, so update it
+      # instead of adding an ignore.
       - name: Audit dependencies (RustSec advisory DB)
-        run: cargo audit
+        run: |
+          cargo audit --deny unsound --deny yanked \
+            --ignore RUSTSEC-2026-0183 \
+            --ignore RUSTSEC-2026-0184 \
+            --ignore RUSTSEC-2026-0253
 
   headless-vault:
     name: headless vault fallback (no Secret Service)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Refuse to build with RELOAD_SSH_ALGO set
+        run: |
+          [ -z "${RELOAD_SSH_ALGO+x}" ] || { echo "::error::RELOAD_SSH_ALGO must not be set"; exit 1; }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build
         run: cargo build --locked
       - name: Store + retrieve a password via the age vault with no D-Bus session

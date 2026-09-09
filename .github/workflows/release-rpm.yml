@@ -4,24 +4,39 @@
 # (Fedora, RHEL/Rocky/Alma, openSUSE) — sshelf only shells out to the system ssh/sftp, so nothing
 # is distro-specific. Like release-deb, this runs *after* dist's "Release" via workflow_run and
 # only attaches assets (dist owns release creation).
+#
+# Split the same way as release-deb: the build job is read-only, and only the small `attach`
+# job holds `contents: write`. Both check out `head_sha`, the commit the Release run built,
+# and assert the tag still resolves to it.
 name: release-rpm
 
-on:
+# zizmor flags workflow_run as a dangerous trigger, and for the usual reason: it runs with the
+# default branch's permissions on a run someone else's fork PR may have started. That reason
+# does not reach here. The jobs only run for a push-triggered "Release" that succeeded on a `v`
+# tag, they check out that run's head commit rather than any ref an attacker controls, and they
+# assert the tag still resolves to that commit before building or attaching anything.
+on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: ["Release"]
     types: [completed]
 
 permissions:
-  contents: write # to attach assets to the Release
+  contents: read
 
 jobs:
-  rpm:
+  build:
     name: .rpm (${{ matrix.arch }})
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      TARGET: ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -29,26 +44,38 @@ jobs:
           - { arch: x86_64, os: ubuntu-22.04, target: x86_64-unknown-linux-musl }
           - { arch: aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl } # native arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.workflow_run.head_branch }} # the release tag
-      - uses: dtolnay/rust-toolchain@stable
+          ref: ${{ github.event.workflow_run.head_sha }} # the commit the Release run built
+          persist-credentials: false
+      - name: Verify the release tag still points at that commit
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          resolved="$(git rev-parse "refs/tags/${TAG}^{}")"
+          if [ "$resolved" != "${HEAD_SHA}" ]; then
+            echo "::error::${TAG} now points at ${resolved}, but the Release run built ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "${TAG} still points at ${HEAD_SHA}"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install musl toolchain + cargo-generate-rpm
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          cargo install cargo-generate-rpm --locked
+          cargo install cargo-generate-rpm --version 0.21.0 --locked
 
       - name: Build (static musl)
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
 
       - name: Generate completions + man page
         run: |
           set -euo pipefail
-          bin=target/${{ matrix.target }}/release/sshelf
+          bin="target/$TARGET/release/sshelf"
           mkdir -p dist-extra
           "$bin" completions bash > dist-extra/sshelf.bash
           "$bin" completions zsh  > dist-extra/_sshelf
@@ -57,7 +84,7 @@ jobs:
 
       # generate-rpm rewrites the `target/release` asset paths to the per-target dir via --target.
       - name: Build .rpm
-        run: cargo generate-rpm --target ${{ matrix.target }}
+        run: cargo generate-rpm --target "$TARGET"
 
       - name: Locate the .rpm
         id: rpm
@@ -67,8 +94,60 @@ jobs:
           test -n "$path" || { echo "no .rpm produced"; exit 1; }
           echo "path=$path" >> "$GITHUB_OUTPUT"
 
-      - name: Attach to the Release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the .rpm to the upload job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          tag_name: ${{ github.event.workflow_run.head_branch }}
-          files: ${{ steps.rpm.outputs.path }}
+          name: rpm-${{ matrix.arch }}
+          path: ${{ steps.rpm.outputs.path }}
+          if-no-files-found: error
+
+  attach:
+    name: attach .rpm assets to the Release
+    needs: build
+    # `needs: build` on its own only clears when every matrix leg succeeds, which would drop
+    # the arch that did build whenever the other one fails. `fail-fast: false` above says
+    # partial success is wanted, so run whenever `build` actually ran and attach whatever it
+    # produced; the failed arch can be re-run on its own afterwards. A skipped `build` (not a
+    # successful, tag-triggered Release run) still skips this.
+    if: ${{ always() && needs.build.result != 'skipped' && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to attach assets to the Release
+    env:
+      TAG: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }} # the commit the Release run built
+          persist-credentials: false
+      - name: Verify the release tag still points at that commit
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          resolved="$(git rev-parse "refs/tags/${TAG}^{}")"
+          if [ "$resolved" != "${HEAD_SHA}" ]; then
+            echo "::error::${TAG} now points at ${resolved}, but the Release run built ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "${TAG} still points at ${HEAD_SHA}"
+      - name: Fetch the built packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: rpm-*
+          path: rpms
+          merge-multiple: true
+      # `gh` ships on the runner, so the only job holding contents: write runs no third-party
+      # action at all. dist created the Release already; this just adds assets to it.
+      - name: Attach to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(rpms/*.rpm)
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "::error::no .rpm packages were built, nothing to attach"
+            exit 1
+          fi
+          gh release upload "$TAG" "${packages[@]}" --clobber

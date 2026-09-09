@@ -19,3 +19,8 @@ install-path = "CARGO_HOME"
 publish-jobs = ["homebrew"]
 # Whether to install an updater program
 install-updater = false
+# Have GitHub attest the built artifacts (provenance for the release assets)
+github-attestations = true
+# release.yml is hand maintained after generation (SHA-pinned actions, least-privilege
+# permissions), so `dist` must not treat those edits as a reason to refuse.
+allow-dirty = ["ci"]
