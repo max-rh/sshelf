@@ -52,9 +52,25 @@ env-inheritance tradeoff is documented in [Security](security.md).
 
 ## Can a jump host use password auth?
 
-Not currently; jump hosts are key/agent only. The askpass helper holds the *target's* secret
-and can't tell which hop in a chain is prompting. If a jump-host connection fails, check your
-agent is reachable: [`sshelf doctor`](doctor.md).
+No, and since 0.14.0 that is enforced rather than only written down. Jump hosts are
+key/agent only, because the askpass helper holds the *target's* secret and can't tell which
+hop in a chain is prompting.
+
+With one jump host and a stored secret (or a queued verification code), sshelf replaces `-J`
+with an explicit `ProxyCommand` that runs the hop with `BatchMode=yes` and both password and
+keyboard-interactive auth off, so the hop can only use an agent or an unencrypted key file.
+With two or more hops there is no way to constrain them individually, so sshelf wires no helper
+at all: `ssh` asks for the target's secret on the terminal, and you see
+`multi-hop jump with a stored secret: ssh will ask for it on the terminal` before it does.
+In tmux mode that connection opens in place instead of in a new window, because a new window
+has no terminal to ask on.
+
+One thing that has not changed: the hop checks its own host key against your
+`~/.ssh/known_hosts`, and `ssh` does not pass the destination's `-o` options down to it. That
+was already true of plain `-J`, so a bastion you have never connected to has to be accepted once
+by connecting to it directly first.
+
+If a jump-host connection fails, check your agent is reachable: [`sshelf doctor`](doctor.md).
 
 ## Can I open connections in tmux windows instead of leaving the picker?
 

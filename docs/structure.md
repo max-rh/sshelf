@@ -29,21 +29,22 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `main.rs` | Entry/dispatch. If `SSHELF_ASKPASS` is set → askpass mode (read `argv[1]`). Else clap parses: default TUI, or subcommands (`import`, `list`, `add`). |
 | `app.rs` | `App` state + synchronous event loop + screen routing (component orchestration). |
 | `model.rs` | `Host` + `Site` structs (+ `AuthMethod`); `Host::with_site_defaults`/`find_site` (site inheritance); serde derives. |
-| `store.rs` | Load/save `hosts.toml` with atomic write (temp + rename); load `config.toml`. |
+| `store.rs` | Load/save `hosts.toml` with atomic write (exclusive temp + rename); `create_exclusive`, the shared "create this file and fail if the name is taken" helper the forward logs use too. |
 | `state.rs` | Frecency state (`use_count`, `last_used`) load/save (`state.json`); score computation. |
 | `forwards.rs` | Background port-forwards: the `ForwardSpec`/`ForwardEntry` model, the `-L/-R/-D` argv builder, spawn (detached `ssh -N` + readiness/error mapping), PID liveness/kill via `ps`/`kill`, reconcile, and `forwards.json` load/save. |
 | `secrets.rs` | `SecretStore` trait → keyring backend + `age`-vault fallback; `zeroize` on secrets. Also the read-only introspection `doctor` needs: which backend is active, a write-read-delete probe, and (vault only) the stored ids. |
-| `ssh.rs` | Build `ssh` argv from a `Host`; terminal teardown + `exec()` handoff; askpass env wiring; the tmux `new-window`/`split-window` spawn and the rules for what may cross that boundary. |
-| `askpass.rs` | Headless askpass entry: inspect `argv[1]`; answer password prompts via `secrets`, or a queued 2FA code (`SSHELF_2FA_CODE`) for the verification prompt; else decline. |
+| `ssh.rs` | Build `ssh` argv from a `Host`; the `JumpPlan` that decides whether a jump chain is `-J`, an explicit `ProxyCommand`, or a terminal prompt; terminal teardown + `exec()` handoff; askpass env wiring; the tmux `new-window`/`split-window` spawn and the rules for what may cross that boundary. |
+| `askpass.rs` | Headless askpass entry: inspect `argv[1]` and answer only the prompt shape matching `SSHELF_SECRET_KIND` (a login password, or this host's own key passphrase per `SSHELF_IDENTITY_FILES`), or a queued 2FA code (`SSHELF_2FA_CODE`) for anything that is not secret-shaped; else decline. |
 | `search.rs` | Fuzzy filter (`nucleo-matcher`) + frecency ranking + per-row match indices for highlight. |
 | `import.rs` | `ssh2-config` parse of `~/.ssh/config` → `Host` mapping; warn on unsupported `Match`/`Include`. Also the shape (`ImportResult`) and add-only plumbing (`new_hosts`, `missing_sites`) every importer shares. |
 | `tailscale.rs` | `sshelf import --tailscale`: locate the user's `tailscale` binary, run `status --json`, map eligible peers → hosts (MagicDNS name/FQDN, tailnet → site, ACL tags). Pure parser over `&str`; the only process spawn is isolated in one function. |
-| `doctor.rs` | `sshelf doctor`: one pure function per check (OpenSSH version, hosts-file parse + duplicates, secret backend, dangling sites, orphaned secrets, ssh-agent, export freshness) over inputs the caller gathers, plus the report's rendering and exit-code rule. |
+| `doctor.rs` | `sshelf doctor`: one pure function per check (OpenSSH version, hosts-file parse + duplicates, secret backend, dangling sites, orphaned secrets, ssh-agent, export freshness, config-directory permissions) over inputs the caller gathers, plus the report's rendering and exit-code rule. |
 | `export.rs` | Render the database as an ssh_config `Include` fragment (site defaults resolved, `-o` extras translated); write to `ssh_config` in the config dir; auto-refresh on hosts saves once the file exists. |
-| `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; dir/file perms (`0700`/`0600`). |
+| `paths.rs` | `etcetera` path resolution (config/data dirs); file paths; `ensure_private_dir`, which creates a directory `0700` and re-applies that mode only to one sshelf owns. |
+| `display.rs` | One sanitizer for plain CLI output: control characters, C1 codes and bidirectional overrides become U+FFFD, and the same set is what the add form and the importers refuse. |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color, `tmux` mode; writes a commented default on first run. |
 | `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |
-| `transfer/worker.rs` | Background worker thread: owns the ControlMaster (open/readiness/teardown), lists remote dirs (`sftp ls -l`), creates remote dirs (`sftp mkdir`), runs `sftp` `get`/`put` transfers with progress + cancel. |
+| `transfer/worker.rs` | Background worker thread: owns the ControlMaster and the `0700` session directory its socket lives in (open/readiness/teardown), lists remote dirs (`sftp ls -la`) and creates them (`sftp mkdir`) under a deadline and an output cap, runs `sftp` `get`/`put` transfers with progress + cancel, and installs a downloaded file with a no-replace link. |
 | `transfer/pane.rs` | One side's browsing state (fuzzy filter + selection + nav + positional marks, reusing `search`); `read_local_dir` for the local side; `RemoteEntry`→`PaneEntry`. |
 | `transfer/screen.rs` | The dual-pane `TransferScreen`: two panes over one session, key handling, the send queue (marks → one transfer at a time, skips vs failures), the new-directory input, draining worker events. |
 | `ui/list.rs` | Host list rendering + match highlighting + selection. |

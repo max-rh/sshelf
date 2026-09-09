@@ -12,7 +12,9 @@ ssh
   [-i <identity_file>]...            # one -i per entry in identity_files (auth = "key")
   [-p <port>]                        # only if port present and != 22
   [-J <jump1,jump2,...>]             # ProxyJump chain (jump_hosts), comma-joined
+    | -o ProxyCommand=...            # instead of -J, for one hop with a secret to protect (§3a)
   -o StrictHostKeyChecking=accept-new   # see §3: keeps host-key prompt away from askpass
+  [-o PreferredAuthentications=publickey[,keyboard-interactive]]   # key hosts only (§3)
   <extra_args...>                    # raw, split with `shlex`, appended verbatim
   <user>@<hostname>                  # user defaults to $USER if unset
 ```
@@ -29,6 +31,12 @@ The same builder backs the `Ctrl-y` **yank** action and `sshelf print-command <h
 (copy/print the exact command without connecting). For copy/paste safety, identity-file `~`
 is expanded before shell-quoting; quoted `~` would not expand in the user's shell.
 
+Both resolve the host's stored secret first, so what you copy is the command sshelf would
+actually run, including the `ProxyCommand` a jump host gets when a secret is in play (§3a).
+`sshelf list --json` is the exception: its `command` field is built as if no secret were
+stored, because a listing must not read the keyring once per host. That is also the right
+answer for a command you run by hand, which has no askpass helper for a hop to inherit.
+
 ## 2. Launch handoff (`exec`)
 
 On connect:
@@ -39,6 +47,8 @@ On connect:
    - `SSH_ASKPASS_REQUIRE = force`
    - `SSHELF_ASKPASS = 1`        ← how the re-exec'd binary knows it's in askpass mode
    - `SSHELF_HOST_ID = <id>`     ← which secret to fetch
+   - `SSHELF_SECRET_KIND = password | passphrase | agent`  ← which secret that id holds (§3)
+   - `SSHELF_IDENTITY_FILES = <path>[:<path>...]`  ← key hosts only, `~` already expanded (§3)
    - `env_remove("SSH_ASKPASS")` of any *inherited* value first, then set ours (avoid pollution).
 3. Tear down the TUI: `disable_raw_mode()` → `LeaveAlternateScreen` → show cursor → flush.
 4. `std::os::unix::process::CommandExt::exec()` into `ssh`. If it returns, it errored →
@@ -55,6 +65,7 @@ sshelf keeps running:
 tmux new-window|split-window
   [-e SSH_ASKPASS=<self>] [-e SSH_ASKPASS_REQUIRE=force]
   [-e SSHELF_ASKPASS=1]   [-e SSHELF_HOST_ID=<id>]      # only when a secret is stored
+  [-e SSHELF_SECRET_KIND=...] [-e SSHELF_IDENTITY_FILES=...]
   [-n <host name>]                                       # new-window only; split-window has no -n
   --                                                     # ends tmux's own options
   ssh <the argv from §1, as separate arguments>
@@ -83,30 +94,79 @@ as **`sshelf "<prompt text>"`** (the prompt is `argv[1]`; **there is no `--askpa
 The helper:
 
 1. Confirms it's in askpass mode via `SSHELF_ASKPASS=1`.
-2. **Inspects `argv[1]`** by OpenSSH prompt *shape* and branches:
-   - Ends with `password:` (classic `user@host's password:` / PAM `Password:`) **or** contains
-     `passphrase for` (`Enter passphrase for key '<path>':`) → fetch the secret for
-     `SSHELF_HOST_ID` from `secrets` (keyring or age vault), print it, exit `0`.
-   - Anything else (host-key `yes/no`, OTP/verification codes, arbitrary server text) →
-     **exit non-zero** to decline, so `ssh` handles it. **Never blindly print the secret.**
+2. Reads `SSHELF_SECRET_KIND`, which says whether the value behind `SSHELF_HOST_ID` is a login
+   `password`, a key `passphrase`, or nothing at all (`agent`). A missing or unrecognised kind
+   declines everything.
+3. **Inspects `argv[1]`** by OpenSSH prompt *shape*, and answers only the shape that matches
+   its own kind:
+   - Ends with `password:` (classic `user@host's password:` / PAM `Password:`) and the kind is
+     `password` → fetch the secret for `SSHELF_HOST_ID` from `secrets` (keyring or age vault),
+     print it, exit `0`.
+   - Looks exactly like OpenSSH's local key prompt, `Enter passphrase for key '<path>':`, the
+     kind is `passphrase`, **and** `<path>` is one of the paths in `SSHELF_IDENTITY_FILES` →
+     same, print the secret and exit `0`.
+   - A secret-shaped prompt of the *other* kind, or a passphrase prompt naming a key this host
+     does not use → **exit non-zero** to decline. It is never answered with the queued code
+     either.
+   - Anything else (host-key `yes/no`, OTP/verification codes, arbitrary server text) → the
+     one-time code in `SSHELF_2FA_CODE` when one was queued for this connection, otherwise
+     **exit non-zero** to decline. **Never blindly print the secret.**
 
-A host uses one auth method, so answering both password and passphrase prompts with its one
-stored secret is correct.
-
-### Why inspection (by shape) is mandatory
+### Why shape alone is not enough
 
 `SSH_ASKPASS_REQUIRE=force` makes `ssh` route **every** `read_passphrase()` call to the
 helper, including the first-connect *"Are you sure you want to continue connecting
 (yes/no/fingerprint)?"*. If the helper answered that with the stored secret, the connection
-breaks. Worse, a malicious/compromised server could use **keyboard-interactive** auth to send
-a prompt that merely *mentions* "password" to phish the secret. Three defenses:
+breaks.
 
-- The helper matches the **shape** of real prompts (ends-with `password:` / contains
-  `passphrase for`) rather than a bare substring, so "Type your password to continue:" is
-  declined.
+The prompt text of a keyboard-interactive round is written by the **server**, and `Password:`
+is a perfectly well-shaped prompt. So a host that rejects your key can ask for a password over
+keyboard-interactive and, before 0.14.0, be handed the key's passphrase. That is why the kind
+is passed in and why a key host is also told which key files are in play: the only passphrase
+prompt it will answer is OpenSSH's own, naming a path it was given with `-i`. Defenses, in
+order of how much they carry:
+
+- The helper answers only prompts of its own kind, and a key host only for its own key files.
+- Key hosts pass `-o PreferredAuthentications=publickey`, so the server cannot offer password
+  auth at all. A key host that also needs a verification code passes
+  `publickey,keyboard-interactive`, since that is how the code arrives.
+- The helper matches the **shape** of real prompts rather than a bare substring, so "Type your
+  password to continue:" is not treated as a secret prompt.
 - sshelf passes `-o StrictHostKeyChecking=accept-new`, so the host-key prompt never fires
   for new hosts (known hosts are still verified; changed keys still hard-fail).
 - The secret is host-scoped, limiting blast radius even if a prompt is mis-answered.
+
+### 3a. The jump hop never sees the helper
+
+`ssh` starts the `ProxyJump` hop as a child process, so it inherits `SSH_ASKPASS` and the rest
+of the wiring. It does **not** forward the destination's `-o` options to that hop: only `-l`,
+`-p`, `-J`, `-F` and `-v` cross over. Nothing on the target's command line constrains the hop,
+so a hostile or compromised bastion could ask for a password and be handed the target's stored
+secret. What sshelf does instead, whenever the helper would be wired at all (a stored secret,
+or a queued verification code):
+
+- **One jump host**, and the string is made only of `A-Za-z0-9._@:[]-`: drop `-J` and pass
+
+  ```
+  -o ProxyCommand=ssh -o BatchMode=yes -o PasswordAuthentication=no \
+     -o KbdInteractiveAuthentication=no [-l USER] [-p PORT] -W '[%h]:%p' JUMP
+  ```
+
+  `USER`, `PORT` and `JUMP` come from the stored `user@host:port`. `BatchMode=yes` on its own
+  disables password prompts; the two explicit `no`s are there so the rule does not rest on one
+  reading of the man page. A hop reached this way can authenticate with an agent or an
+  unencrypted key file and nothing else, which is what the FAQ always said jump hosts had to
+  be. The allowlist is narrow because `ssh` runs a `ProxyCommand` through your shell.
+- **Two or more hops**, or one that does not parse or does not pass the allowlist: `-J` stays
+  exactly as stored and **nothing** is wired. `ssh` asks for the target's secret on the
+  terminal, and sshelf prints `multi-hop jump with a stored secret: ssh will ask for it on the
+  terminal` first so that is not a surprise. In tmux mode the connection falls back to the
+  in-place handoff for the same reason: a new window has no terminal to ask on.
+- **Nothing stored and no code queued** (agent hosts, key hosts with an unencrypted key):
+  `-J` is untouched. There is no helper for a hop to inherit.
+
+`master_args` (the transfer ControlMaster) and `build_forward_command` (port forwards) build
+their argv through the same function, so they get the same treatment.
 
 ### Validated by the M0 spike (2026-06-05, macOS, OpenSSH 10.2)
 
@@ -127,8 +187,10 @@ expected to be identical.
 
 ## 4. Known v1 limitations
 
-- Password-auth jump hosts are unsupported. The helper only has the target's secret and
-  can't tell which hop is prompting. Jump hosts must use key/agent auth in v1.
+- Password-auth jump hosts are unsupported, and since 0.14.0 that is enforced rather than
+  only documented (§3a). The helper only has the target's secret and can't tell which hop is
+  prompting, so a hop is either constrained by an explicit `ProxyCommand` or gets no helper at
+  all. Jump hosts must use key/agent auth.
 - macOS unsigned builds: the re-exec'd askpass child reading Keychain may trigger an OS
   approval prompt every connect (Keychain ACLs are keyed to code signature). Ad-hoc sign for
   dev; document for users building from source.

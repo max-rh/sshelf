@@ -126,9 +126,11 @@ up in the command sshelf builds.
 
 For the hosts that can't use keys, sshelf stores the password in your OS keyring (or an
 `age`-encrypted vault on a headless box) and supplies it through `SSH_ASKPASS` when ssh asks.
-It answers only prompts with the shape of a real password or passphrase prompt, so a server
-can't phish the secret with look-alike text. The password is never in a file, never in `ps`,
-never on a command line. Hosts that also want a verification code get a prompt for it before
+The helper is told which secret it is holding, so a password host answers a password prompt
+and a key host answers only its own key's passphrase prompt. A server that asks for the other
+one gets nothing, and a key host is connected with `PreferredAuthentications=publickey` so it
+cannot be asked in the first place. The password is never in a file, never in `ps`, never on a
+command line. Hosts that also want a verification code get a prompt for it before
 the connection starts. [Passwords, keys & 2FA](https://max-rh.github.io/sshelf/passwords-2fa.html)
 · [Security](https://max-rh.github.io/sshelf/security.html).
 

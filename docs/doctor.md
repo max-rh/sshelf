@@ -46,6 +46,7 @@ action** on its own line.
 | **orphaned secrets** | never | a stored secret belongs to no host (vault mode only, see below) |
 | **ssh-agent** | never | `$SSH_AUTH_SOCK` is unset, or points at a socket that's gone, while hosts use agent auth |
 | **ssh_config export** | never | the [exported fragment](export.md) no longer matches your hosts |
+| **config directory permissions** | never | the config directory is group-writable, world-writable, or owned by someone else (unix only) |
 
 Two notes on the edges:
 

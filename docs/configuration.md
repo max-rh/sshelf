@@ -17,6 +17,13 @@ Point sshelf at an alternate **config file** with `--config FILE` or `$SSHELF_CO
 config-file location itself isn't a key in the file (that would be circular). The **hosts
 file** location *is* a setting.
 
+That file's directory becomes sshelf's config directory, and sshelf will create it at mode 0700
+if it isn't there. It will **not** change the permissions of one that already exists: pointing
+`--config` at a file in a directory you share with other tools or other people leaves that
+directory exactly as you set it. The default `~/.config/sshelf` is sshelf's own and is still
+held at 0700 on every run. `sshelf doctor` tells you if a config directory is group-writable,
+world-writable, or not owned by you.
+
 ## The settings screen (`F2`)
 
 `Tab` moves between fields; `Enter` or `Ctrl-s` saves, `Esc` cancels.

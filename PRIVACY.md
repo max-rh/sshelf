@@ -21,6 +21,12 @@ against) is in [SECURITY.md](SECURITY.md).
 - Its own files, the four above, always by atomic replace so a crash can't shred them.
 - `~/.config/sshelf/ssh_config`, the export fragment, but only after you run
   `sshelf export` once. From then on it is rewritten whenever your hosts change.
+- `~/.local/share/sshelf/logs/fwd-<id>.log` while a background port forward is running: that
+  `ssh -N` process's stderr, so a forward that dies can say why. Deleted when the forward stops.
+- `~/.local/share/sshelf/run/` (or `$XDG_RUNTIME_DIR/sshelf/` when that is set) while the
+  transfer screen is open: a directory per session holding one `ssh` control socket, removed
+  when the screen closes.
+- The transfer log, only if you asked for one with `--transfer-log` or `$SSHELF_TRANSFER_LOG`.
 - One keyring entry per host you gave a password to, under the service name `sshelf`,
   keyed by the host's id. In vault mode it's a line in `vault.age` instead.
 - Nothing under `~/.ssh`. Not `config`, not anything else, not ever. (The `ssh` sshelf
@@ -51,7 +57,9 @@ host id, so renaming a host keeps its password.
 
 Never in `hosts.toml`, which is safe to commit and share. Never on a command line, so
 never in `ps` or your shell history. Never in a log: passwords reach `ssh` through
-`SSH_ASKPASS`, and even the optional transfer log records only commands and their errors.
+`SSH_ASKPASS`, so the forward logs and the optional transfer log record commands, paths and
+errors and no secret. Those do describe your connections in full, which is why they live in
+the data directory at mode 0600 rather than in `/tmp`.
 
 ## How to check
 

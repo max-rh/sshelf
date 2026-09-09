@@ -14,8 +14,16 @@ config hand-editable instead of buried in macOS `~/Library`.
 | `forwards.json` | `~/.local/share/sshelf/forwards.json` | app | Ledger of active background port-forwards (PIDs). Reconciled against the OS on launch. Mode `0600`. |
 | `ssh_config` | `~/.config/sshelf/ssh_config` | app | Exported ssh_config `Include` fragment (`sshelf export`), derived from `hosts.toml` and refreshed on every hosts save once present. Mode `0600`. |
 | `vault.age` | `~/.local/share/sshelf/vault.age` | app | **Fallback** encrypted secret store (only when no OS keyring). Mode `0600`. |
+| forward logs | `~/.local/share/sshelf/logs/fwd-<id>.log` | app | One per running background forward: that `ssh -N`'s stderr. Removed when the forward stops or is reaped. Mode `0600`, in a `0700` directory. |
+| mux sockets | `$XDG_RUNTIME_DIR/sshelf/mux-<ulid>/m.sock` | app | The transfer screen's ControlMaster socket, in a directory created per session at mode `0700` and removed when the screen closes. Falls back to `~/.local/share/sshelf/run/` when `XDG_RUNTIME_DIR` is unset. |
 
-Directories are created on first run (`0700`). **Secrets are never written to `hosts.toml`.**
+Directories sshelf creates are created `0700`, and only the last component: a missing ancestor
+of a custom `--config` path is created the way `mkdir -p` would. sshelf never changes the mode
+of a directory it did not create, so pointing `--config` at a file in a shared directory leaves
+that directory exactly as it was. Files sshelf creates are created with their final mode
+already set rather than chmodded afterwards, and always exclusively, so an existing file or a
+symlink at the name fails the write instead of being followed. **Secrets are never written to
+`hosts.toml`.**
 
 ## `Host` / `Site` schema (`hosts.toml`)
 

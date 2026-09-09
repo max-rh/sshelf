@@ -31,6 +31,14 @@ transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 A host name and a subcommand can't be combined: `sshelf prod-web list` is refused rather than
 quietly running `list` and forgetting the host.
 
+Plain output replaces terminal control characters. Host names, users, hostnames, tags and site
+names come out of `hosts.toml`, an imported `~/.ssh/config` or a tailnet, and any of those can
+be crafted: an escape sequence in one of them could move the cursor or forge the lines after
+it. Every human-readable field `sshelf list`, `import`, `add`, `sites`, `doctor` and the shell
+completions print goes through a filter first, which turns control characters, C1 codes and
+bidirectional overrides into U+FFFD. The add form and the importers refuse such a name outright,
+and an existing `hosts.toml` still loads: those values are cleaned up on display, not rejected.
+
 Environment: `$SSHELF_TAILSCALE_BIN` names the `tailscale` binary `--tailscale` should run,
 for installs that aren't on `PATH` (sshelf otherwise tries `PATH`, then the macOS app bundle
 at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`). `$SSHELF_VAULT_PASSPHRASE` uses
@@ -99,6 +107,13 @@ scripts and integrations. `sshelf sites --json` does the same for sites.
 The host fields are the record as stored in `hosts.toml`, so a `user`, `port`, jump host or
 identity file inherited from a [site](sites-tags.md) stays `null` or empty there. The resolved
 values are in `command`.
+
+JSON output is **not** filtered the way the plain output is: the serializer already escapes
+control characters, and a script needs the value exactly as it is stored. `command` is built as
+if no secret were stored for the host, so a listing never reads your keyring once per host;
+`sshelf print-command` and `Ctrl-y` do resolve the secret and can therefore differ for a host
+that has both a stored secret and a jump host. See
+[SSH command generation](ssh-command.md).
 
 `sshelf doctor` has **no** `--json`: its exit code (`0` healthy, `1` something failed) is the
 scriptable part, and a machine-readable report has no users yet ([D-027](decisions.md)).

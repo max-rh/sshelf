@@ -32,7 +32,7 @@
                  │              │                                │
                  │              ▼                                │
                  │   askpass mode: inspect argv[1];              │
-                 │   if password prompt ─▶ secrets.get(host_id)  │
+                 │   own kind's prompt ─▶ secrets.get(host_id)   │
                  │      (keyring → age vault) ─▶ print, exit 0    │
                  │   else ─▶ exit non-zero (decline)             │
                  └─────────────────────────────────────────────┘

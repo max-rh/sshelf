@@ -5,7 +5,56 @@ versions follow SemVer.
 
 ## [Unreleased]
 
-## [0.13.1] — 2026-09-04
+### Security
+
+An outside security review of the tree read the source, the config, the history, the
+dependencies and the CI, and found thirteen things worth fixing. This release closes all of
+them. None was a remote code execution or a leak in the default setup, but two of them undercut
+promises the docs were already making.
+
+- The askpass helper now knows whether the stored secret is a login password or a key
+  passphrase, and only answers the matching prompt. Before, a server that asked `Password:`
+  over keyboard-interactive could be handed a key passphrase, because the text of that prompt
+  is written by the server and `Password:` is a perfectly ordinary shape. A key host now
+  answers only OpenSSH's own `Enter passphrase for key '<path>':`, and only when the path is one
+  of the key files sshelf passed with `-i`.
+- Key hosts connect with `PreferredAuthentications=publickey` (plus `keyboard-interactive` for
+  2FA hosts), so a server can no longer steer a key host into a password prompt. If a key host
+  of yours relied on falling back to a password, add the password as a second host or switch its
+  auth to password.
+- Jump hosts never see the askpass helper. With one jump host and a stored secret the hop runs
+  with `BatchMode=yes` and password and keyboard-interactive auth off, which is what the FAQ
+  always said jump hosts had to be. With two or more hops, ssh asks for the target's secret on
+  the terminal instead, and sshelf says so before it does.
+- The transfer screen's control socket moved from `/tmp` into a private directory under
+  `$XDG_RUNTIME_DIR` (or the data dir) with mode 0700, so another local user can't squat on the
+  path and stall or answer the connection.
+- Remote listings and mkdir over sftp have a timeout and an output cap, and closing the transfer
+  screen no longer waits forever on a stuck server.
+- Temporary files are created exclusively with random names, forward logs moved from `/tmp` into
+  the data directory with mode 0600, and the transfer log refuses to follow a symlink.
+- `sshelf list`, `sshelf import`, `sshelf doctor` and the shell completions replace terminal
+  control characters in host and site fields before printing them. `sshelf list --json` is
+  unchanged. The add/edit form and the importers now refuse a name that carries one.
+- The 2FA code is masked while you type it, in the TUI and on the command line.
+- sshelf no longer changes the permissions of a config directory it didn't create. `sshelf
+  doctor` warns if that directory is world- or group-writable, or is not yours.
+- Downloads land under a temporary name and are installed without replacing an existing file.
+  Uploads are still checked against the last listing, which is refreshed right before a send;
+  the docs now say what that check does and does not promise.
+- Release workflows: every action is pinned to a commit, the version input can't reach a shell
+  unescaped, companion jobs build the exact commit the release built and refuse to publish if
+  the tag has moved, permissions are read-only except where a job uploads, and release artifacts
+  now carry build attestations.
+
+### Changed
+
+- `Ctrl-y` and `sshelf print-command` resolve the host's stored secret first, so the command they
+  give you is the one sshelf would run, including the `ProxyCommand` a jump host gets. The
+  `command` field of `sshelf list --json` is unchanged: a listing has no business reading the
+  keyring once per host.
+
+## [0.13.1] (2026-09-04)
 
 ### Fixed
 - The host list now shows the user a host inherits from its site, instead of falling back

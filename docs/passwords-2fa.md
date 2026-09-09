@@ -55,6 +55,12 @@ password. Set **2FA = yes** on the host (form, or `sshelf add ... --2fa`):
   live session.
 - CLI connect (`sshelf <host>`): prompts for the code on the terminal.
 
+The code is masked either way. The popup shows one bullet per character, like the password
+field in the host form, and the terminal prompt reads with echo off so the code never lands in
+scrollback or a screen recording. `Esc` or `Ctrl-C` backs out without connecting. If stdin is a
+pipe rather than a terminal, the old line read is used instead, so a script can still feed the
+code in.
+
 Codes are manual entry: sshelf does not store TOTP seeds. The flag exists because a
 connect that auto-supplies a stored secret runs ssh with `SSH_ASKPASS_REQUIRE=force`, which
 routes the code prompt to the helper with **no terminal fallback**. Unflagged, such a
@@ -64,8 +70,14 @@ agent.) Background: [`decisions.md`](decisions.md), D-022.
 
 ## Limitations worth knowing
 
-- Jump hosts must use key/agent auth. The askpass helper only holds the *target's* secret
-  and can't tell which hop is prompting.
+- Jump hosts must use key/agent auth. The askpass helper only holds the *target's* secret and
+  can't tell which hop is prompting, so with a secret in play sshelf either constrains a single
+  hop to key/agent auth explicitly or hands it no helper at all. See the
+  [FAQ](faq.md#can-a-jump-host-use-password-auth).
+- A key host is connected with `PreferredAuthentications=publickey` (plus
+  `keyboard-interactive` when it needs a code), so a server cannot fall back to asking for a
+  password. If one of your key hosts relied on that fallback, add the password as a second host
+  or change that host's auth to password.
 - Building from source on macOS: an unsigned binary may trigger a Keychain approval
   prompt on connect (Keychain ACLs are keyed to the code signature). See the
   [FAQ](faq.md#password-auto-supply-isnt-working).

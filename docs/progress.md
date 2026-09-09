@@ -3,9 +3,112 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.13.1, a patch release for the first two reported bugs (the user
-shown in the host list, hidden files in the remote transfer pane). v0.14.0, secrets from a
-password manager, is next.
+**Current milestone:** v0.14.0, security hardening. No new features: it closes the thirteen
+findings of an outside review of the tree. v0.15.0, secrets from a password manager, is next.
+
+---
+
+## 2026-09-09: security hardening, thirteen findings closed
+
+An outside review read the source, the configuration, the history, the dependencies and the CI
+at `ce7d6ed` and came back with thirteen things worth fixing. None of them was a remote code
+execution or a leak in the default setup, but two undercut promises the docs were already
+making, so this is a minor release rather than a patch, and it carries no new features.
+
+**The askpass helper now knows which secret it holds.** It used to answer any prompt ending in
+`password:` and any prompt containing `passphrase for` with the one stored value, whichever kind
+that value was. The text of a keyboard-interactive prompt is written by the server, and
+`Password:` is a perfectly ordinary shape, so a host that rejected your key could ask for a
+password and be handed the key's passphrase. `configure_askpass` now also sets
+`SSHELF_SECRET_KIND` (`password`, `passphrase` or `agent`) and, for key hosts,
+`SSHELF_IDENTITY_FILES`. The helper answers a password prompt only for a password host, and
+OpenSSH's own `Enter passphrase for key '<path>':` only for a key host whose `-i` list holds
+that path. Anything secret-shaped of the wrong kind is declined, and never answered with the
+queued verification code instead. A missing or unreadable kind declines everything. The third
+kind, `agent`, exists so an agent host with a verification code still answers the code prompt
+while refusing both secret shapes.
+
+**Key hosts pin public-key auth.** `-o PreferredAuthentications=publickey`, or
+`publickey,keyboard-interactive` for a host that needs a verification code. A server can no
+longer steer a key host into a password prompt at all. This is the first of two behaviour
+changes: a key host that quietly fell back to a password now fails with the server's
+"Permission denied (publickey)".
+
+**A jump hop never sees the helper.** `ssh` starts the hop as a child, which inherits
+`SSH_ASKPASS`, and it forwards only `-l`, `-p`, `-J`, `-F` and `-v` from the destination, so
+nothing on the target's command line reached the hop. With one jump host and something to
+protect, `-J` is replaced by an explicit `ProxyCommand` running the hop with `BatchMode=yes`,
+`PasswordAuthentication=no` and `KbdInteractiveAuthentication=no`. A jump string outside
+`A-Za-z0-9._@:[]-` never goes inside that command, since `ssh` runs it through a shell. Two or
+more hops cannot be constrained one by one, so nothing is wired: `ssh` asks on the terminal and
+sshelf prints one line first. That is the second behaviour change. In tmux mode such a
+connection opens in place, because a new window has no terminal to ask on. Decision: D-029.
+
+Worth writing down, because it was the thing I was least sure of: an experiment with two
+rootless sshd instances showed that plain `-J` does not pass `StrictHostKeyChecking` or
+`UserKnownHostsFile` down to the hop either. The hop has always done its own host-key check
+against the user's real `~/.ssh/known_hosts`. So the `ProxyCommand` is behaviour-equivalent
+there and adds no new failure mode. OpenSSH also resolves `~` from the passwd database rather
+than `$HOME`, which is why the hop half of the manual check could not be driven from a
+throwaway HOME without writing under the real `~/.ssh`, which is not something sshelf does.
+
+**The rest, one line each.** The transfer screen's control socket moved from
+`/tmp/sshelf-mux-<pid>-<seq>.sock` into a per-session `0700` directory under
+`$XDG_RUNTIME_DIR` (or the data dir), created with `mkdir` rather than `create_dir_all` so an
+existing name is refused rather than adopted. Short-lived `sftp` children (listing, `mkdir`,
+`pwd`) run under a deadline and an output cap, the worker polls its command channel while one
+is running, and closing the screen waits two seconds for an acknowledgement instead of joining
+a thread that may be blocked. Single-file downloads land on a `.sshelf-part-<ulid>` name and are
+installed with a link, which fails rather than replacing anything, symlinks included; folders
+and uploads keep the listing check, and the remote listing is refreshed right before each send.
+A cancel that arrives while a listing is running is
+no longer swallowed by it, and `ssh -O check` and `ssh -O exit` are bounded too, so no call the
+worker makes is unbounded any more. An upload into a listing the entry cap cut short is refused
+rather than guessed at, since a listing check is all an upload has. On a filesystem with no hard
+links (exFAT, FAT32, some network mounts) the download install checks the name and renames
+instead of throwing the bytes away. `atomic_write` picks a ULID temp name, creates it
+exclusively with its final mode at `open(2)`,
+and sweeps siblings older than an hour. Forward stderr logs moved to
+`<data_dir>/logs/fwd-<id>.log` at `0600`, and stopping a forward also unlinks the old `/tmp`
+one. The transfer log is opened `O_NOFOLLOW` and `0600`. `ensure_dirs` no longer chmods a config
+directory sshelf did not create, and `sshelf doctor` gained a `config directory permissions`
+check for exactly that case. Plain CLI output runs host and site fields through one sanitizer
+(`src/display.rs`), the add form and the importers refuse such a name, and `--json` is
+untouched. The 2FA code is masked in the TUI and read with echo off on the command line, in a
+`Zeroizing` buffer either way. Decision: D-030.
+
+**The release pipeline.** Every `uses:` is pinned to a 40-character commit SHA with the version
+in a trailing comment, and every one was resolved from the API rather than from memory. The
+`cut-release.yml` version input reaches the shell through `env:` instead of being spliced into
+the script, the job is gated on `github.ref` rather than a `run:` check, the checkout no longer
+persists credentials, and `RELEASE_TOKEN` is read in one step from a `release` environment. The
+`.deb`, `.rpm` and crates.io companions check out `workflow_run.head_sha` and refuse to publish
+if the tag has moved off it; the `.deb` and `.rpm` workflows are now a read-only build job plus
+a small write-scoped attach job. `release.yml` is read-only at the top level, publishes build
+attestations, and installs dist through a pinned action rather than piping a script from the
+network. CI fails if `RELOAD_SSH_ALGO` is set, and the audit job is
+`cargo audit --deny unsound --deny yanked` with three ignores that each name their reason and
+date. `dist-workspace.toml` gained `allow-dirty = ["ci"]`, so `release.yml` is hand-maintained
+from here: regenerating means dropping that key, running `dist generate`, and re-applying the
+pins.
+
+**Did the tests have teeth.** Yes, checked rather than assumed. Reverting the classifier to the
+old shape-only behaviour makes `askpass::tests::classify_matrix`,
+`a_key_host_with_no_identity_files_answers_nothing`, and two of the four end-to-end tests in
+`tests/askpass_plumbing.rs` fail, including the one that asserts a `Password:` prompt gets
+nothing from a key host. That file drives a real `sshelf` process through a stub `ssh` that asks
+the prompts a hostile endpoint would.
+
+**For Max, outside this session.** Create the GitHub environment named `release` and move the
+`RELEASE_TOKEN` secret into it; `cut-release.yml` will not find the secret until that is done.
+Turn on Dependabot alerts, which the review noted are disabled. File the upstream issue asking
+`ssh2-config` to move its OpenSSH-cloning build script into an explicit developer tool and drop
+`git2` from its published build dependencies, and decide whether the askpass finding warrants a
+GHSA after the tag. Evaluating a smaller SSH config parser is the other half of that and is not
+scheduled.
+
+**What's next.** v0.15.0, secrets from a password manager (`op` / `bw` / `rbw` / `pass`). The
+secret-kind plumbing added here is what that brief extends.
 
 ---
 

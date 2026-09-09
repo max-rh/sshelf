@@ -30,10 +30,33 @@ The host-key id is the lookup key in both stores, so renaming a host keeps its s
 
 Via `SSH_ASKPASS`: `ssh` calls the helper, which prints the secret on stdout. The password
 is **never** passed as a CLI argument (no `sshpass -p`), so it never appears in `ps`/argv. See
-[`ssh-command.md`](./ssh-command.md). The helper matches the *shape* of OpenSSH's standard
-prompts (a login password `...password:`, or a key passphrase `Enter passphrase for key ...`)
-and declines host-key confirmations, OTP/verification codes, and arbitrary server text, so a
-keyboard-interactive server can't phish the stored secret by merely mentioning "password".
+[`ssh-command.md`](./ssh-command.md).
+
+The prompt the helper is handed is server-controlled on a keyboard-interactive round, so
+matching its shape is not by itself enough: `Password:` is a well-shaped prompt that any host
+can send. The connect therefore also tells the helper **which** secret it is holding, and the
+helper answers only that one:
+
+- A password host answers a login-password prompt and nothing else.
+- A key host answers only OpenSSH's own `Enter passphrase for key '<path>':`, and only when
+  `<path>` is one of the identity files that connect actually passed with `-i`. A `Password:`
+  from the server gets nothing.
+- A secret-shaped prompt of the wrong kind is declined, and is never answered with a queued
+  verification code instead.
+- A key host also connects with `-o PreferredAuthentications=publickey` (plus
+  `keyboard-interactive` when the host needs a verification code), so a server cannot steer it
+  into a password prompt in the first place.
+- Host-key confirmations never arrive, because connect passes
+  `StrictHostKeyChecking=accept-new`.
+
+A jump hop is a child of `ssh` and inherits the same environment, and OpenSSH does not forward
+the destination's `-o` options to it. So whenever the helper is wired, a single jump host is
+replaced by an explicit `ProxyCommand` with `BatchMode=yes`, `PasswordAuthentication=no` and
+`KbdInteractiveAuthentication=no`, which leaves the hop with an agent or an unencrypted key
+and nothing else. A chain of two or more hops cannot be constrained that way, so the helper is
+not wired at all and `ssh` asks for the target's secret on the terminal. Details and the
+rejected alternatives: [`ssh-command.md`](./ssh-command.md#3a-the-jump-hop-never-sees-the-helper)
+and [D-029](decisions.md).
 
 ## The tmux boundary
 
@@ -44,8 +67,10 @@ those pairs are the **tmux client's argv**: readable by anyone on the machine wi
 exactly the leak `SSH_ASKPASS` exists to avoid, so the rule is content-based:
 
 - Only the askpass *wiring* ever crosses: `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`,
-  `SSHELF_ASKPASS=1`, and `SSHELF_HOST_ID`. The id is an opaque ULID; the helper trades it for
-  the secret in the keyring, exactly as it does after an `exec()`. No value there is a secret.
+  `SSHELF_ASKPASS=1`, `SSHELF_HOST_ID`, `SSHELF_SECRET_KIND`, and (for key hosts)
+  `SSHELF_IDENTITY_FILES`. The id is an opaque ULID; the helper trades it for the secret in the
+  keyring, exactly as it does after an `exec()`. The kind is one of three words and the
+  identity files are paths you can already read in `hosts.toml`. No value there is a secret.
 - `SSHELF_2FA_CODE` and `SSHELF_VAULT_PASSPHRASE` never cross. A connection that needs
   either (a 2FA host, or a stored-secret host in vault mode) falls back to the in-place
   `exec()` handoff, where the environment is passed by `fork`/`exec` and never appears in argv.

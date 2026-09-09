@@ -68,23 +68,73 @@ filter: that keeps the names with a dot in them, and the hidden ones sort to the
 
 - Directories are shown as `name/` and symlinks as `name@`, and symlinks are skipped.
 - A same-named file or folder already present in the destination is **skipped** (with a
-  message), never overwritten.
+  message), never overwritten. What that promise rests on differs by direction, so it is spelled
+  out under [What "never overwritten" covers](#what-never-overwritten-covers) below.
 - One transfer runs at a time: a batch is a queue, not parallel copies. Single-file downloads
   show bytes + percent; folders and uploads show as in-flight (cancelable with `Esc`, which
   abandons the rest of the queue too).
 - Filenames are shell-quoted (spaces are fine) and control characters are stripped from
   display.
+- A remote listing is given 60 seconds and a remote `mkdir` 30 seconds before sshelf kills the
+  `sftp` running it, and the pane says `timed out after 60s listing <path>` rather than sitting
+  there. A listing is also capped at 16 MiB of output and 50,000 entries; past that the pane
+  says `listing truncated at 50000 entries` instead of passing a partial directory off as the
+  whole of it. Closing the screen never waits on any of this: `Esc` gets the terminal back even
+  if the server has stopped answering.
 - The connection uses `StrictHostKeyChecking=accept-new`, like connect: a first-time host key
   is trusted on first use, a **changed** key still hard-fails. See [Security](security.md).
 - Renaming, deleting, changing permissions, and overwriting are not in this version.
+
+## What "never overwritten" covers
+
+**Downloading a single file** never replaces anything. The bytes land on a private
+`.sshelf-part-…` name in the destination directory first, and the finished file is put in place
+with a link, which fails if any name is already there. A symlink counts as a name, and it is
+never followed, so nothing can redirect the write. If the name turned up while the transfer was
+running, the entry is skipped exactly as the pre-flight check would have skipped it, and the
+queue carries on.
+
+Some filesystems have no hard links at all: exFAT and FAT32, which is what a USB stick usually
+is, and a fair number of SMB and FUSE mounts. Downloading onto one of those checks that the name
+is still free and then moves the temporary onto it, which is a smaller window than writing the
+final name directly but not the same guarantee. The bytes are never thrown away over it.
+
+**Downloading a folder** and **uploading anything** are checked against the last listing of the
+destination, and nothing more. There is no no-replace open to be had over the `sftp` command
+line, and a folder cannot be installed with a link. The window is small (sshelf refreshes the
+remote listing immediately before each send), but a file that appears on the server between that
+refresh and the write can be overwritten. If that matters for what you are sending, look at the
+destination first.
+
+A remote directory past the 50,000-entry cap is the one case where that check cannot be made at
+all, so sshelf refuses the send rather than guess:
+
+```text
+the destination listing is incomplete (cut at 50000 entries) — sshelf can't promise not to overwrite there
+```
+
+Downloads into such a directory are fine, since they do not rely on the listing.
+
+## Where the connection lives
+
+The screen holds one `ssh` ControlMaster, and its control socket lives in a directory sshelf
+creates for that session with mode 0700: `$XDG_RUNTIME_DIR/sshelf/mux-<ulid>/m.sock` when
+`XDG_RUNTIME_DIR` is set, otherwise `~/.local/share/sshelf/run/mux-<ulid>/m.sock`. It used to be
+a predictable name straight in `/tmp`, where another account on the machine could take the path
+first. Both the socket and the directory are removed when the screen closes. A stray `mux-*`
+directory from a crash is harmless and can be deleted.
 
 ## Debugging a failing transfer
 
 The status line shows the underlying `sftp` error. For the full story:
 
 ```sh
-sshelf --transfer-log /tmp/sshelf-transfer.log     # or $SSHELF_TRANSFER_LOG
+sshelf --transfer-log ~/.local/share/sshelf/transfer.log     # or $SSHELF_TRANSFER_LOG
 ```
 
-This appends every `ssh`/`sftp` command and its stderr to the file. **No secrets are
-logged**: passwords reach `ssh` via `SSH_ASKPASS`, never the command line.
+This appends every `ssh` and `sftp` command, the local and remote paths they touch, their
+stderr, and every value the host's `extra_args` contributes. **No password is logged**: a stored
+secret reaches `ssh` via `SSH_ASKPASS` and never the command line. Taken together, though, that
+is a full description of the connection, so keep the file somewhere private. sshelf creates it
+mode 0600 and refuses to follow a symlink at that path (you get one line on stderr and no log),
+which is why the example points inside the data directory rather than at `/tmp`.

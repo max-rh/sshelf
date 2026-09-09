@@ -5,6 +5,99 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-030 · Private runtime files: exclusive creation, a 0700 session directory, and no borrowed chmods
+Four small file-handling habits added up to more exposure than any of them looked like on its
+own. The transfer screen's ControlMaster socket was `/tmp/sshelf-mux-<pid>-<seq>.sock`, which
+another local account can pre-create (that alone stalls the handshake for its full 30 seconds)
+or, on an OpenSSH build that does not check socket ownership, sit on and answer as the mux, so
+the `sftp` ride commands go somewhere else entirely. `atomic_write` derived its temp name from
+the process id and opened it with `File::create`, which follows a symlink. Port-forward stderr
+logs and the optional transfer log went to predictable `/tmp` names at whatever the umask
+happened to be, and they carry hostnames, paths, commands, ssh errors and every `extra_args`
+value. And `ensure_dirs` chmodded the config directory to 0700 on every run, including a
+directory the user had chosen with `--config` and never asked sshelf to make private.
+
+The rules now:
+
+**Sockets live in a directory nobody else can write.** `$XDG_RUNTIME_DIR/sshelf/` when that
+variable is set and names a real directory, otherwise `run/` under the data dir. Inside it, a
+fresh `mux-<ulid>` created with `mkdir(0700)` and no `create_dir_all`: a name that already exists
+is a name somebody else got to first, so sshelf takes another one rather than moving in. The
+socket is `m.sock` inside that, and both go away on teardown. An AF_UNIX path over 100 bytes is
+an error naming the path, not a silent fall back to `/tmp`, which would give up exactly the
+protection the directory exists for.
+
+**Files sshelf creates are created exclusively, with the mode at `open(2)`.** Temp names carry a
+ULID rather than the pid, and `create_new` refuses an existing file or symlink instead of
+following it. The mode is passed to the open and then applied exactly through the handle already
+held, so there is no second path lookup to race and no window where the umask has decided
+something wider. Because a unique name means a crashed write is never reclaimed by the next one,
+each write also sweeps sibling temp files older than an hour.
+
+**Logs live in the data dir.** Forward stderr goes to `<data_dir>/logs/fwd-<id>.log`, 0600
+inside a 0700 directory. The user-selected transfer log is opened `O_NOFOLLOW` and 0600, and a
+symlink at that path gets one line on stderr and no log rather than a redirected one.
+
+**sshelf never changes the mode of a directory it did not create**, and only ever the last
+component: `--config /srv/team/sshelf/config.toml` creates `sshelf` at 0700 and leaves
+`/srv/team` to `mkdir -p`. The default config and data directories are still held at 0700 every
+run, because those are sshelf's own. `sshelf doctor` reports a config directory that is
+group-writable, world-writable, or not owned by you, which is the read-only half D-027 allows.
+
+Rejected: keeping a `/tmp` fallback for a socket path that will not fit, since a fallback that
+undoes the fix is worse than an error that names the problem. Rejected: refusing a symlinked
+config or data directory. Dotfile managers routinely make `~/.config` a symlink into a checkout,
+refusing to write through one would break an entirely ordinary setup, and anyone who can repoint
+that symlink can already read what it leads to. Rejected: chmodding an existing custom config
+parent to 0700 "to be safe", which is how a shared directory quietly loses access for everyone
+else on the box.
+
+### D-029 · The askpass helper is scoped to the secret it holds, and a jump hop never gets it
+The helper answered any prompt ending in `password:` and any prompt containing `passphrase for`
+with the one stored value for the host, whichever kind that value happened to be. Shape matching
+was the whole defence, and `Password:` is a valid shape. On a keyboard-interactive round the
+prompt text is written by the **server**, so a host that rejects your key can ask for a password
+and be handed the key's passphrase. The same wiring is inherited by the process `ssh` starts for
+a `ProxyJump` hop, and OpenSSH forwards only `-l`, `-p`, `-J`, `-F` and `-v` from the destination
+to that hop, so nothing on the target's command line constrained it either.
+
+Three changes, together:
+
+**The secret has a kind.** `configure_askpass` sets `SSHELF_SECRET_KIND` to `password`,
+`passphrase` or `agent` from the host's auth method, and for key hosts also
+`SSHELF_IDENTITY_FILES` (the `-i` paths, `~` already expanded). A password host answers only a
+login-password prompt; a key host answers only OpenSSH's own `Enter passphrase for key '<path>':`
+and only when `<path>` is one of those files. A secret-shaped prompt of the wrong kind is
+declined and is never answered with a queued verification code instead. A missing or unreadable
+kind declines everything. The third value, `agent`, is there so a key-or-agent host with a
+verification code and no stored secret still answers the code prompt while refusing both secret
+shapes.
+
+**Key hosts constrain the server.** They connect with `-o PreferredAuthentications=publickey`,
+or `publickey,keyboard-interactive` when the host needs a verification code, so a server cannot
+offer password auth at all. This is the one user-visible behaviour change: a key host that used
+to quietly fall back to a password prompt on the server now fails with the server's
+"Permission denied (publickey)". Add the password as a second host, or switch that host's auth
+to password.
+
+**A jump hop is constrained or gets nothing.** Whenever the helper would be wired, one jump host
+is expressed as an explicit `ProxyCommand` running the hop with `BatchMode=yes`,
+`PasswordAuthentication=no` and `KbdInteractiveAuthentication=no`, which leaves it an agent or an
+unencrypted key file and nothing else. Two or more hops cannot be constrained individually, so
+nothing is wired: `ssh` asks for the target's secret on the terminal, and sshelf says so first.
+A jump string outside `A-Za-z0-9._@:[]-` takes the same path, because `ssh` runs a
+`ProxyCommand` through the user's shell and an allowlist is cheaper to be sure about than
+quoting. `Ctrl-y` and `sshelf print-command` resolve the stored secret first so the copied
+command matches the real one; `sshelf list --json` does not, because a listing has no business
+reading the keyring once per host, and its `command` field is unchanged by this release.
+
+Rejected: having the helper inspect its parent process's argv to work out which hop is asking,
+which is fragile across platforms and depends on how `ssh` happens to spawn the hop. Rejected:
+writing a temporary `ssh -F` config for the hop, which would shadow the user's own
+`~/.ssh/config` aliases, and the never-touch-SSH-config promise says no generated config files.
+Rejected: keeping shape matching as the only defence, since the shapes are exactly what a server
+can imitate.
+
 ### D-028 · Transfer panes list hidden files on both sides, with no toggle
 The remote pane listed through `sftp`'s own `ls -l`, which drops dot-entries, while the local
 pane read the directory itself and kept them. A host's `.config` was therefore invisible, with
