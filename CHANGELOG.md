@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.14.0] (2026-09-09)
+
 ### Security
 
 An outside security review of the tree read the source, the config, the history, the
@@ -302,7 +304,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/max-rh/sshelf/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/max-rh/sshelf/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/max-rh/sshelf/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/max-rh/sshelf/compare/v0.11.0...v0.12.0
