@@ -15,13 +15,14 @@ exclude = [".github/", "docs/", "examples/", "book.toml", "dist-workspace.toml"]
 
 [dependencies]
 age = "0.10"
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 arboard = { version = "3.6.1", default-features = false }
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = { version = "4.6.5", features = ["unstable-dynamic"] }
 clap_mangen = "0.3.0"
 etcetera = "0.11.0"
 keyring = "3"  # backend enabled per-target below
+libc = "0.2"
 nucleo-matcher = "0.3.1"
 ratatui = "0.30.0"
 serde = { version = "1.0.228", features = ["derive"] }
