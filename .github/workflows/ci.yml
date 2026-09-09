@@ -112,6 +112,21 @@ jobs:
           printf 'format_version = 1\n[[host]]\nid = "ci-host"\nname = "cibox"\nhostname = "127.0.0.1"\nuser = "tester"\nauth = "password"\n' \
             > "$XDG_CONFIG_HOME/sshelf/hosts.toml"
           echo "ci-secret" | "$BIN" set-password cibox
-          out=$(SSHELF_ASKPASS=1 SSHELF_HOST_ID=ci-host "$BIN" "tester's password: ")
+          # The helper answers only the kind of secret the connect says it is holding, so the
+          # fixture sets SSHELF_SECRET_KIND exactly as ssh.rs::configure_askpass does (D-029).
+          out=$(SSHELF_ASKPASS=1 SSHELF_HOST_ID=ci-host SSHELF_SECRET_KIND=password \
+                "$BIN" "tester's password: ")
           test "$out" = "ci-secret"
+          # It fails closed without one: no kind, no answer, however well-shaped the prompt.
+          if out=$(SSHELF_ASKPASS=1 SSHELF_HOST_ID=ci-host "$BIN" "tester's password: "); then
+            echo "::error::the helper answered with no SSHELF_SECRET_KIND set"; exit 1
+          fi
+          test -z "$out"
+          # And a password host never hands its secret to a passphrase prompt, which is the
+          # half of the 2026-09 review that mattered most.
+          if out=$(SSHELF_ASKPASS=1 SSHELF_HOST_ID=ci-host SSHELF_SECRET_KIND=password \
+                   "$BIN" "Enter passphrase for key '/tmp/k': "); then
+            echo "::error::a password host answered a passphrase prompt"; exit 1
+          fi
+          test -z "$out"
           echo "headless vault path OK"
