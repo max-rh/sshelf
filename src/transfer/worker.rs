@@ -428,7 +428,7 @@ fn run(
     };
 
     let cmds = Commands::new(cmd_rx);
-    match handshake(&socket, &target, &mut master, &cmds) {
+    match handshake(&socket, &target, &mut master, &cmds, &host, has_secret) {
         Ok(()) => serve(&socket, &target, &cmds, &events, &dbg),
         Err(e) => {
             dbg.log(&format!("handshake failed: {e}"));
@@ -542,6 +542,8 @@ fn handshake(
     target: &str,
     master: &mut Child,
     cmds: &Commands,
+    host: &Host,
+    has_secret: bool,
 ) -> Result<(), String> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     loop {
@@ -556,7 +558,12 @@ fn handshake(
         }
         match master.try_wait() {
             // The master exited before the socket appeared → authentication/connection failed.
-            Ok(Some(_)) => return Err(child_error(master, "connection failed")),
+            Ok(Some(_)) => {
+                let stderr = drain_stderr(master);
+                return Err(crate::ssh::classify_auth_error(&stderr, host, has_secret)
+                    .or_else(|| tidy_error(&stderr))
+                    .unwrap_or_else(|| "connection failed".to_string()));
+            }
             Ok(None) => {}
             Err(e) => return Err(format!("ssh master error: {e}")),
         }
@@ -564,7 +571,9 @@ fn handshake(
             let _ = master.kill();
             let _ = master.wait();
             return Err(
-                "timed out opening the connection (wrong password, or host unreachable)".into(),
+                "timed out opening the connection — check the host is reachable \
+                 from here"
+                    .into(),
             );
         }
         std::thread::sleep(POLL);
@@ -779,9 +788,10 @@ fn join_capped(handle: JoinHandle<(Vec<u8>, bool)>) -> (String, bool) {
     (String::from_utf8_lossy(&bytes).into_owned(), truncated)
 }
 
-/// List a remote directory by running `sftp -b -` over the master and parsing `ls -la`.
+/// List a remote directory by running `sftp -b -` over the master and parsing `ls -lan`.
 /// The `-a` is what makes dotfiles appear: `sftp`'s own `ls` hides them otherwise, while the
 /// local pane's `read_dir` never did — the two panes have to show the same thing (D-028).
+/// The `-n` is what makes the listing parseable: see [`parse_ls_line`] (D-031).
 fn list_remote(
     socket: &ControlSocket,
     target: &str,
@@ -789,7 +799,7 @@ fn list_remote(
     cmds: &Commands,
     dbg: &DebugLog,
 ) -> Result<Listing, BatchError> {
-    let batch = format!("ls -la {}\n", shell_quote(&path.to_string_lossy()));
+    let batch = format!("ls -lan {}\n", shell_quote(&path.to_string_lossy()));
     let out = run_sftp_batch(
         Path::new("sftp"),
         socket.path(),
@@ -812,7 +822,7 @@ fn list_remote(
     Ok(parse_listing(&out))
 }
 
-/// Turn `ls -la` output into entries: directories first, then case-insensitive by name, which
+/// Turn `ls -lan` output into entries: directories first, then case-insensitive by name, which
 /// matches the local pane's ordering. Parsing stops at [`MAX_ENTRIES`] — one more line than that
 /// is read only to tell a listing that fits from one that was cut.
 fn parse_listing(out: &CappedOutput) -> Listing {
@@ -1180,11 +1190,6 @@ fn drain_stderr(child: &mut Child) -> String {
     buf
 }
 
-/// The most useful line of a child's stderr (ssh/sftp put the real cause last), or `fallback`.
-fn child_error(child: &mut Child, fallback: &str) -> String {
-    tidy_error(&drain_stderr(child)).unwrap_or_else(|| fallback.to_string())
-}
-
 /// The last non-blank line of `raw` (ssh/sftp/scp put the real cause last), if any.
 fn tidy_error(raw: &str) -> Option<String> {
     raw.lines()
@@ -1194,10 +1199,17 @@ fn tidy_error(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Parse one `sftp` `ls -la` line into a [`RemoteEntry`], or `None` for prompts, headers, and
-/// entries we don't browse (`.`/`..`, sockets/devices). The format (captured from OpenSSH):
-/// `mode  links  owner  group  size  month  day  time  PATH` — note `links` is `?` and `PATH`
-/// is the full path, so we take its basename. Symlinks show no ` -> target`, just an `l` mode.
+/// Parse one `sftp` `ls -lan` line into a [`RemoteEntry`], or `None` for prompts, headers, and
+/// entries we don't browse (`.`/`..`, sockets/devices). The format is fixed:
+/// `mode  links  uid  gid  size  month  day  time  PATH` — `PATH` is the full path, so we take
+/// its basename. Symlinks show no ` -> target`, just an `l` mode.
+///
+/// The `-n` is load-bearing. Under a plain `-l`, `sftp` prints the *server's* `longname` string
+/// verbatim, so the owner and group arrive as names — and a name with a space in it ("domain
+/// users" on an AD/LDAP host) shifts every later field one to the right, which put a piece of
+/// the timestamp on the front of every filename (issue #20). With `-n` the client formats the
+/// line itself from the file attributes and the ids are numeric, so the column count can't
+/// depend on how the remote host happens to spell its groups.
 fn parse_ls_line(line: &str) -> Option<RemoteEntry> {
     let line = line.trim_end();
     let fields: Vec<&str> = line.split_whitespace().collect();
@@ -1214,10 +1226,13 @@ fn parse_ls_line(line: &str) -> Option<RemoteEntry> {
         b'-' => (false, false),
         _ => return None, // sockets/pipes/devices — not browseable in v1
     };
-    let size = fields[4].parse::<u64>().unwrap_or(0);
+    // A size that isn't a number means the columns are not where we think they are, and every
+    // field after it — the name included — is suspect. Skip the line rather than show a
+    // mangled entry that the pane would then try to navigate into.
+    let size = fields[4].parse::<u64>().ok()?;
     // The name is field 8 onward (it may contain spaces); take its basename.
     let raw_name = remainder_from_field(line, 8)?;
-    // Skip the self/parent entries — `ls -la` really does list them, and neither pane browses
+    // Skip the self/parent entries — `ls -lan` really does list them, and neither pane browses
     // them. Check the raw path's last component, since `Path::file_name("…/.")` yields the
     // parent, not ".".
     if raw_name == "." || raw_name == ".." || raw_name.ends_with("/.") || raw_name.ends_with("/..")
@@ -1331,54 +1346,84 @@ mod tests {
 
     #[test]
     fn parses_dir_file_and_symlink() {
-        let dir = parse_ls_line("drwxr-xr-x    ? me wheel          64 Jun 16 19:09 /tmp/d/subdir")
-            .unwrap();
+        let dir =
+            parse_ls_line("drwxr-xr-x    0 1000     1000           64 Jun 16 19:09 /tmp/d/subdir")
+                .unwrap();
         assert_eq!(dir.name, "subdir");
         assert!(dir.is_dir && !dir.is_symlink && dir.size == 64);
 
-        let file =
-            parse_ls_line("-rw-r--r--    ? me wheel        4096 Jun 16 19:09 /tmp/d/readme.txt")
-                .unwrap();
+        let file = parse_ls_line(
+            "-rw-r--r--    0 1000     1000         4096 Jun 16 19:09 /tmp/d/readme.txt",
+        )
+        .unwrap();
         assert_eq!(file.name, "readme.txt");
         assert!(!file.is_dir && !file.is_symlink && file.size == 4096);
 
         let link =
-            parse_ls_line("lrwxr-xr-x    ? me wheel          10 Jun 16 19:09 /tmp/d/link").unwrap();
+            parse_ls_line("lrwxr-xr-x    0 1000     1000           10 Jun 16 19:09 /tmp/d/link")
+                .unwrap();
         assert!(link.is_symlink && !link.is_dir);
         assert_eq!(link.name, "link");
     }
 
     #[test]
     fn keeps_spaces_in_names_and_takes_basename() {
-        let e =
-            parse_ls_line("-rw-r--r--    ? me wheel          7 Jun 16 19:09 /tmp/d/my notes.md")
-                .unwrap();
+        let e = parse_ls_line(
+            "-rw-r--r--    0 1000     1000            7 Jun 16 19:09 /tmp/d/my notes.md",
+        )
+        .unwrap();
         assert_eq!(e.name, "my notes.md");
     }
 
-    /// Issue #15: with `ls -la` the listing carries dot-entries, and a dotfile is an ordinary
+    /// Issue #15: with `-a` the listing carries dot-entries, and a dotfile is an ordinary
     /// entry — only `.` and `..` are dropped.
     #[test]
     fn parses_dotfiles_and_dot_directories() {
-        let f = parse_ls_line("-rw-------    ? me wheel        220 Jun 16 19:09 /tmp/d/.bashrc")
-            .unwrap();
+        let f =
+            parse_ls_line("-rw-------    0 1000     1000          220 Jun 16 19:09 /tmp/d/.bashrc")
+                .unwrap();
         assert_eq!(f.name, ".bashrc");
         assert!(!f.is_dir);
 
-        let d = parse_ls_line("drwx------    ? me wheel         96 Jun 16 19:09 /tmp/d/.config")
-            .unwrap();
+        let d =
+            parse_ls_line("drwx------    0 1000     1000           96 Jun 16 19:09 /tmp/d/.config")
+                .unwrap();
         assert_eq!(d.name, ".config");
         assert!(d.is_dir);
     }
 
     #[test]
     fn skips_prompts_dots_and_specials() {
-        assert!(parse_ls_line("sftp> ls -la /tmp/d").is_none());
+        assert!(parse_ls_line("sftp> ls -lan /tmp/d").is_none());
         assert!(parse_ls_line("").is_none());
-        assert!(parse_ls_line("drwxr-xr-x    ? me wheel  64 Jun 16 19:09 /tmp/d/.").is_none());
-        assert!(parse_ls_line("drwxrwxrwt    ? root wheel 2400 Jun 16 19:09 /tmp/d/..").is_none());
+        assert!(parse_ls_line("drwxr-xr-x  0 1000  1000  64 Jun 16 19:09 /tmp/d/.").is_none());
+        assert!(parse_ls_line("drwxrwxrwt  0 0     0   2400 Jun 16 19:09 /tmp/d/..").is_none());
         // A socket/pipe is not browseable.
-        assert!(parse_ls_line("srwxr-xr-x    ? me wheel  0 Jun 16 19:09 /tmp/d/sock").is_none());
+        assert!(parse_ls_line("srwxr-xr-x  0 1000  1000   0 Jun 16 19:09 /tmp/d/sock").is_none());
+    }
+
+    /// Issue #20: on a host whose accounts come from AD/LDAP the group is spelled "domain
+    /// users", and under a plain `ls -l` that space became an extra column — the size was read
+    /// off the month and every name arrived with a piece of the timestamp glued to the front,
+    /// which broke navigation. `-n` is the fix, and a size that is not a number is now the
+    /// tripwire that stops a shifted line from reaching the pane at all.
+    #[test]
+    fn a_group_name_with_a_space_cannot_shift_the_columns() {
+        // What the reporter's server sent under `-l`: the owner/group pair is three words.
+        let shifted =
+            "-rw-r--r--    ? rmiller domain users     4096 Jun 16 19:09 /tmp/d/readme.txt";
+        assert!(
+            parse_ls_line(shifted).is_none(),
+            "a line whose columns have shifted must be skipped, not half-parsed"
+        );
+
+        // What `-n` sends for the same file, from the same server.
+        let numeric = parse_ls_line(
+            "-rw-r--r--    0 1234567  1234567      4096 Jun 16 19:09 /tmp/d/readme.txt",
+        )
+        .unwrap();
+        assert_eq!(numeric.name, "readme.txt");
+        assert_eq!(numeric.size, 4096);
     }
 
     #[test]
@@ -1470,7 +1515,7 @@ mod tests {
             &program,
             Path::new("/nonexistent/m.sock"),
             "deploy@10.0.0.1",
-            "ls -la /srv\n",
+            "ls -lan /srv\n",
             // Long enough that a loaded machine still schedules the stub before the deadline —
             // it has a pid to record — and far short of the 30s it would otherwise run for.
             Duration::from_secs(2),
@@ -1520,7 +1565,7 @@ mod tests {
             &program,
             Path::new("/nonexistent/m.sock"),
             "deploy@10.0.0.1",
-            "ls -la /srv\n",
+            "ls -lan /srv\n",
             Duration::from_secs(30),
             &cmds,
             &DebugLog(None),
@@ -1708,7 +1753,7 @@ mod tests {
             Path::new("/nonexistent/sftp"),
             Path::new("/nonexistent/m.sock"),
             "deploy@10.0.0.1",
-            "ls -la /srv\n",
+            "ls -lan /srv\n",
             Duration::from_secs(30),
             &cmds,
             &DebugLog(None),
@@ -1748,7 +1793,7 @@ mod tests {
             &program,
             Path::new("/nonexistent/m.sock"),
             "deploy@10.0.0.1",
-            "ls -la /srv\n",
+            "ls -lan /srv\n",
             Duration::from_secs(30),
             &cmds,
             &DebugLog(None),

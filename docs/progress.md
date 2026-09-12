@@ -3,8 +3,53 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.14.0, security hardening. No new features: it closes the thirteen
-findings of an outside review of the tree. v0.15.0, secrets from a password manager, is next.
+**Current milestone:** v0.15.0, secrets from a password manager. v0.14.0 (security hardening)
+shipped on Sep 9; the first user-reported bugs are fixed on top of it and await a patch release.
+
+---
+
+## 2026-09-12: the first three issues off the tracker
+
+Three reports came in on Sep 10, the first real issue traffic the project has had. All three are
+fixed here; a fourth (a script uploaded to the host on connect) is a feature request and is
+logged rather than built.
+
+**#20, the remote pane unusable on an AD/LDAP host.** `list_remote` parsed `ls -la` by
+whitespace column. Under a plain `-l`, `sftp` prints the *server's* listing line verbatim, and
+that line spells the owner and group as names, so a group called `domain users` was two
+columns, everything after it shifted right, the size was read off the month, and every filename
+came back with the tail of a timestamp on the front. Navigation broke with it. The listing asks
+for `ls -lan` now: `-n` makes the client format the line from the file attributes and the ids
+come out numeric, so no remote naming convention can move the columns again. The parser also
+stopped reading an unparseable size as zero and skips the line instead, which is the tripwire
+that would have caught this the first time. D-031; reported by @ReubenM, who also named the fix.
+
+**#18, transfer asking for a passphrase it could not take.** sshelf holds the terminal in raw
+mode, and OpenSSH reads a passphrase from `/dev/tty` rather than stdin, so closing the
+ControlMaster's stdin never stopped it asking. On a key host with nothing stored and nothing in
+the agent, `Enter passphrase for key '...'` was painted over the TUI's hint line while every
+keystroke went to sshelf's event loop. It could not be answered, the master sat there for the
+full thirty-second handshake, and the screen then reported a timeout that blamed the password.
+Both the master and the port-forward spawner now pass `-o BatchMode=yes` when no askpass helper
+is wired, ahead of `build_args` so it beats anything in `extra_args`. ssh fails in about a
+second instead, and `ssh::classify_auth_error` turns the bare `Permission denied (publickey)`
+into the two ways out: `ssh-add` the key, or store its passphrase with `^e`. D-032.
+
+**#19, the port-forward popup reading as broken.** Not reproducible as filed: typing, `←`/`→`
+and `^s` all work. Two real things underneath it, though. The footer promised `←/→ change` on
+every row, but the arrows only change the `Type` chooser; on a text field they walk a cursor,
+which over an empty field looks exactly like a dead key. The hint is per-row now. And every
+unhandled Ctrl-/Alt- combo fell through to the focused text field and inserted its bare letter,
+so `Ctrl-a Ctrl-u Ctrl-w` left `auw` behind. The same leak was in the host wizard, the settings
+screen and the sites editor; all four take the same guard.
+
+**Not done:** #17, uploading a script to the host on connect. It is a sibling of the per-host
+`remote_command` item already on the list, and it needs the same design work. `extra_args` is
+shared by the transfer master, the forward builder and `sshelf export`, so the obvious
+`LocalCommand` workaround would fire on every listing and leak into the exported config. Both
+want one brief.
+
+**Next:** v0.15.0, secrets from a password manager.
 
 ---
 

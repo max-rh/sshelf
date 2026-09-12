@@ -148,6 +148,15 @@ impl ForwardPopup {
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s')) {
             return self.try_create();
         }
+        // Any other modified key is a command this form doesn't have, not something to type.
+        // Without this it fell through to the catch-all below and the focused text field
+        // inserted the bare letter, so Ctrl-A Ctrl-U Ctrl-W left "auw" in the field (issue #19).
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return ForwardPopupOutcome::Continue;
+        }
         let active = active_fields(self.kind);
         let last = active.len().saturating_sub(1);
         let focused = active[self.focus.min(last)];
@@ -303,8 +312,7 @@ pub fn render(frame: &mut Frame, p: &ForwardPopup) {
         );
     }
     frame.render_widget(
-        Paragraph::new("Tab/↑↓ move · ←/→ change · ↵ next (runs on last) · ^s start · esc cancel")
-            .style(dim),
+        Paragraph::new(hint_for(active.get(p.focus).copied())).style(dim),
         Rect {
             x: inner.x,
             y: y + 1,
@@ -320,6 +328,16 @@ pub fn render(frame: &mut Frame, p: &ForwardPopup) {
         let cx =
             (inner.x + VALUE_COL + tf.cursor as u16).min(inner.x + inner.width.saturating_sub(1));
         frame.set_cursor_position((cx, inner.y + p.focus as u16));
+    }
+}
+
+/// The keybind hint for the focused row. ←/→ only means anything on the Type chooser — on a
+/// text field it walks the cursor, which over an empty field looks exactly like a dead key, and
+/// promising it in the footer is what made the popup read as broken (issue #19).
+fn hint_for(focused: Option<Field>) -> &'static str {
+    match focused {
+        Some(Field::Kind) => "←/→ change type · Tab/↑↓ move · ↵ next · ^s start · esc cancel",
+        _ => "Tab/↑↓ move · ↵ next (runs on last) · ^s start · esc cancel",
     }
 }
 
@@ -400,6 +418,42 @@ mod tests {
         p.handle_key(k(KeyCode::Right)); // Remote -> Dynamic
         assert_eq!(p.kind, ForwardKind::Dynamic);
         assert!(!active_fields(p.kind).contains(&Field::TargetHost));
+    }
+
+    /// Issue #19: every unhandled Ctrl-/Alt- combo used to reach the focused text field and
+    /// insert its bare letter, so a user reaching for a shortcut silently typed into the form.
+    #[test]
+    fn modified_keys_never_type_into_a_field() {
+        let mut p = ForwardPopup::new(0, "web".into());
+        p.handle_key(k(KeyCode::Down)); // -> Bind addr
+        for c in ['a', 'u', 'w', 'c'] {
+            p.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        }
+        p.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert_eq!(p.bind.value, "", "a shortcut is not text");
+
+        // Plain typing still works, and so does Shift for capitals.
+        p.handle_key(k(KeyCode::Char('e')));
+        p.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(p.bind.value, "eN");
+    }
+
+    /// The footer promised "←/→ change" on every row, but the arrows only change the Type
+    /// chooser — on a text field they walk an invisible cursor. That mismatch is what the
+    /// report described as "only up/down arrows works".
+    #[test]
+    fn the_hint_only_offers_arrows_on_the_row_that_has_them() {
+        assert!(hint_for(Some(Field::Kind)).contains("←/→ change type"));
+        assert!(!hint_for(Some(Field::Bind)).contains("←/→"));
+        assert!(!hint_for(Some(Field::ListenPort)).contains("←/→"));
+        // Every row still says how to move, submit and cancel.
+        for f in [Field::Kind, Field::Bind, Field::TargetPort] {
+            let h = hint_for(Some(f));
+            assert!(
+                h.contains("Tab/↑↓") && h.contains("^s") && h.contains("esc"),
+                "{h}"
+            );
+        }
     }
 
     #[test]

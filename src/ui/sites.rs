@@ -152,6 +152,14 @@ impl SitesManager {
                 }
             }
         }
+        // Same guard as the other forms: a modified key is a command, not text (issue #19).
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.mode = Mode::Form(form);
+            return SitesOutcome::Continue;
+        }
         match key.code {
             KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % FORM_FIELDS.len(),
             KeyCode::BackTab | KeyCode::Up => {

@@ -58,6 +58,7 @@ pub fn master_args(host: &Host, control_path: &Path, askpass: bool) -> Vec<Strin
         "-o".to_string(),
         format!("ControlPath={}", control_path.display()),
     ];
+    a.extend(crate::ssh::no_prompt_args(askpass));
     a.extend(crate::ssh::build_args(host, true, askpass));
     a
 }
@@ -121,7 +122,7 @@ impl Progress {
     }
 }
 
-/// A remote directory entry, parsed from `sftp`'s `ls -la` output by the worker.
+/// A remote directory entry, parsed from `sftp`'s `ls -lan` output by the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEntry {
     pub name: String,
@@ -257,6 +258,35 @@ mod tests {
         let a = master_args(&h, Path::new("/tmp/cm"), false);
         let j = a.iter().position(|s| s == "-J").expect("jump flag present");
         assert_eq!(a[j + 1], "bastion");
+    }
+
+    /// Issue #18: sshelf holds the terminal, and ssh asks for a passphrase on `/dev/tty`, not
+    /// stdin — so a master with nothing to supply used to park on a prompt painted over the TUI
+    /// that no keystroke could ever reach. It has to fail instead.
+    #[test]
+    fn a_master_with_no_secret_to_supply_can_never_stop_on_a_prompt() {
+        let a = master_args(&host(), Path::new("/tmp/cm"), false);
+        assert!(
+            a.windows(2).any(|w| w == ["-o", "BatchMode=yes"]),
+            "an unattended master must not be able to prompt: {a:?}"
+        );
+
+        // With the askpass helper wired there IS an answer for every prompt, and BatchMode would
+        // only get in its way.
+        let wired = master_args(&host(), Path::new("/tmp/cm"), true);
+        assert!(!wired.iter().any(|s| s == "BatchMode=yes"));
+    }
+
+    /// ssh keeps the first value it is given for an option, so ours has to be emitted ahead of
+    /// whatever the host's `extra_args` says.
+    #[test]
+    fn batch_mode_precedes_extra_args() {
+        let mut h = host();
+        h.extra_args = Some("-o BatchMode=no".into());
+        let a = master_args(&h, Path::new("/tmp/cm"), false);
+        let ours = a.iter().position(|s| s == "BatchMode=yes").expect("ours");
+        let theirs = a.iter().position(|s| s == "BatchMode=no").expect("theirs");
+        assert!(ours < theirs, "sshelf's BatchMode must win: {a:?}");
     }
 
     #[test]

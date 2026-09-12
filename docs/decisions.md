@@ -5,6 +5,56 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-032 · A background `ssh` fails rather than prompts
+The transfer ControlMaster and a port forward both start while sshelf still owns the terminal in
+raw mode. Neither had any way to answer a prompt, and neither was stopped from being asked one.
+OpenSSH reads a passphrase from `/dev/tty`, not from stdin, so the worker closing the child's
+stdin did nothing: on a key host with no stored passphrase and nothing in the agent, ssh printed
+`Enter passphrase for key '...'` straight over the TUI's hint line while every keystroke went to
+sshelf's event loop. The prompt could not be answered, the master sat there until the handshake
+timed out thirty seconds later, and the screen then blamed a password that had never been asked
+for (issue #18).
+
+When the askpass helper is wired there is an answer for every prompt and nothing changes. When
+it is not, both argv builders now emit `-o BatchMode=yes` ahead of `build_args`, so it wins over
+anything in the host's `extra_args`: ssh keeps the first value it is given for an option. ssh
+gives up in about a second instead, and because that failure is a real exit it carries stderr
+worth reading. `ssh::classify_auth_error` turns the resulting bare `Permission denied
+(publickey)` into the two things the user can actually do: load the key with `ssh-add`, or store
+its passphrase on the host with `^e`. The handshake's timeout message stops mentioning passwords
+at all, because a credential problem can no longer reach it.
+
+The cost is that a host needing an interactive answer sshelf does not hold (a 2FA host, or a
+key whose passphrase is not stored) cannot open a transfer screen or a forward at all. It could
+not before either; it hung and then lied about why. Prompting inside the TUI before the master
+starts is the better answer and is worth doing, but it is a feature, not this fix.
+
+Rejected: wiring the helper unconditionally so it declines. It works, but it hands the vault
+passphrase environment to a child that has no secret to look up, which D-029 deliberately
+scrubs. Rejected: leaving the timeout as the safety net, which is the behaviour being fixed.
+
+### D-031 · Remote listings are formatted by the client, with numeric ids
+The remote pane parsed `sftp`'s `ls -la` by whitespace column, taking the size from field five
+and the name from field nine onward. Under a plain `-l`, `sftp` prints the *server's* `longname`
+string verbatim, and that string carries the owner and group as names. On a host whose accounts
+come from AD/LDAP the group is spelled `domain users`, the space made it two columns, and every
+field after it shifted one to the right: the size was read off the month, and each filename
+arrived with the tail of the timestamp glued to the front, which broke navigation outright
+(issue #20).
+
+The listing now asks for `ls -lan`. `-n` makes the client format the line itself from the file
+attributes rather than echoing the server's, and the ids come out numeric, so the column count
+can no longer depend on how a remote host happens to spell its groups. `-a` still carries
+dotfiles, for the reason D-028 gives. The parser also stopped treating a size it cannot parse as
+zero: a non-numeric size means the columns are not where it thinks they are and every later
+field is suspect, so it skips the line rather than handing the pane an entry it would try to
+walk into.
+
+Rejected: parsing the owner and group by counting backwards from the timestamp. A filename may
+contain spaces too, so neither end is a fixed anchor, and the result is a parser that guesses.
+Rejected: gating `-n` on an OpenSSH version. It has been in `sftp`'s `ls` far longer than the
+8.4 floor `doctor` already checks for.
+
 ### D-030 · Private runtime files: exclusive creation, a 0700 session directory, and no borrowed chmods
 Four small file-handling habits added up to more exposure than any of them looked like on its
 own. The transfer screen's ControlMaster socket was `/tmp/sshelf-mux-<pid>-<seq>.sock`, which

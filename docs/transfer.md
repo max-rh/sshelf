@@ -57,7 +57,7 @@ name. On success the listing refreshes and the new directory lands under the cur
 ## Hidden files
 
 Both panes list hidden entries. The local pane always did; the remote one lists with
-`ls -la` through `sftp`, so dotfiles and dot-directories show up on the server side too and
+`ls -lan` through `sftp`, so dotfiles and dot-directories show up on the server side too and
 you can open `.config` or `.ssh` the same way you open any other directory. `.` and `..`
 are never listed on either side (`←` goes up).
 
@@ -123,6 +123,19 @@ creates for that session with mode 0700: `$XDG_RUNTIME_DIR/sshelf/mux-<ulid>/m.s
 a predictable name straight in `/tmp`, where another account on the machine could take the path
 first. Both the socket and the directory are removed when the screen closes. A stray `mux-*`
 directory from a crash is harmless and can be deleted.
+
+## When it can't connect
+
+The screen opens one connection and cannot prompt for anything: sshelf is still holding the
+terminal, so a prompt from `ssh` would land on top of the TUI with no way to type into it. So
+the connection is opened with `BatchMode=yes` whenever there is no stored secret to supply,
+which means it fails quickly and says why instead of hanging (see D-032).
+
+In practice a key host works here if the key has no passphrase, or if the key is already loaded
+in your agent (`ssh-add -l` to check). If it isn't, you get *"could not authenticate: if that
+key needs a passphrase, load it with `ssh-add` or save it on the host with `^e`"*. Do either
+and reopen the screen. A password host needs its password stored (`^e`), and a host that needs a
+verification code can't open a transfer screen yet.
 
 ## Debugging a failing transfer
 

@@ -456,6 +456,54 @@ pub fn tmux_connect(mode: Tmux, host: &Host, wire_askpass: bool) -> Result<Strin
     Ok(window_name(host))
 }
 
+/// The flags a *background* `ssh` needs so it can never stop on a prompt: the transfer
+/// ControlMaster and a port forward both run while sshelf still owns the terminal.
+///
+/// OpenSSH reads a passphrase from `/dev/tty`, not from stdin, so closing the child's stdin does
+/// not stop it asking. It painted "Enter passphrase for key ..." straight over the TUI while
+/// every keystroke went to sshelf's event loop, which meant the prompt could never be answered:
+/// the master sat there until the handshake timed out and then blamed the password (issue #18).
+///
+/// With the askpass helper wired there is a secret to supply and no prompt happens. Without it,
+/// `BatchMode=yes` makes ssh give up at once instead. Failing in a second with a message that
+/// names the fix beats hanging for a minute behind a prompt nobody can see.
+///
+/// Emitted ahead of `build_args`, so it wins over anything in the host's `extra_args` — ssh
+/// takes the first value it is given for an option.
+pub(crate) fn no_prompt_args(wire_askpass: bool) -> Vec<String> {
+    if wire_askpass {
+        Vec::new()
+    } else {
+        vec!["-o".to_string(), "BatchMode=yes".to_string()]
+    }
+}
+
+/// Why a background `ssh` could not authenticate, in terms of what the user can do about it.
+///
+/// ssh's own last line is usually the best answer, but not for the case [`no_prompt_args`]
+/// creates: under `BatchMode=yes` a key that needs a passphrase sshelf does not hold fails as a
+/// bare "Permission denied (publickey)", which says nothing about passphrases.
+pub(crate) fn classify_auth_error(stderr: &str, host: &Host, has_secret: bool) -> Option<String> {
+    let low = stderr.to_lowercase();
+    let auth_failed = low.contains("permission denied")
+        || low.contains("authentication failed")
+        || low.contains("too many authentication failures");
+    if !auth_failed || has_secret {
+        return None;
+    }
+    Some(match host.auth {
+        AuthMethod::Key => "could not authenticate: if that key needs a passphrase, load it with \
+             `ssh-add` or save it on the host with ^e — this screen cannot prompt for one"
+            .to_string(),
+        AuthMethod::Agent => "could not authenticate: your agent has no key the host accepts \
+             (check `ssh-add -l`)"
+            .to_string(),
+        AuthMethod::Password => "could not authenticate: the host is set to password auth but no \
+             password is stored for it — add one with ^e"
+            .to_string(),
+    })
+}
+
 /// Wire our own binary as the `SSH_ASKPASS` helper so the stored secret (a login password OR a
 /// key passphrase) and/or a queued one-time 2FA code are supplied automatically. The helper is
 /// wired (with `SSH_ASKPASS_REQUIRE=force`) when there's a secret to supply (`wire_askpass`) OR a

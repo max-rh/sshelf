@@ -5,6 +5,31 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- The remote transfer pane could not list a directory on a host whose accounts come from
+  AD/LDAP. `sftp`'s `ls -l` prints the server's own listing line, which carries the owner and
+  group as names, so a group called `domain users` added a column and pushed part of the
+  timestamp onto the front of every filename, which broke navigation. The listing now asks for
+  `ls -lan`, which is formatted by the client with numeric ids, so a group name can no longer
+  move the columns. Thanks to @ReubenM for the report and the fix. (#20)
+- Opening a transfer screen or starting a port forward on a key host whose passphrase is not
+  stored and not in your agent used to print `ssh`'s passphrase prompt on top of the TUI, where
+  no keystroke could reach it, and then fail a minute later with a message blaming the password.
+  Both now run with `BatchMode=yes` when there is nothing to supply, so they fail in about a
+  second and say what to do about it: load the key with `ssh-add`, or store its passphrase on
+  the host. (#18)
+- Ctrl- and Alt- shortcuts no longer type their bare letter into whichever form field had
+  focus. `Ctrl-a` in the port-forward popup put an `a` in the field instead of doing nothing;
+  the same went for the host wizard, the settings screen and the sites editor. (#19)
+
+### Changed
+
+- The port-forward popup's keybind hint now describes the selected row. It used to advertise
+  `←/→ change` on every row, but the arrows only change the `Type` chooser. On a text field
+  they just move the cursor, which reads as a dead key. (#19)
+
+
 ## [0.14.0] (2026-09-09)
 
 ### Security

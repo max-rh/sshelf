@@ -5,7 +5,7 @@
 //! as the transfer screen does (open the master, list a remote directory, copy files both ways,
 //! recursively, with a filename containing spaces), and confirm the ControlMaster + `sftp`
 //! transport works against a real server. The unit tests cover the pure pieces (argv builders,
-//! `ls -la` parsing, progress math); this is the integration layer the M0 spike proved by hand.
+//! `ls -lan` parsing, progress math); this is the integration layer the M0 spike proved by hand.
 
 use std::path::Path;
 use std::sync::mpsc::Receiver;

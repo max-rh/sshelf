@@ -5,7 +5,8 @@ up, close the TUI (or the whole terminal), and it stays up until you stop it or 
 
 ## Creating a forward (`Ctrl-f`)
 
-Pick a kind (cycle with `←`/`→`):
+Pick a kind. `←`/`→` cycle it while the `Type` row is selected; `Tab` and `↑`/`↓` move
+between rows, and the hint at the bottom of the popup always shows what the current row does:
 
 - Local (`-L`, the default) is a local port that tunnels to something reachable *from the
   server*. E.g. reach the server's private database as `127.0.0.1:8080` on your machine.
@@ -23,7 +24,11 @@ and retry:
 - privileged port: ports below 1024 need root, so use 1024 or higher;
 - server refused the remote bind: the server's `sshd` controls remote binds
   (`GatewayPorts`);
-- authentication / DNS failures, reported as-is.
+- authentication failures. A forward is a detached process with no terminal of its own, so
+  like the transfer screen it runs with `BatchMode=yes` when there is no stored secret and
+  fails instead of stopping on a prompt nobody could answer (see D-032). A key with a
+  passphrase has to be in your agent (`ssh-add`) or stored on the host (`^e`);
+- DNS failures, reported as-is.
 
 On success you're back at the list and the tunnel runs on its own.
 

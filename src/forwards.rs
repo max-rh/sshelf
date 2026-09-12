@@ -237,6 +237,7 @@ pub fn build_forward_command(
         "ExitOnForwardFailure=yes".to_string(),
     ];
     a.extend(forward_args(kind, spec));
+    a.extend(ssh::no_prompt_args(askpass));
     a.extend(ssh::build_args(host, true, askpass));
     a
 }
@@ -326,7 +327,14 @@ pub fn spawn_forward(
             Ok(Some(status)) => {
                 let stderr = std::fs::read_to_string(&log_path).unwrap_or_default();
                 let _ = std::fs::remove_file(&log_path);
-                return Err(classify_forward_error(&stderr, kind, &spec, status.code()));
+                return Err(classify_forward_error(
+                    &stderr,
+                    kind,
+                    &spec,
+                    status.code(),
+                    host,
+                    has_secret,
+                ));
             }
             Ok(None) => {}
             Err(e) => {
@@ -446,6 +454,8 @@ fn classify_forward_error(
     kind: ForwardKind,
     spec: &ForwardSpec,
     code: Option<i32>,
+    host: &Host,
+    has_secret: bool,
 ) -> String {
     let low = stderr.to_lowercase();
     let port = spec.listen_port;
@@ -482,6 +492,9 @@ fn classify_forward_error(
     if low.contains("timed out") || low.contains("timeout") {
         return "connection timed out — check the host is reachable from here".into();
     }
+    if let Some(msg) = ssh::classify_auth_error(stderr, host, has_secret) {
+        return msg;
+    }
     if low.contains("permission denied")
         || low.contains("authentication failed")
         || low.contains("too many authentication failures")
@@ -511,6 +524,14 @@ fn tidy_error(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::AuthMethod;
+
+    /// An agent host, which is the shape that reaches the classifier with nothing stored.
+    fn a_host() -> Host {
+        let mut h = Host::new("web", "10.0.0.1");
+        h.user = Some("deploy".into());
+        h
+    }
 
     fn local(listen: u16, host: &str, target: u16) -> ForwardSpec {
         ForwardSpec {
@@ -605,56 +626,118 @@ mod tests {
         assert!(no_target.validate(ForwardKind::Dynamic).is_ok());
     }
 
+    /// Issue #18, the forward half: a detached forward has no terminal of its own either, and
+    /// its stderr goes to a log file — so a passphrase prompt landed on the TUI and the forward
+    /// was then reported "up" while ssh sat behind it.
+    #[test]
+    fn a_forward_with_no_secret_to_supply_can_never_stop_on_a_prompt() {
+        let s = local(8080, "db", 3306);
+        let a = build_forward_command(&a_host(), ForwardKind::Local, &s, false);
+        assert!(
+            a.windows(2).any(|w| w == ["-o", "BatchMode=yes"]),
+            "a detached forward must not be able to prompt: {a:?}"
+        );
+        let wired = build_forward_command(&a_host(), ForwardKind::Local, &s, true);
+        assert!(!wired.iter().any(|x| x == "BatchMode=yes"));
+    }
+
     #[test]
     fn classify_maps_known_stderr() {
         let s = local(8080, "db", 3306);
+        // A stored secret keeps these on the branches they were written for — the auth-guidance
+        // branch below only fires when sshelf had nothing to supply.
+        let c = |stderr: &str, kind| {
+            classify_forward_error(stderr, kind, &s, Some(255), &a_host(), true)
+        };
+
         // The real multi-line stderr: the useful line is NOT last (ssh appends a generic line).
         let busy = "bind [127.0.0.1]:8080: Address already in use\n\
                     channel_setup_fwd_listener_tcpip: cannot listen to port: 8080\n\
                     Could not request local forwarding.";
-        assert!(
-            classify_forward_error(busy, ForwardKind::Local, &s, Some(255))
-                .contains("already in use")
-        );
+        assert!(c(busy, ForwardKind::Local).contains("already in use"));
+
         let privileged =
             "bind [127.0.0.1]:80: Permission denied\nCould not request local forwarding.";
+        assert!(c(privileged, ForwardKind::Local).contains("privileged"));
+
         assert!(
-            classify_forward_error(privileged, ForwardKind::Local, &s, Some(255))
-                .contains("privileged")
-        );
-        assert!(
-            classify_forward_error(
+            c(
                 "Warning: remote port forwarding failed for listen port 80",
-                ForwardKind::Remote,
-                &s,
-                Some(255),
+                ForwardKind::Remote
             )
             .contains("server refused")
         );
+        assert!(c("ssh: Could not resolve hostname nope", ForwardKind::Local).contains("resolve"));
         assert!(
-            classify_forward_error(
-                "ssh: Could not resolve hostname nope",
-                ForwardKind::Local,
-                &s,
-                Some(255)
-            )
-            .contains("resolve")
-        );
-        assert!(
-            classify_forward_error(
+            c(
                 "Permission denied (publickey,password).",
-                ForwardKind::Local,
-                &s,
-                Some(255)
+                ForwardKind::Local
             )
             .contains("authentication")
         );
+
         // Unknown line falls back to the line itself; empty falls back to the exit code.
         assert_eq!(
-            classify_forward_error("weird ssh message", ForwardKind::Local, &s, Some(7)),
+            classify_forward_error(
+                "weird ssh message",
+                ForwardKind::Local,
+                &s,
+                Some(7),
+                &a_host(),
+                true
+            ),
             "weird ssh message"
         );
-        assert!(classify_forward_error("", ForwardKind::Local, &s, Some(7)).contains("code 7"));
+        assert!(
+            classify_forward_error("", ForwardKind::Local, &s, Some(7), &a_host(), true)
+                .contains("code 7")
+        );
+    }
+
+    /// Issue #18: with nothing stored the forward runs under `BatchMode=yes`, so a key that
+    /// needs a passphrase fails as a bare "Permission denied" rather than parking on a prompt
+    /// painted over the TUI. The message has to name the two ways out, or the user is told the
+    /// auth failed with no idea why.
+    #[test]
+    fn an_auth_failure_with_no_stored_secret_says_what_to_do() {
+        let s = local(8080, "db", 3306);
+        let denied = "Permission denied (publickey).";
+
+        let mut key_host = a_host();
+        key_host.auth = AuthMethod::Key;
+        key_host.identity_files = vec!["~/.ssh/id_ed25519".into()];
+        let msg =
+            classify_forward_error(denied, ForwardKind::Local, &s, Some(255), &key_host, false);
+        assert!(msg.contains("ssh-add"), "should point at the agent: {msg}");
+        assert!(msg.contains("passphrase"), "should name the cause: {msg}");
+
+        let mut pw_host = a_host();
+        pw_host.auth = AuthMethod::Password;
+        let msg =
+            classify_forward_error(denied, ForwardKind::Local, &s, Some(255), &pw_host, false);
+        assert!(msg.contains("password is stored"), "{msg}");
+
+        // A bind failure is not an auth failure, even though ssh words it "Permission denied".
+        let privileged =
+            "bind [127.0.0.1]:80: Permission denied\nCould not request local forwarding.";
+        assert!(
+            classify_forward_error(
+                privileged,
+                ForwardKind::Local,
+                &s,
+                Some(255),
+                &key_host,
+                false
+            )
+            .contains("privileged"),
+            "the privileged-port branch has to stay ahead of the auth branch"
+        );
+
+        // With a secret stored, the generic auth message stands.
+        assert!(
+            classify_forward_error(denied, ForwardKind::Local, &s, Some(255), &key_host, true)
+                .contains("authentication failed")
+        );
     }
 
     #[test]

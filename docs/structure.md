@@ -44,7 +44,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `display.rs` | One sanitizer for plain CLI output: control characters, C1 codes and bidirectional overrides become U+FFFD, and the same set is what the add form and the importers refuse. |
 | `config.rs` | Preferences: `decay_rate`, `default_sort`, `accent` color, `tmux` mode; writes a commented default on first run. |
 | `transfer/mod.rs` | File-transfer core: `ssh`-ControlMaster + `sftp` argv builders, the worker↔UI message protocol (`WorkerCmd`/`WorkerEvent`), and progress math. |
-| `transfer/worker.rs` | Background worker thread: owns the ControlMaster and the `0700` session directory its socket lives in (open/readiness/teardown), lists remote dirs (`sftp ls -la`) and creates them (`sftp mkdir`) under a deadline and an output cap, runs `sftp` `get`/`put` transfers with progress + cancel, and installs a downloaded file with a no-replace link. |
+| `transfer/worker.rs` | Background worker thread: owns the ControlMaster and the `0700` session directory its socket lives in (open/readiness/teardown), lists remote dirs (`sftp ls -lan`) and creates them (`sftp mkdir`) under a deadline and an output cap, runs `sftp` `get`/`put` transfers with progress + cancel, and installs a downloaded file with a no-replace link. |
 | `transfer/pane.rs` | One side's browsing state (fuzzy filter + selection + nav + positional marks, reusing `search`); `read_local_dir` for the local side; `RemoteEntry`→`PaneEntry`. |
 | `transfer/screen.rs` | The dual-pane `TransferScreen`: two panes over one session, key handling, the send queue (marks → one transfer at a time, skips vs failures), the new-directory input, draining worker events. |
 | `ui/list.rs` | Host list rendering + match highlighting + selection. |

@@ -66,6 +66,15 @@ impl Settings {
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s')) {
             return self.save();
         }
+        // Any other modified key is a command this form doesn't have, not something to type.
+        // Without this it fell through to the catch-all below and the focused text field
+        // inserted the bare letter, so Ctrl-A Ctrl-U Ctrl-W left "auw" in the field (issue #19).
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return SettingsOutcome::Continue;
+        }
         match key.code {
             KeyCode::Esc => return SettingsOutcome::Cancel,
             KeyCode::Enter => return self.save(),
