@@ -8,6 +8,33 @@ shipped on Sep 9; the first user-reported bugs are fixed on top of it and await 
 
 ---
 
+## 2026-09-14: uploads install with a no-replace link, like downloads always have
+
+A reader on Reddit read the comment in `transfer/screen.rs` saying uploads cannot use the
+install step downloads use, and asked what happens if the remote destination changes between
+the listing check and the transfer. Nothing did. `put` creates and truncates, so a file that
+appeared on the server after the check was overwritten, which is the one thing the transfer
+screen promises never to do.
+
+The docs were also optimistic about the size of that window. `docs/transfer.md` said the
+listing is refreshed immediately before each send, and it is, but the refresh lands too late
+for that send's own check: `send()` checks the listing the pane is already showing. So the
+first item of a queue was checked against whatever was last on screen, and later items against
+a listing taken before the previous transfer started.
+
+An upload now does what a download does. `put` writes a `.sshelf-part-` temporary into the
+destination directory, and `sftp`'s `ln` installs it under the real name, which the server
+refuses if anything is there, symlinks included. A refused link is followed by an `ls` to find
+out whether the name was taken (protocol 3 reports every refusal as `Failure`), and the entry
+comes back as the same skip the pre-flight check raises. Where the server cannot link at all,
+the temporary is renamed onto the name the `ls` just showed free, the remote twin of the exFAT
+fallback downloads have. A cancel or a failure removes the remote temporary.
+
+Folders are now the only send resting on the listing alone, so the refusal to send into a
+listing cut short at 50,000 entries narrowed to folders; single files go into such a directory
+fine. `transfer/e2e.rs` covers the new path against a real sshd, including that OpenSSH takes
+the link rather than the fallback. D-033.
+
 ## 2026-09-12: the first three issues off the tracker
 
 Three reports came in on Sep 10, the first real issue traffic the project has had. All three are

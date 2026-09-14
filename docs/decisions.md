@@ -5,6 +5,38 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-033 · An upload installs itself with a remote `ln`, so only folders rest on the listing
+Downloads have never rested on the destination listing: a single file lands on a
+`.sshelf-part-…` temporary and is installed with `link()`, which fails if the name is taken.
+Uploads had no such step. They were checked against the listing the remote pane happened to be
+showing and then sent with `put`, which creates and truncates, so a file that appeared on the
+server after the check was overwritten. Reported by a reader who noticed the asymmetry in the
+comment in `transfer/screen.rs` and asked what covered the gap. Nothing did.
+
+The window was also wider than `docs/transfer.md` claimed. The refresh that goes out before each
+upload lands too late to inform that upload's own check, so the first item of a send was tested
+against whatever the pane last showed, and a later item against a listing taken before the
+previous transfer began, which on a big file is the length of that transfer.
+
+An upload now mirrors a download exactly: `put` writes a `.sshelf-part-…` temporary in the
+destination directory, and `sftp`'s own `ln` (a hard link, via `hardlink@openssh.com`) installs
+it under the real name. The server refuses the link when the name is taken, symlinks included
+and never followed, and the entry is reported as the same skip the pre-flight check raises.
+Protocol 3 gives no code for "name taken" (the server's `EEXIST` arrives as a bare `Failure`),
+so a refused link is followed by an `ls` of the destination to find out which refusal it was.
+That listing only explains the failure; the link had already decided it.
+
+Where the link cannot be made at all, because the server lacks the extension or the remote
+filesystem has no hard links, the temporary is renamed onto the name that the `ls` just showed
+free. That is the same check-then-move the exFAT case takes locally, weaker than the link but
+narrower than the window `put` had. Rejected: probing the server's extensions up front (a round
+trip per session for something the failure path answers for free), and `rename -l` to force the
+legacy no-clobber rename (not in every OpenSSH, and posix-rename overwrites where it is used).
+
+Consequence: a folder is now the only send with nothing but the listing behind it, in either
+direction, so the refusal to send into a listing cut short at 50,000 entries applies to folders
+alone. Single files go into such a directory without complaint.
+
 ### D-032 · A background `ssh` fails rather than prompts
 The transfer ControlMaster and a port forward both start while sshelf still owns the terminal in
 raw mode. Neither had any way to answer a prompt, and neither was stopped from being asked one.

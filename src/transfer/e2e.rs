@@ -207,6 +207,42 @@ fn lists_and_transfers_both_directions() {
         b"up spaced"
     );
 
+    // Uploading onto a name the destination already holds must skip, not overwrite. The worker
+    // puts a single file on a remote temporary and installs it with a no-replace `ln`, so this
+    // holds with no listing check in front of it — which is the point: the name here appears
+    // *after* any check the screen could have made.
+    std::fs::write(remote_dst.join("upload.txt"), b"mine, thanks").unwrap();
+    session.send(WorkerCmd::Transfer(TransferJob {
+        direction: Direction::Upload,
+        src: sshd.dir.join("upload.txt"),
+        dest_dir: remote_dst.clone(),
+        recursive: false,
+        size_hint: 0,
+    }));
+    match recv_until(&events, |e| {
+        matches!(
+            e,
+            WorkerEvent::Skipped(_) | WorkerEvent::Done | WorkerEvent::Error(_)
+        )
+    }) {
+        WorkerEvent::Skipped(name) => assert_eq!(name, "upload.txt"),
+        WorkerEvent::Done => panic!("an existing remote file must never be overwritten"),
+        WorkerEvent::Error(e) => panic!("the skip should not read as a failure: {e}"),
+        _ => unreachable!(),
+    }
+    assert_eq!(
+        std::fs::read(remote_dst.join("upload.txt")).unwrap(),
+        b"mine, thanks",
+        "the file that was already there is untouched"
+    );
+    // …and no temporary is left in the destination, by that upload or the two before it.
+    let leftovers: Vec<String> = std::fs::read_dir(&remote_dst)
+        .unwrap()
+        .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n.starts_with(".sshelf-part-"))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+
     // Recursive directory download (sftp get -r mirrors the source dir into the dest path).
     let dl2 = sshd.dir.join("download2");
     std::fs::create_dir_all(&dl2).unwrap();
@@ -236,6 +272,14 @@ fn lists_and_transfers_both_directions() {
     assert!(
         logged.contains("sftp> put "),
         "log should record put commands"
+    );
+    assert!(
+        logged.contains("sftp> ln "),
+        "log should record the link an upload is installed with"
+    );
+    assert!(
+        !logged.contains("sftp> rename "),
+        "a real OpenSSH server links; the rename is the fallback for servers that can't"
     );
     unsafe { std::env::remove_var(super::LOG_ENV) };
 

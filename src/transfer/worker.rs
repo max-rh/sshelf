@@ -40,6 +40,9 @@ const PROGRESS_EVERY: u32 = 5;
 const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 /// The same ceiling for a `mkdir` or a `pwd` — one round trip, not a walk.
 const MKDIR_TIMEOUT: Duration = Duration::from_secs(30);
+/// …and for each step that installs a finished upload under its real name (`ln`, `ls`, `rm`).
+/// One round trip each, on a link the transfer just proved works.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Poll cadence while a short-lived batch runs. Tighter than [`POLL`]: closing the screen waits
 /// on this loop noticing, and the terminal comes back only afterwards.
 const BATCH_POLL: Duration = Duration::from_millis(50);
@@ -902,6 +905,7 @@ fn remote_home(
 }
 
 /// Why a transfer ended other than success.
+#[derive(Debug)]
 enum TransferError {
     /// The UI asked to cancel. Already handled; the screen is told separately.
     Cancelled,
@@ -927,11 +931,25 @@ struct LocalDest {
     install_as: Option<PathBuf>,
 }
 
-/// Build the `sftp` batch line for a transfer, plus the local paths a download involves. Paths
-/// are quoted for sftp's own command parser, which is consistent across OpenSSH versions —
-/// unlike `scp`, whose remote-path handling switched to the SFTP protocol in OpenSSH 9 and then
-/// takes shell quoting literally, corrupting names with spaces.
-fn transfer_batch(job: &TransferJob, name: &str) -> (String, Option<LocalDest>) {
+/// The remote side of an upload: the path `sftp` writes, and the name it is installed under
+/// afterwards. The mirror of [`LocalDest`], and set for the same case — a single file.
+struct RemoteDest {
+    /// What `sftp put` writes to: a `.sshelf-part-…` temporary in the destination directory.
+    /// A remote path, so a plain `String`: the server's separator is not this machine's.
+    written: String,
+    /// The real name, created from `written` by [`install_remote`] once every byte is there.
+    install_as: String,
+}
+
+/// Build the `sftp` batch line for a transfer, plus the paths installing it afterwards involves:
+/// local for a download, remote for an upload. Paths are quoted for sftp's own command parser,
+/// which is consistent across OpenSSH versions — unlike `scp`, whose remote-path handling
+/// switched to the SFTP protocol in OpenSSH 9 and then takes shell quoting literally, corrupting
+/// names with spaces.
+fn transfer_batch(
+    job: &TransferJob,
+    name: &str,
+) -> (String, Option<LocalDest>, Option<RemoteDest>) {
     let flag = if job.recursive { "-r " } else { "" };
     match job.direction {
         Direction::Download => {
@@ -953,16 +971,26 @@ fn transfer_batch(job: &TransferJob, name: &str) -> (String, Option<LocalDest>) 
                 shell_quote(&job.src.to_string_lossy()),
                 shell_quote(&local.written.to_string_lossy()),
             );
-            (line, Some(local))
+            (line, Some(local), None)
         }
         Direction::Upload => {
-            let remote_dest = format!("{}/{name}", job.dest_dir.to_string_lossy());
+            let dest_dir = job.dest_dir.to_string_lossy();
+            let install_as = format!("{dest_dir}/{name}");
+            // A directory goes straight to its real name: `ln` cannot install one, so a folder
+            // keeps the queue's listing check and nothing more — the mirror of a recursive
+            // download. A single file lands on a private temporary first, so the bytes never go
+            // near a name that appeared since the queue checked the listing.
+            let remote = (!job.recursive).then(|| RemoteDest {
+                written: format!("{dest_dir}/.sshelf-part-{}", Ulid::new()),
+                install_as: install_as.clone(),
+            });
+            let written = remote.as_ref().map_or(install_as, |r| r.written.clone());
             let line = format!(
                 "put {flag}{} {}\n",
                 shell_quote(&job.src.to_string_lossy()),
-                shell_quote(&remote_dest),
+                shell_quote(&written),
             );
-            (line, None)
+            (line, None, remote)
         }
     }
 }
@@ -1052,6 +1080,136 @@ fn link_unsupported(e: &std::io::Error) -> bool {
     )
 }
 
+/// Install a finished single-file upload under its real name: the remote mirror of
+/// [`install_download`], and the reason an upload no longer rests on the listing check alone.
+///
+/// `ln` without `-s` is a hard link (`hardlink@openssh.com`), and the server makes it for us
+/// with `link()`, which fails when anything is already at the destination — a symlink included,
+/// which it never follows. That is the no-replace step `put` has never had: a name that turned
+/// up on the server while the bytes were going across is stepped over rather than overwritten.
+fn install_upload(
+    socket: &ControlSocket,
+    target: &str,
+    remote: &RemoteDest,
+    name: &str,
+    cmds: &Commands,
+    dbg: &DebugLog,
+) -> Result<(), TransferError> {
+    install_remote(remote, name, |batch| {
+        let out = run_sftp_batch(
+            Path::new("sftp"),
+            socket.path(),
+            target,
+            batch,
+            INSTALL_TIMEOUT,
+            cmds,
+            dbg,
+        )?;
+        if !out.status.success() {
+            dbg.log(&format!(
+                "  install step failed (exit {:?}):\n{}",
+                out.status.code(),
+                out.stderr.trim_end()
+            ));
+        }
+        Ok(out)
+    })
+}
+
+/// The same with the batch runner injected, so the tests can drive every branch — a taken name,
+/// a server with no hard links at all — without a server to drive them against.
+///
+/// Version 3 of the protocol, which is what OpenSSH speaks, has no status code for "that name is
+/// taken": the server's `EEXIST` arrives as a bare `Failure`, the same word a dozen other
+/// refusals arrive as. So a refused `ln` is followed by an `ls` of the destination to find out
+/// which refusal it was. That listing only ever *explains* the failure — whether the write was
+/// safe had already been decided, by the link itself.
+fn install_remote(
+    remote: &RemoteDest,
+    name: &str,
+    run: impl Fn(&str) -> Result<CappedOutput, BatchError>,
+) -> Result<(), TransferError> {
+    let tmp = shell_quote(&remote.written).into_owned();
+    let dest = shell_quote(&remote.install_as).into_owned();
+    let taken = |run: &dyn Fn(&str) -> Result<CappedOutput, BatchError>| {
+        run(&format!("ls -lan {dest}\n")).is_ok_and(|out| out.status.success())
+    };
+
+    match run(&format!("ln {tmp} {dest}\n")) {
+        Ok(out) if out.status.success() => {
+            let _ = run(&format!("rm {tmp}\n"));
+            Ok(())
+        }
+        Ok(_) if taken(&run) => {
+            let _ = run(&format!("rm {tmp}\n"));
+            Err(TransferError::Exists(name.to_string()))
+        }
+        // The name is free and the link was still refused, so this destination cannot take one
+        // at all: a server without the extension, or a filesystem without hard links — the
+        // remote twin of the exFAT case downloads have. The bytes are all across and correct,
+        // so throwing them away would be the worst of the options: rename the temporary onto
+        // the name that was free a moment ago. Weaker than the link, and narrower than the
+        // window `put` had when it wrote the final name directly.
+        Ok(_) => match run(&format!("rename {tmp} {dest}\n")) {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(_) if taken(&run) => {
+                let _ = run(&format!("rm {tmp}\n"));
+                Err(TransferError::Exists(name.to_string()))
+            }
+            Ok(_) => Err(kept_as_remote_temporary(remote, name)),
+            Err(e) => Err(install_step_failed(e, remote, name)),
+        },
+        Err(e) => Err(install_step_failed(e, remote, name)),
+    }
+}
+
+/// A stop that arrived mid-install stays a stop; anything else keeps the temporary and says so.
+fn install_step_failed(e: BatchError, remote: &RemoteDest, name: &str) -> TransferError {
+    match e {
+        BatchError::Stopped => TransferError::Stopped,
+        BatchError::Cancelled => TransferError::Cancelled,
+        _ => kept_as_remote_temporary(remote, name),
+    }
+}
+
+/// The error for an upload that arrived whole but could not be put in place. Names the temporary
+/// it is still in, on the server — the alternative is deleting somebody's finished transfer.
+fn kept_as_remote_temporary(remote: &RemoteDest, name: &str) -> TransferError {
+    TransferError::Failed(format!(
+        "uploaded {name}, but could not put it in place at {} — it is still on the server as {}",
+        remote.install_as, remote.written
+    ))
+}
+
+/// Remove the remote temporary an upload was writing into, after a cancel or a failure.
+///
+/// Best effort, and deliberately not attempted on shutdown: the closing screen waits on this
+/// thread before the terminal comes back, and a round trip to a server that may be the reason
+/// we are stopping is not worth holding it for. What survives either way is one hidden
+/// `.sshelf-part-…` file in the destination, never a damaged one.
+fn remove_remote_temporary(
+    socket: &ControlSocket,
+    target: &str,
+    remote: Option<&RemoteDest>,
+    cmds: &Commands,
+    dbg: &DebugLog,
+) {
+    let Some(remote) = remote else { return };
+    let batch = format!("rm {}\n", shell_quote(&remote.written));
+    if let Err(e) = run_sftp_batch(
+        Path::new("sftp"),
+        socket.path(),
+        target,
+        &batch,
+        INSTALL_TIMEOUT,
+        cmds,
+        dbg,
+    ) {
+        let what = format!("removing {}", remote.written);
+        dbg.log(&format!("  {}", e.describe(&what)));
+    }
+}
+
 /// Run one transfer with `sftp` (`put`/`get` over the master), emitting progress and honoring a
 /// mid-flight cancel.
 fn transfer(
@@ -1068,7 +1226,7 @@ fn transfer(
         .ok_or_else(|| TransferError::Failed("invalid source path".into()))?
         .to_string_lossy()
         .into_owned();
-    let (batch, local_dest) = transfer_batch(job, &name);
+    let (batch, local_dest, remote_dest) = transfer_batch(job, &name);
     dbg.log(&format!("sftp> {}", batch.trim_end()));
 
     let mut child = Command::new("sftp")
@@ -1088,6 +1246,7 @@ fn transfer(
         match cmds.poll_stop() {
             Some(Stop::Cancel) => {
                 abandon(&mut child, local_dest.as_ref());
+                remove_remote_temporary(socket, target, remote_dest.as_ref(), cmds, dbg);
                 return Err(TransferError::Cancelled);
             }
             Some(Stop::Shutdown) => {
@@ -1107,9 +1266,22 @@ fn transfer(
                         err.trim_end()
                     ));
                     remove_temporary(local_dest.as_ref());
+                    remove_remote_temporary(socket, target, remote_dest.as_ref(), cmds, dbg);
                     return Err(TransferError::Failed(
                         tidy_error(&err).unwrap_or_else(|| "transfer failed".into()),
                     ));
+                }
+                if let Some(remote) = &remote_dest
+                    && let Err(e) = install_upload(socket, target, remote, &name, cmds, dbg)
+                {
+                    // A cancel that landed between the last byte and the link: the user asked
+                    // for nothing to arrive, so the temporary goes too. Every other ending has
+                    // already dealt with it — installed, removed with the skip, or kept on
+                    // purpose because the transfer is finished and only the install failed.
+                    if matches!(e, TransferError::Cancelled) {
+                        remove_remote_temporary(socket, target, remote_dest.as_ref(), cmds, dbg);
+                    }
+                    return Err(e);
                 }
                 if let Some(local) = &local_dest {
                     let done = local_size(&local.written);
@@ -1265,6 +1437,7 @@ fn remainder_from_field(line: &str, n: usize) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
 
     /// A scratch directory of this test's own, under the system temp dir.
     fn scratch(what: &str) -> PathBuf {
@@ -1663,6 +1836,144 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// One scripted answer from a stubbed `sftp` batch. Only the exit status matters: the
+    /// install path reads nothing else, because protocol 3 does not say *why* a link was
+    /// refused.
+    fn batch_result(ok: bool) -> Result<CappedOutput, BatchError> {
+        Ok(CappedOutput {
+            status: Command::new(if ok { "true" } else { "false" })
+                .status()
+                .unwrap(),
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+        })
+    }
+
+    fn staged_upload() -> RemoteDest {
+        RemoteDest {
+            written: "/srv/incoming/.sshelf-part-test".to_string(),
+            install_as: "/srv/incoming/report.pdf".to_string(),
+        }
+    }
+
+    #[test]
+    fn installing_an_upload_links_it_into_place_and_clears_the_temporary() {
+        let remote = staged_upload();
+        let ran = RefCell::new(Vec::new());
+        let run = |batch: &str| {
+            ran.borrow_mut().push(batch.trim_end().to_string());
+            batch_result(true)
+        };
+
+        install_remote(&remote, "report.pdf", run).expect("a free name installs");
+        assert_eq!(
+            ran.into_inner(),
+            vec![
+                "ln /srv/incoming/.sshelf-part-test /srv/incoming/report.pdf",
+                "rm /srv/incoming/.sshelf-part-test",
+            ],
+            "the link is the install; the temporary goes straight after it"
+        );
+    }
+
+    #[test]
+    fn installing_an_upload_never_replaces_a_name_that_appeared() {
+        // The server refuses the link and the destination lists, so the name is taken: the
+        // upload is skipped exactly as the screen's own check would have skipped it.
+        let remote = staged_upload();
+        let ran = RefCell::new(Vec::new());
+        let run = |batch: &str| {
+            ran.borrow_mut().push(batch.trim_end().to_string());
+            batch_result(!batch.starts_with("ln"))
+        };
+
+        let err = install_remote(&remote, "report.pdf", run).unwrap_err();
+        assert!(matches!(err, TransferError::Exists(ref n) if n == "report.pdf"));
+        let ran = ran.into_inner();
+        assert!(
+            ran.iter().any(|b| b.starts_with("rm ")),
+            "the temporary never stays behind: {ran:?}"
+        );
+        assert!(
+            !ran.iter().any(|b| b.starts_with("rename")),
+            "a taken name is never renamed over: {ran:?}"
+        );
+    }
+
+    #[test]
+    fn an_upload_falls_back_to_a_rename_where_the_server_cannot_link() {
+        // No `hardlink@openssh.com`, or a remote filesystem without hard links: the link fails
+        // and the destination does not list, so the name is free and the bytes are already
+        // across. Renaming onto it is weaker than the link and narrower than what `put` had.
+        let remote = staged_upload();
+        let ran = RefCell::new(Vec::new());
+        let run = |batch: &str| {
+            ran.borrow_mut().push(batch.trim_end().to_string());
+            batch_result(batch.starts_with("rename"))
+        };
+
+        install_remote(&remote, "report.pdf", run).expect("the fallback installs");
+        assert_eq!(
+            ran.into_inner(),
+            vec![
+                "ln /srv/incoming/.sshelf-part-test /srv/incoming/report.pdf",
+                "ls -lan /srv/incoming/report.pdf",
+                "rename /srv/incoming/.sshelf-part-test /srv/incoming/report.pdf",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rename_fallback_that_loses_the_race_is_reported_as_a_skip() {
+        // The name was free when the fallback checked and taken by the time it renamed. Still
+        // a skip, not a failure: a batch send carries on past it.
+        let remote = staged_upload();
+        let listings = Cell::new(0u32);
+        let run = |batch: &str| {
+            if batch.starts_with("ls") {
+                listings.set(listings.get() + 1);
+                return batch_result(listings.get() > 1);
+            }
+            batch_result(batch.starts_with("rm"))
+        };
+
+        let err = install_remote(&remote, "report.pdf", run).unwrap_err();
+        assert!(matches!(err, TransferError::Exists(ref n) if n == "report.pdf"));
+        assert_eq!(listings.get(), 2, "the destination is checked either side");
+    }
+
+    #[test]
+    fn an_upload_that_cannot_be_installed_keeps_its_temporary_and_says_where() {
+        // Nothing the server answered means the name is taken, so the bytes are not thrown
+        // away: they stay under the temporary name, which the message has to carry.
+        let remote = staged_upload();
+        let run = |_: &str| batch_result(false);
+
+        let err = install_remote(&remote, "report.pdf", run).unwrap_err();
+        let TransferError::Failed(msg) = err else {
+            panic!("a server that refuses every step is a failure, not a skip");
+        };
+        assert!(msg.contains("/srv/incoming/.sshelf-part-test"), "{msg}");
+        assert!(msg.contains("report.pdf"), "{msg}");
+    }
+
+    #[test]
+    fn a_stop_during_an_upload_install_stays_a_stop() {
+        let remote = staged_upload();
+        let run = |_: &str| Err(BatchError::Cancelled);
+        assert!(matches!(
+            install_remote(&remote, "report.pdf", run).unwrap_err(),
+            TransferError::Cancelled
+        ));
+
+        let run = |_: &str| Err(BatchError::Stopped);
+        assert!(matches!(
+            install_remote(&remote, "report.pdf", run).unwrap_err(),
+            TransferError::Stopped
+        ));
+    }
+
     #[test]
     fn transfer_batch_quotes_paths_for_sftp() {
         // Upload a file whose name has spaces: sftp's parser needs the paths single-quoted
@@ -1674,12 +1985,27 @@ mod tests {
             recursive: false,
             size_hint: 0,
         };
-        let (line, dest) = transfer_batch(&up, "my file.txt");
+        let (line, local, remote) = transfer_batch(&up, "my file.txt");
+        let remote = remote.expect("a single-file upload stages a remote temporary");
         assert_eq!(
             line,
-            "put '/Users/me/my file.txt' '/home/r/Downloads/my file.txt'\n"
+            format!("put '/Users/me/my file.txt' {}\n", remote.written),
+            "the source is quoted; the temporary it lands on has nothing to quote"
         );
-        assert!(dest.is_none());
+        assert_eq!(remote.install_as, "/home/r/Downloads/my file.txt");
+        assert!(local.is_none());
+
+        // …and the name with the spaces in it is quoted where it is finally used: the install.
+        let ran = RefCell::new(Vec::new());
+        let run = |batch: &str| {
+            ran.borrow_mut().push(batch.trim_end().to_string());
+            batch_result(true)
+        };
+        install_remote(&remote, "my file.txt", run).unwrap();
+        assert_eq!(
+            ran.into_inner().first().map(String::as_str),
+            Some(format!("ln {} '/home/r/Downloads/my file.txt'", remote.written).as_str())
+        );
 
         // Recursive download adds -r and writes straight into the destination — `link()` can't
         // install a directory, so those keep the queue's listing check and nothing more.
@@ -1690,11 +2016,53 @@ mod tests {
             recursive: true,
             size_hint: 0,
         };
-        let (line, dest) = transfer_batch(&down, "my data");
+        let (line, dest, remote) = transfer_batch(&down, "my data");
         assert_eq!(line, "get -r '/srv/my data' '/tmp/dl/my data'\n");
         let local = dest.unwrap();
         assert_eq!(local.written, PathBuf::from("/tmp/dl/my data"));
         assert_eq!(local.install_as, None);
+        assert!(remote.is_none());
+    }
+
+    #[test]
+    fn a_single_file_upload_lands_on_a_remote_temporary_first() {
+        let job = TransferJob {
+            direction: Direction::Upload,
+            src: PathBuf::from("/tmp/report.pdf"),
+            dest_dir: PathBuf::from("/srv/incoming"),
+            recursive: false,
+            size_hint: 12,
+        };
+        let (line, local, remote) = transfer_batch(&job, "report.pdf");
+        let remote = remote.unwrap();
+
+        assert!(
+            remote.written.starts_with("/srv/incoming/.sshelf-part-"),
+            "{}",
+            remote.written
+        );
+        assert_eq!(remote.install_as, "/srv/incoming/report.pdf");
+        // sftp writes the temporary, never the final name.
+        assert_eq!(line, format!("put /tmp/report.pdf {}\n", remote.written));
+        assert!(!line.contains("/srv/incoming/report.pdf"));
+        assert!(local.is_none());
+    }
+
+    #[test]
+    fn a_recursive_upload_goes_straight_to_its_real_name() {
+        // `ln` cannot install a directory, so a folder keeps the queue's listing check and
+        // nothing more — the mirror of a recursive download.
+        let job = TransferJob {
+            direction: Direction::Upload,
+            src: PathBuf::from("/tmp/my data"),
+            dest_dir: PathBuf::from("/srv/incoming"),
+            recursive: true,
+            size_hint: 0,
+        };
+        let (line, local, remote) = transfer_batch(&job, "my data");
+        assert_eq!(line, "put -r '/tmp/my data' '/srv/incoming/my data'\n");
+        assert!(remote.is_none(), "no temporary to install from");
+        assert!(local.is_none());
     }
 
     #[test]
@@ -1706,8 +2074,9 @@ mod tests {
             recursive: false,
             size_hint: 12,
         };
-        let (line, dest) = transfer_batch(&job, "report.pdf");
+        let (line, dest, remote) = transfer_batch(&job, "report.pdf");
         let local = dest.unwrap();
+        assert!(remote.is_none());
 
         assert_eq!(local.written.parent(), Some(Path::new("/tmp/dl")));
         assert!(

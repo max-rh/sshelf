@@ -39,7 +39,8 @@ enum Skip {
     /// sshelf copies files and directories, not the links pointing at them.
     Symlink,
     /// v1 never overwrites (see `docs/transfer.md`). Raised here from the last listing, and
-    /// again by the worker when a single-file download finds the name taken at install time.
+    /// again by the worker when a single file — sent either way — finds the name taken at
+    /// install time.
     Exists,
 }
 
@@ -448,21 +449,23 @@ impl TransferScreen {
                 continue;
             }
 
-            // An upload's only guard is that listing, so a listing the worker cut short is one
-            // sshelf cannot send into at all: the name may be there past the cap, and `put` has
-            // no no-replace mode to fall back on. Downloads are unaffected — they install with
-            // `link()`, which answers for itself.
-            if direction == Direction::Upload && self.pane(dest).truncated {
+            // A folder is the one send with nothing but that listing behind it, so a listing
+            // the worker cut short is one sshelf cannot send a folder into at all: the name may
+            // be there past the cap, and neither `put -r` nor `get -r` can be installed from a
+            // temporary. Single files are unaffected — they install with a link, which answers
+            // for itself.
+            if is_dir && self.pane(dest).truncated {
                 return self.refuse_queue(format!(
                     "the destination listing is incomplete (cut at {MAX_ENTRIES} entries) — sshelf can't promise not to overwrite there"
                 ));
             }
 
-            // A download installs itself with a no-replace step, so its check is exact. An
-            // upload has no such thing over the `sftp` CLI and keeps the listing check, so keep
-            // that listing as fresh as it cheaply can be: the worker serves commands in order,
-            // so this one lands immediately before the upload and the next item is checked
-            // against what it brings back.
+            // Both directions install a single file with a no-replace step, so their check is
+            // exact whatever the listing says. A folder has no such thing, so keep the listing
+            // as fresh as it cheaply can be: the worker serves commands in order, so this one
+            // lands immediately before the upload and the next item is checked against what it
+            // brings back. It also spares the next file the round trip of sending bytes the
+            // install would only refuse.
             if direction == Direction::Upload && dest_dir == self.remote.cwd {
                 self.session.send(WorkerCmd::ListRemote(dest_dir.clone()));
             }
@@ -1135,10 +1138,11 @@ mod tests {
         );
     }
 
-    /// The listing is the only thing standing between an upload and overwriting a remote file,
-    /// so a listing the worker cut short is one nothing may be sent into.
+    /// A folder is the one send the listing is the only guard for, so a listing the worker cut
+    /// short is one no folder may go into. The whole queue goes with it: `sub` is the first of
+    /// the three marks, and the two behind it never start.
     #[test]
-    fn an_upload_into_a_listing_that_was_cut_short_is_refused() {
+    fn a_folder_upload_into_a_listing_that_was_cut_short_is_refused() {
         let dir = scratch();
         let (mut screen, cmds, events) = TransferScreen::detached(dir, &[]);
         deliver(
@@ -1151,7 +1155,7 @@ mod tests {
             },
         );
 
-        mark_all_three(&mut screen);
+        mark_all_three(&mut screen); // sub/, a.txt, b.txt
         screen.on_key(ctrl(KeyCode::Char('s')));
 
         assert_eq!(cmds.try_iter().count(), 0, "nothing may go out");
@@ -1161,8 +1165,29 @@ mod tests {
         assert!(status.contains("3 item(s) not sent"), "{status}");
     }
 
-    /// …but a download out of that same directory is fine: it installs with a no-replace step
-    /// of its own, which does not care what the listing did or didn't show.
+    /// …while a single file goes into that same directory quite happily: it is installed with a
+    /// no-replace link on the far side, which does not care what the listing did or didn't show.
+    #[test]
+    fn a_single_file_upload_into_a_listing_that_was_cut_short_still_goes() {
+        let dir = scratch();
+        let (mut screen, cmds, events) = TransferScreen::detached(dir, &[]);
+        deliver(
+            &mut screen,
+            &events,
+            WorkerEvent::Listing {
+                path: PathBuf::from("/srv"),
+                entries: Vec::new(),
+                truncated: true,
+            },
+        );
+
+        screen.local.move_sel(2); // past `..` and `sub/`, onto a.txt
+        screen.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(sent_names(&cmds), vec!["a.txt"]);
+    }
+
+    /// …and the same holds for a download, which has installed itself with a no-replace step
+    /// since before uploads did.
     #[test]
     fn a_download_out_of_a_listing_that_was_cut_short_still_goes() {
         let dir = scratch();
@@ -1195,8 +1220,9 @@ mod tests {
         screen.local.move_sel(2); // a.txt
         screen.on_key(ctrl(KeyCode::Char('s')));
 
-        // Uploads have only the listing check, so the listing goes out immediately before the
-        // transfer — the worker runs them in that order.
+        // The listing goes out immediately before the transfer — the worker runs them in that
+        // order — so a folder has the freshest check it can have, and a file is not sent only
+        // to be refused at the install.
         let sent: Vec<&'static str> = cmds
             .try_iter()
             .map(|c| match c {

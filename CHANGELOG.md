@@ -5,6 +5,18 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- An upload could overwrite a file that appeared in the remote directory after sshelf checked
+  the listing and before the bytes landed. A single file now uploads to a private
+  `.sshelf-part-` name and is installed under its real name with `sftp`'s `ln`, which the server
+  refuses if the name is taken, so the send is skipped instead. Downloads have worked this way
+  since the transfer screen shipped. Folders still rest on the listing check, in both
+  directions, and are the only send that does.
+- Uploading a single file into a remote directory whose listing was cut short at 50,000 entries
+  is no longer refused, since that upload no longer depends on the listing. Folders are still
+  refused there.
+
 ## [0.14.1] (2026-09-12)
 
 ### Fixed

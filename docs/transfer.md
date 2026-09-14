@@ -68,8 +68,9 @@ filter: that keeps the names with a dot in them, and the hidden ones sort to the
 
 - Directories are shown as `name/` and symlinks as `name@`, and symlinks are skipped.
 - A same-named file or folder already present in the destination is **skipped** (with a
-  message), never overwritten. What that promise rests on differs by direction, so it is spelled
-  out under [What "never overwritten" covers](#what-never-overwritten-covers) below.
+  message), never overwritten. What that promise rests on differs between a file and a folder,
+  so it is spelled out under
+  [What "never overwritten" covers](#what-never-overwritten-covers) below.
 - One transfer runs at a time: a batch is a queue, not parallel copies. Single-file downloads
   show bytes + percent; folders and uploads show as in-flight (cancelable with `Esc`, which
   abandons the rest of the queue too).
@@ -87,33 +88,38 @@ filter: that keeps the names with a dot in them, and the hidden ones sort to the
 
 ## What "never overwritten" covers
 
-**Downloading a single file** never replaces anything. The bytes land on a private
+**A single file** never replaces anything, sent in either direction. The bytes land on a private
 `.sshelf-part-…` name in the destination directory first, and the finished file is put in place
 with a link, which fails if any name is already there. A symlink counts as a name, and it is
 never followed, so nothing can redirect the write. If the name turned up while the transfer was
 running, the entry is skipped exactly as the pre-flight check would have skipped it, and the
 queue carries on.
 
-Some filesystems have no hard links at all: exFAT and FAT32, which is what a USB stick usually
-is, and a fair number of SMB and FUSE mounts. Downloading onto one of those checks that the name
-is still free and then moves the temporary onto it, which is a smaller window than writing the
-final name directly but not the same guarantee. The bytes are never thrown away over it.
+On an upload that link is made by the server, through the `hardlink@openssh.com` extension
+OpenSSH has carried since 5.7. Two kinds of destination cannot take one. A server that does not
+offer the extension is the first; a filesystem with no hard links at all is the second, which
+locally means exFAT and FAT32 (what a USB stick usually is) and a fair number of SMB and FUSE
+mounts. In both cases sshelf checks that the name is still free and then moves the temporary
+onto it, which is a smaller window than writing the final name directly but not the same
+guarantee. The bytes are never thrown away over it.
 
-**Downloading a folder** and **uploading anything** are checked against the last listing of the
-destination, and nothing more. There is no no-replace open to be had over the `sftp` command
-line, and a folder cannot be installed with a link. The window is small (sshelf refreshes the
-remote listing immediately before each send), but a file that appears on the server between that
-refresh and the write can be overwritten. If that matters for what you are sending, look at the
-destination first.
+**A folder** is checked against the last listing of the destination and nothing more, whichever
+way it is going. A directory cannot be installed from a temporary with a link, so there is
+nothing better to be had. That listing is the one the pane is showing: sshelf asks the server
+for a fresh one immediately before each upload, so a folder queued behind another item is
+checked against a listing taken moments earlier, while the first item of a send is checked
+against whatever the pane last showed, which can be minutes old. A file that appears in the
+destination after that listing can be overwritten. If that matters for what you are sending,
+look at the destination first.
 
-A remote directory past the 50,000-entry cap is the one case where that check cannot be made at
-all, so sshelf refuses the send rather than guess:
+A remote directory past the 50,000-entry cap is the one case where the check cannot be made at
+all, so sshelf refuses to send a folder into it rather than guess:
 
 ```text
 the destination listing is incomplete (cut at 50000 entries) — sshelf can't promise not to overwrite there
 ```
 
-Downloads into such a directory are fine, since they do not rely on the listing.
+Single files are fine there, in both directions, since they do not rely on the listing.
 
 ## Where the connection lives
 
