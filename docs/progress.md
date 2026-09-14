@@ -80,11 +80,16 @@ prints the new reason and connects in place, and a key host opens a background w
 picker keeps focus; a stale stored password prints the refused line on the terminal, and the
 transfer screen says `the stored password was refused`. `~/.ssh` hashed the same before and after.
 
-Not proven: a correct password against a real server. A sshd that isn't root refuses every
-password and the Docker daemon wasn't running, so the password success path rests on the
-passphrase flow, which runs the same store, verify and keep code. The tmux focus check used a key
-host instead of a stored-secret host, since every stored-secret host falls back in vault mode and
-the run stayed away from the keyring.
+The two things the rootless sshd couldn't show were checked afterwards against a real password
+server, `lscr.io/linuxserver/openssh-server` in Docker, which offers keyboard-interactive as well.
+A wrong password on first connect is refused and nothing is kept. The right one prints
+`saved password`, the server logs `Accepted password` for the verify and again for the session,
+and the next connect goes straight in; a `ps` scan across the prompt, the store and the verify
+found the password in no argv. The TUI path asks after teardown, saves, and lands in a shell. A
+stale stored password prints the refused line once and stays stored. With the secret in the macOS
+Keychain instead of the vault (a throwaway entry, deleted afterwards), tmux mode opened the host in
+a background window that logged in through the helper while the picker kept focus, and the debug
+build's helper read the entry without an approval prompt.
 
 ## 2026-09-14: uploads install with a no-replace link, like downloads always have
 
