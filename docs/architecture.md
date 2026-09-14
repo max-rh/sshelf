@@ -19,11 +19,14 @@
                  └────────────────────────────────────┼──────────┘
                                                        │
               1. update frecency (use_count, last_used) & save
-              2. set env: SSH_ASKPASS=self, SSH_ASKPASS_REQUIRE=force,
+              2. tear down TUI (raw mode off, leave alt screen, show cursor)
+              3. nothing stored? ask on the terminal, store it, prove it with
+                 one `ssh ... exit`, keep it only if that worked (D-035)
+              4. set env: SSH_ASKPASS=self, SSH_ASKPASS_REQUIRE=force,
                           SSHELF_ASKPASS=1, SSHELF_HOST_ID=<id>,
-                          SSHELF_SECRET_KIND=<kind> [, SSHELF_IDENTITY_FILES=...]
-              3. tear down TUI (raw mode off, leave alt screen, show cursor)
-              4. exec("ssh", argv...)   ← process is REPLACED; sshelf is gone
+                          SSHELF_SECRET_KIND=<kind> [, SSHELF_IDENTITY_FILES=...],
+                          SSHELF_CONNECT_ID=<fresh ulid>
+              5. exec("ssh", argv...)   ← process is REPLACED; sshelf is gone
                                                        │
                                                        ▼
                  ┌─────────────────────────────────────────────┐

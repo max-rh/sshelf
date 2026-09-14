@@ -95,6 +95,13 @@ impl Fixture {
         self.root.join("out")
     }
 
+    /// Swap in a different stub `ssh`.
+    fn use_stub(&self, stub: &str) {
+        let path = self.root.join("bin").join("ssh");
+        std::fs::write(&path, stub).unwrap();
+        set_executable(&path);
+    }
+
     /// `sshelf`, wired to this fixture's XDG root and headless vault.
     fn sshelf(&self) -> Command {
         let mut c = Command::new(BIN);
@@ -104,6 +111,7 @@ impl Fixture {
             .env("SSHELF_VAULT_PASSPHRASE", VAULT_PASS)
             // Keep a developer's own settings out of the run.
             .env_remove("SSHELF_CONFIG")
+            .env_remove("XDG_RUNTIME_DIR")
             .env_remove("SSH_ASKPASS")
             .env_remove("SSH_ASKPASS_REQUIRE");
         c
@@ -334,6 +342,61 @@ fn one_jump_host_gets_a_proxy_command_and_keeps_the_helper() {
     assert!(!argv.iter().any(|a| a == "-J"), "-J must be gone: {argv:?}");
 
     assert!(f.reply("password").answered(LOGIN_PASSWORD));
+}
+
+/// Asks the same password prompt three times, the way ssh does after a wrong password, and records
+/// each answer, the connect id, and whatever the helper printed on stderr.
+const REPEAT_STUB_SSH: &str = r#"#!/bin/sh
+set -u
+printf '%s' "${SSHELF_CONNECT_ID:-}" > "$SSHELF_TEST_OUT/connect_id"
+: > "$SSHELF_TEST_OUT/helper.err"
+for n in 1 2 3; do
+  out=$("$SSH_ASKPASS" "tester@127.0.0.1's password: " 2>>"$SSHELF_TEST_OUT/helper.err")
+  rc=$?
+  printf '%s' "$out" > "$SSHELF_TEST_OUT/try$n.out"
+  printf '%s' "$rc" > "$SSHELF_TEST_OUT/try$n.rc"
+done
+exit 0
+"#;
+
+/// A wrong stored secret: the first answer goes out, the repeats are declined, the refusal is named
+/// once, and the stored secret is left exactly where it was.
+#[test]
+fn a_repeated_secret_prompt_is_declined_and_named_once() {
+    let f = Fixture::new("repeat", KEY_AND_PASSWORD_HOSTS);
+    f.use_stub(REPEAT_STUB_SSH);
+    f.connect("pwbox");
+
+    assert!(
+        f.reply("try1").answered(LOGIN_PASSWORD),
+        "{:?}",
+        f.reply("try1")
+    );
+    assert!(f.reply("try2").declined(), "{:?}", f.reply("try2"));
+    assert!(f.reply("try3").declined(), "{:?}", f.reply("try3"));
+    assert_eq!(
+        f.recorded("helper.err"),
+        "sshelf: the stored password for test-pwhost was refused; replace it with sshelf \
+         set-password or ^e in the TUI\n"
+    );
+
+    let id = f.recorded("connect_id");
+    assert_eq!(id.len(), 26, "a ULID: {id:?}");
+    let marker = f
+        .root
+        .join(".local/share/sshelf/run")
+        .join(format!("askpass-{id}"));
+    let meta = std::fs::metadata(&marker)
+        .unwrap_or_else(|e| panic!("no marker at {}: {e}", marker.display()));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    // Nothing was deleted, and the next connect is a fresh one.
+    f.connect("pwbox");
+    assert!(f.reply("try1").answered(LOGIN_PASSWORD));
+    assert_ne!(f.recorded("connect_id"), id, "each connect gets its own id");
 }
 
 /// A chain sshelf cannot constrain gets no helper at all: `ssh` asks on the terminal instead of

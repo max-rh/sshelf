@@ -45,6 +45,8 @@ active**, so plain typing filters the list, and actions use **Ctrl** or function
 and your session, and when the session ends you're back at your shell. The command it runs is
 exactly what `Ctrl-y` (or `sshelf print-command <host>`) shows: plain flags built from the
 host's fields plus any inherited [site defaults](sites-tags.md), with no temporary config files.
+A host with nothing stored may ask for its secret on the terminal first, and keeps it once it
+works ([Saving the secret on first connect](passwords-2fa.md#saving-the-secret-on-first-connect)).
 Full mechanics: [How the ssh command is built](ssh-command.md).
 
 ## Connecting inside tmux
@@ -52,8 +54,9 @@ Full mechanics: [How the ssh command is built](ssh-command.md).
 By default connecting always hands the terminal over, tmux or not. Set `tmux` to `"window"` or
 `"pane"` ([Configuration](configuration.md), or `F2`) and, **when sshelf is itself running
 inside tmux**, `Enter` instead opens the connection in a new tmux window (named after the
-host) or a new pane, and **leaves you in the picker**. You can fire off four hosts in a row
-without reopening sshelf between them. A one-line status confirms each one
+host) or a new pane, in the background, and **leaves you in the picker** with focus still on it.
+You can fire off four hosts in a row without reopening sshelf between them, then switch to each
+window when you want it. A one-line status confirms each one
 (`opened in tmux window: prod-web`).
 
 Outside tmux, or with `tmux = "off"`, nothing changes: `Enter` is exactly the handoff described
@@ -61,8 +64,13 @@ above.
 
 ### Hosts that always connect in place
 
-Three kinds of connection step back to the normal handoff even in tmux mode, and say so on the
+Four kinds of connection step back to the normal handoff even in tmux mode, and say so on the
 line just before ssh starts:
+
+- A host with nothing stored that's about to
+  [ask for its first secret](passwords-2fa.md#saving-the-secret-on-first-connect): the question
+  has to be asked on this terminal, and a new window has no sshelf in it to ask. The line reads
+  `no secret stored yet, connecting here so the first one can be saved`.
 
 - [2FA hosts](passwords-2fa.md#two-factor-2fa-hosts): the verification code you typed can
   only reach a new tmux window through `tmux new-window -e KEY=VALUE`, which is the tmux

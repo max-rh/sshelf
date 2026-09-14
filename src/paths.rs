@@ -151,6 +151,65 @@ fn ensure_dir(dir: &Path, enforce_mode: bool) -> Result<()> {
     ensure_private_dir(dir, enforce_mode).with_context(|| format!("creating {}", dir.display()))
 }
 
+/// sshelf's private runtime directory: `$XDG_RUNTIME_DIR/sshelf` when the runtime dir is set and
+/// real (it is already per-user and short, which an AF_UNIX path needs), otherwise `run/` under
+/// sshelf's own data directory. It holds the transfer screen's `mux-<ulid>` session directories
+/// and the askpass helper's `askpass-<id>` markers (D-030). Created on first use.
+pub(crate) fn runtime_dir() -> std::result::Result<PathBuf, String> {
+    runtime_dir_in(xdg_runtime_dir().as_deref(), || {
+        Paths::resolve()
+            .map(|p| p.data_dir)
+            .map_err(|e| format!("could not find the sshelf data directory: {e}"))
+    })
+}
+
+/// Where [`runtime_dir`] lives, without creating anything: `None` when it isn't there yet. For
+/// callers that only ever clean up, which have no reason to make the directory first.
+pub(crate) fn existing_runtime_dir() -> Option<PathBuf> {
+    let dir = match xdg_runtime_dir().filter(|r| r.is_dir()) {
+        Some(runtime) => runtime.join(APP_DIR),
+        None => Paths::resolve().ok()?.data_dir.join("run"),
+    };
+    dir.is_dir().then_some(dir)
+}
+
+fn xdg_runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// [`runtime_dir`] with the inputs handed in, so the tests can take either branch without
+/// touching the process environment, which is process-global and, in edition 2024, unsafe to
+/// mutate from a test thread. `data` stays a closure: resolving the data directory can fail, and
+/// it has no business failing a caller that is going to use the runtime directory anyway.
+pub(crate) fn runtime_dir_in(
+    runtime: Option<&Path>,
+    data: impl FnOnce() -> std::result::Result<PathBuf, String>,
+) -> std::result::Result<PathBuf, String> {
+    // Only a directory sshelf creates gets 0700: chmod-ing one somebody else made
+    // (`$XDG_RUNTIME_DIR` above all) would be a rude surprise, and it is already theirs to set.
+    let claim = |dir: &Path| {
+        ensure_private_dir(dir, false)
+            .map_err(|e| format!("could not create {}: {e}", dir.display()))
+    };
+    if let Some(runtime) = runtime.filter(|r| r.is_dir()) {
+        let dir = runtime.join(APP_DIR);
+        claim(&dir)?;
+        return Ok(dir);
+    }
+    let data = data()?;
+    // The XDG data root belongs to the user, not to us: make it the ordinary way, and claim
+    // only sshelf's own two levels below it.
+    if let Some(root) = data.parent() {
+        std::fs::create_dir_all(root).map_err(|e| format!("creating {}: {e}", root.display()))?;
+    }
+    claim(&data)?;
+    let dir = data.join("run");
+    claim(&dir)?;
+    Ok(dir)
+}
+
 /// Expand a leading `~` / `~/` to `$HOME`. Used for user-provided paths (config/hosts files).
 pub fn expand_user_path(s: &str) -> PathBuf {
     if s == "~" {

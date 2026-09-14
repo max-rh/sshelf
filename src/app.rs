@@ -18,8 +18,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use zeroize::Zeroizing;
 
 use crate::config::{Config, Tmux};
+use crate::first_connect::{self, Decision};
 use crate::forwards::{self, ForwardsState};
 use crate::import;
 use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile, Site};
@@ -115,6 +117,9 @@ pub struct App {
     /// Whether sshelf itself is running inside tmux. Read once: `$TMUX` is set by the server
     /// for the pane we were launched in and cannot change while this process lives.
     pub in_tmux: bool,
+    /// What `sshelf add --from-ssh` dropped or rewrote, joined for the status line. Shown once
+    /// the form it opened closes, whichever way it closes.
+    pub add_notes: Option<String>,
 }
 
 impl App {
@@ -152,6 +157,7 @@ impl App {
             pending_connect: None,
             connect_note: None,
             in_tmux: ssh::inside_tmux(),
+            add_notes: None,
         };
         app.recompute();
         app
@@ -384,6 +390,14 @@ impl App {
                 }
                 self.recompute();
             }
+        }
+        if self.wizard.is_none()
+            && let Some(notes) = self.add_notes.take()
+        {
+            self.status = Some(match self.status.take() {
+                Some(status) => format!("{status} · {notes}"),
+                None => notes,
+            });
         }
     }
 
@@ -629,6 +643,14 @@ impl App {
             .is_some()
     }
 
+    /// True when connecting to `idx` could start with the first-connect question (D-035). A 2FA
+    /// host then skips its code popup, so the secret and the code are both asked on the terminal
+    /// after teardown, in that order.
+    fn asks_first_secret(&self, idx: usize) -> bool {
+        let host = self.hosts[idx].with_site_defaults(&self.sites);
+        first_connect::assess(&host, || self.has_secret(&host.id), false).0 != Decision::Connect
+    }
+
     /// Persist this host's usage. Returns a warning to surface if the save failed: usage must
     /// reach disk *before* any handoff, since neither `exec()` nor a tmux window comes back.
     fn record_use(&mut self, id: &str) -> Option<String> {
@@ -656,7 +678,13 @@ impl App {
         // argv), so don't ask the keyring anything we won't use.
         let has_code = self.pending_2fa_code.is_some();
         let wire_askpass = !has_code && self.has_secret(&host.id);
-        if let Err(reason) = ssh::tmux_fallback(&host, wire_askpass, has_code) {
+        // With nothing stored, the first connect may ask for the secret, and that question has
+        // to be asked on this terminal (D-035). The probe waits for the in-place path; only the
+        // part that needs no network is decided here.
+        let first_secret = !has_code
+            && !wire_askpass
+            && first_connect::assess(&host, || false, true).0 == Decision::StepAside;
+        if let Err(reason) = ssh::tmux_fallback(&host, wire_askpass, has_code, first_secret) {
             self.connect_note = Some(reason.message().to_string());
             return self.queue_exec_connect(idx);
         }
@@ -836,18 +864,50 @@ fn group_order(hosts: &[Host], ranked: &[usize]) -> Vec<usize> {
     out
 }
 
+/// What the TUI opens on.
+// `Prefilled` carries a Host (large) while the others are unit variants; this is built once
+// and consumed at startup, so the size difference doesn't matter.
+#[allow(clippy::large_enum_variant)]
+pub enum Start {
+    /// The host list (`sshelf`).
+    List,
+    /// The empty add form (`sshelf add`).
+    Add,
+    /// The add form filled in by `sshelf add --from-ssh`, with the parser's notes and a secret
+    /// read by `--password-stdin`, if any.
+    Prefilled {
+        host: Host,
+        notes: Vec<String>,
+        secret: Option<Zeroizing<String>>,
+    },
+}
+
 /// Set up the terminal, run the loop, restore the terminal, then (if a host was chosen)
 /// perform the `exec()` handoff into ssh.
 pub fn run() -> Result<()> {
-    run_with(false)
+    run_with(Start::List)
 }
 
 /// Like [`run`], but with the add-host form already open (`sshelf add`).
 pub fn run_add() -> Result<()> {
-    run_with(true)
+    run_with(Start::Add)
 }
 
-fn run_with(start_add: bool) -> Result<()> {
+/// Like [`run_add`], with the form filled in from a parsed ssh command line. Nothing is saved
+/// until the form is.
+pub fn run_add_prefilled(
+    host: Host,
+    notes: Vec<String>,
+    secret: Option<Zeroizing<String>>,
+) -> Result<()> {
+    run_with(Start::Prefilled {
+        host,
+        notes,
+        secret,
+    })
+}
+
+fn run_with(start: Start) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
@@ -864,9 +924,25 @@ fn run_with(start_add: bool) -> Result<()> {
         }
         Err(e) => eprintln!("sshelf: warning: could not load forwards: {e:#}"),
     }
-    if start_add {
-        let names = app.site_names();
-        app.wizard = Some(Wizard::new_add(&names));
+    match start {
+        Start::List => {}
+        Start::Add => {
+            let names = app.site_names();
+            app.wizard = Some(Wizard::new_add(&names));
+        }
+        Start::Prefilled {
+            host,
+            notes,
+            secret,
+        } => {
+            let names = app.site_names();
+            let mut wizard = Wizard::prefill(&host, &names);
+            if let Some(secret) = &secret {
+                wizard.set_secret(secret);
+            }
+            app.wizard = Some(wizard);
+            app.add_notes = (!notes.is_empty()).then(|| notes.join(" · "));
+        }
     }
 
     let mut terminal = ratatui::init();
@@ -886,24 +962,13 @@ fn run_with(start_add: bool) -> Result<()> {
         if let Err(e) = app.state.save(&app.paths.state_file()) {
             eprintln!("sshelf: warning: could not save state: {e:#}");
         }
-        // Wire SSH_ASKPASS only when a secret is actually stored (login password OR key
-        // passphrase). Otherwise let ssh prompt / use the agent normally.
-        let has_secret = secrets::get_password(&app.paths.vault_file(), &host.id)
-            .ok()
-            .flatten()
-            .is_some();
-        // Replaces this process on success; returns only on failure. A 2FA code, if the user
-        // entered one in the popup, rides through the askpass helper.
-        let two_fa = app.pending_2fa_code.as_ref().map(|c| c.as_str());
-        // A chain of hops can't be constrained the way one can, so nothing is wired and ssh
-        // asks on the terminal instead. Say so before it does (D-029).
-        if matches!(
-            ssh::jump_plan(&host, has_secret || two_fa.is_some()),
-            ssh::JumpPlan::Terminal
-        ) {
-            eprintln!("sshelf: {}", ssh::MULTI_HOP_NOTICE);
-        }
-        return Err(ssh::exec_connect(&host, has_secret, two_fa));
+        // The same tail `sshelf <host>` runs: the first-connect capture, the 2FA code (the one
+        // from the popup, if the user entered it there), then the exec. Returns only on failure.
+        return Err(crate::handoff(
+            &host,
+            &app.paths,
+            app.pending_2fa_code.take(),
+        ));
     }
     Ok(())
 }
@@ -935,7 +1000,9 @@ fn dispatch(app: &mut App, key: KeyEvent) {
     match app.on_key(key) {
         Outcome::Quit => app.should_quit = true,
         Outcome::Connect(idx) => {
-            if app.hosts[idx].requires_2fa {
+            // A connect that may ask for its first secret skips the popup: the secret is asked
+            // on the terminal after teardown, and the code after it, since the code goes stale.
+            if app.hosts[idx].requires_2fa && !app.asks_first_secret(idx) {
                 // Collect the verification code first; the connect happens on the popup's submit.
                 app.open_two_factor(idx);
             } else {
@@ -1302,6 +1369,36 @@ mod tests {
         // and it was written to disk
         let reloaded = store::load_hosts(&app.hosts_path).unwrap();
         assert!(reloaded.hosts.iter().any(|h| h.name == "newbox"));
+    }
+
+    #[test]
+    fn the_parser_notes_reach_the_status_line_when_the_prefilled_form_closes() {
+        let mut parsed = Host::new("web1", "10.0.0.7");
+        parsed.user = Some("deploy".into());
+        let notes = "dropped -v: verbose output is for one debugging run, not a saved host";
+
+        // Saved: the notes follow the usual message.
+        let mut app = test_app();
+        app.wizard = Some(Wizard::prefill(&parsed, &[]));
+        app.add_notes = Some(notes.to_string());
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert!(app.wizard.is_none());
+        assert_eq!(
+            app.status.as_deref(),
+            Some(format!("host added · {notes}").as_str())
+        );
+        assert!(app.hosts.iter().any(|h| h.id == parsed.id));
+
+        // Esc: nothing is added, and the notes still say what the line carried.
+        let mut app = test_app();
+        let before = app.hosts.len();
+        app.wizard = Some(Wizard::prefill(&parsed, &[]));
+        app.add_notes = Some(notes.to_string());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.wizard.is_none());
+        assert_eq!(app.hosts.len(), before);
+        assert_eq!(app.status.as_deref(), Some(notes));
+        assert!(app.add_notes.is_none());
     }
 
     #[test]

@@ -16,6 +16,7 @@ config hand-editable instead of buried in macOS `~/Library`.
 | `vault.age` | `~/.local/share/sshelf/vault.age` | app | **Fallback** encrypted secret store (only when no OS keyring). Mode `0600`. |
 | forward logs | `~/.local/share/sshelf/logs/fwd-<id>.log` | app | One per running background forward: that `ssh -N`'s stderr. Removed when the forward stops or is reaped. Mode `0600`, in a `0700` directory. |
 | mux sockets | `$XDG_RUNTIME_DIR/sshelf/mux-<ulid>/m.sock` | app | The transfer screen's ControlMaster socket, in a directory created per session at mode `0700` and removed when the screen closes. Falls back to `~/.local/share/sshelf/run/` when `XDG_RUNTIME_DIR` is unset. |
+| askpass markers | `$XDG_RUNTIME_DIR/sshelf/askpass-<ulid>` | app | One per wired connect whose helper answered a secret prompt: the prompt text, so a repeat of it can be recognised as a refusal ([ssh-command.md](ssh-command.md#3b-a-refused-stored-secret)). Created exclusively at mode `0600`; nothing secret in it. Removed once older than ten minutes, by the next wired connect. Same fallback directory as the mux sockets. |
 
 Directories sshelf creates are created `0700`, and only the last component: a missing ancestor
 of a custom `--config` path is created the way `mkdir -p` would. sshelf never changes the mode
@@ -38,7 +39,7 @@ jump_hosts = ["bastion.prod"] # optional default ProxyJump (the site's bastion)
 identity_files = ["~/.ssh/prod"]  # optional default key(s) (applied to key-auth members)
 
 [[host]]
-id        = "01J..."            # stable unique id (e.g. ULID/UUID); keys secrets & frecency
+id        = "01J..."            # any string unique in the file (sshelf writes a ULID); keys secrets & frecency
 name      = "prod-db"         # display alias (what you search/see)
 hostname  = "10.25.25.25"     # IP or DNS name           (required)
 user      = "mike"            # optional; default = $USER at connect time

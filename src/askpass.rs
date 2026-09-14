@@ -19,8 +19,20 @@
 //!   - anything else, including a secret-shaped prompt of the wrong kind → decline (exit
 //!     non-zero). A missing or unreadable kind declines everything: fail closed.
 //!
-//! See `docs/security.md` and decision D-029.
+//! A stored secret that is wrong would otherwise be handed over again on every retry, and the
+//! failure would read like the server refusing you. So each connect carries an id
+//! (`SSHELF_CONNECT_ID`), and the helper leaves a marker the first time it answers a secret prompt
+//! in that connect. The same prompt coming back proves the answer was refused: the helper says so
+//! once on stderr and declines. It never deletes the secret, because a server can have its own
+//! reasons to ask twice (D-035).
+//!
+//! See `docs/security.md` and decisions D-029 and D-035.
 
+use std::io::Write;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+use crate::display;
 use crate::paths::Paths;
 use crate::secrets;
 
@@ -32,6 +44,17 @@ pub(crate) const KIND_ENV: &str = "SSHELF_SECRET_KIND";
 /// Env var carrying the host's identity files, `:`-separated and already `~`-expanded. Only a
 /// passphrase prompt naming one of these is answered.
 pub(crate) const IDENTITY_ENV: &str = "SSHELF_IDENTITY_FILES";
+/// Env var carrying an id minted fresh for each wired `ssh` command. Not a secret.
+pub(crate) const CONNECT_ID_ENV: &str = "SSHELF_CONNECT_ID";
+/// The end of the line printed when a stored secret is refused. The transfer and forward screens
+/// look for it in ssh's stderr (`ssh::classify_auth_error`).
+pub(crate) const REFUSED_HINT: &str =
+    "was refused; replace it with sshelf set-password or ^e in the TUI";
+
+/// Markers are `askpass-<connect id>` inside sshelf's private runtime directory.
+const MARKER_PREFIX: &str = "askpass-";
+/// A marker older than this belongs to a connect that is long over.
+const MARKER_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
 /// OpenSSH's local key-passphrase prompt, `Enter passphrase for key '<path>': `.
 const PASSPHRASE_PREFIX: &str = "enter passphrase for key '";
@@ -125,7 +148,12 @@ pub fn run(prompt: &str) -> i32 {
     let identity_env = std::env::var(IDENTITY_ENV).unwrap_or_default();
     let identities: Vec<&str> = identity_env.split(':').filter(|s| !s.is_empty()).collect();
     match classify(prompt, kind, &identities, code.is_some()) {
-        Answer::Secret => supply_secret(),
+        Answer::Secret => {
+            if refused_in_this_connect(prompt, kind) {
+                return 1;
+            }
+            supply_secret()
+        }
         Answer::Code => {
             let code = zeroize::Zeroizing::new(code.unwrap_or_default());
             // ssh reads one line and strips the trailing newline.
@@ -133,6 +161,124 @@ pub fn run(prompt: &str) -> i32 {
             0
         }
         Answer::Decline => 1,
+    }
+}
+
+/// True when this secret prompt already had an answer earlier in the same connect, which means
+/// that answer was refused. Says so on stderr the first time. Fails open: with no connect id (a
+/// tmux window, which never gets one) or no runtime directory, the prompt is answered as before.
+fn refused_in_this_connect(prompt: &str, kind: Option<SecretKind>) -> bool {
+    let Some(connect_id) = std::env::var(CONNECT_ID_ENV).ok().filter(|v| !v.is_empty()) else {
+        return false;
+    };
+    let Ok(dir) = crate::paths::runtime_dir() else {
+        return false;
+    };
+    match mark(&dir, &connect_id, prompt) {
+        Marker::Repeat { warn } => {
+            if warn {
+                let host = std::env::var(HOST_ID_ENV).unwrap_or_default();
+                let kind = kind.map_or("secret", SecretKind::as_str);
+                eprintln!(
+                    "sshelf: the stored {kind} for {} {REFUSED_HINT}",
+                    display::sanitize(&host)
+                );
+            }
+            true
+        }
+        Marker::First | Marker::Other | Marker::Unavailable => false,
+    }
+}
+
+/// What the marker for one connect says about the prompt in hand.
+#[derive(Debug, PartialEq, Eq)]
+enum Marker {
+    /// No secret prompt was answered in this connect yet; one now is.
+    First,
+    /// A secret prompt was answered, but a different one (a second key file's passphrase).
+    Other,
+    /// The same prompt again. `warn` is true only the first time, since a password prompt comes
+    /// back once for every attempt ssh has left.
+    Repeat { warn: bool },
+    /// No usable marker (bad id, no directory): answer as if there were none.
+    Unavailable,
+}
+
+/// Record the prompt about to be answered in `dir/askpass-<connect_id>`, or read back the one
+/// already there. The file is created exclusively at mode 0600 and holds the prompt it answered,
+/// plus a second line once the refusal has been reported.
+fn mark(dir: &Path, connect_id: &str, prompt: &str) -> Marker {
+    if connect_id.is_empty() || !connect_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Marker::Unavailable;
+    }
+    let path = dir.join(format!("{MARKER_PREFIX}{connect_id}"));
+    let prompt = prompt.trim().replace(['\n', '\r'], " ");
+    let mut create = std::fs::OpenOptions::new();
+    create.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        create.mode(0o600);
+    }
+    match create.open(&path) {
+        Ok(mut file) => {
+            let _ = writeln!(file, "{prompt}");
+            Marker::First
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return Marker::Unavailable;
+            };
+            let mut lines = text.lines();
+            if lines.next() != Some(prompt.as_str()) {
+                return Marker::Other;
+            }
+            let warned = lines.next().is_some();
+            if !warned {
+                let _ = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut f| writeln!(f, "refused"));
+            }
+            Marker::Repeat { warn: !warned }
+        }
+        Err(_) => Marker::Unavailable,
+    }
+}
+
+/// Remove `askpass-*` markers in sshelf's runtime directory that are older than ten minutes. Run
+/// before wiring a new connect; never creates the directory.
+pub(crate) fn sweep_stale_markers() {
+    if let Some(dir) = crate::paths::existing_runtime_dir() {
+        remove_stale_markers(&dir, SystemTime::now());
+    }
+}
+
+fn remove_stale_markers(dir: &Path, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(MARKER_PREFIX)
+        {
+            continue;
+        }
+        // `DirEntry::metadata` does not follow a symlink, so only a real file is ever removed.
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let stale = meta.is_file()
+            && meta
+                .modified()
+                .ok()
+                .and_then(|m| now.duration_since(m).ok())
+                .is_some_and(|age| age > MARKER_MAX_AGE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -333,5 +479,70 @@ mod tests {
             ),
             Answer::Decline
         );
+    }
+
+    fn scratch() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sshelf-marker-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The same secret prompt twice in one connect means the first answer was refused.
+    #[test]
+    fn a_repeated_prompt_in_one_connect_is_reported_once_and_declined() {
+        let dir = scratch();
+        let id = ulid::Ulid::new().to_string();
+        let prompt = "tester@host's password: ";
+
+        assert_eq!(mark(&dir, &id, prompt), Marker::First);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(dir.join(format!("askpass-{id}"))).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+        assert_eq!(mark(&dir, &id, prompt), Marker::Repeat { warn: true });
+        // A password prompt comes back once per attempt ssh has left; say it once.
+        assert_eq!(mark(&dir, &id, prompt), Marker::Repeat { warn: false });
+        // A different secret prompt in the same connect (another key file) is not a refusal.
+        assert_eq!(
+            mark(&dir, &id, "Enter passphrase for key '/other/key': "),
+            Marker::Other
+        );
+        // The next connect starts clean.
+        assert_eq!(
+            mark(&dir, &ulid::Ulid::new().to_string(), prompt),
+            Marker::First
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_marker_that_cannot_be_made_fails_open() {
+        let dir = scratch();
+        assert_eq!(mark(&dir, "", "Password:"), Marker::Unavailable);
+        assert_eq!(mark(&dir, "../escape", "Password:"), Marker::Unavailable);
+        assert_eq!(
+            mark(&dir.join("missing"), "01ABCDEF", "Password:"),
+            Marker::Unavailable
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_stale_markers_are_swept() {
+        let dir = scratch();
+        std::fs::write(dir.join("askpass-01OLD"), "Password:\n").unwrap();
+        std::fs::create_dir(dir.join("mux-01SESSION")).unwrap();
+        std::fs::write(dir.join("unrelated"), "").unwrap();
+
+        remove_stale_markers(&dir, SystemTime::now());
+        assert!(dir.join("askpass-01OLD").exists(), "a fresh marker stays");
+
+        remove_stale_markers(&dir, SystemTime::now() + Duration::from_secs(11 * 60));
+        assert!(!dir.join("askpass-01OLD").exists());
+        assert!(dir.join("mux-01SESSION").is_dir());
+        assert!(dir.join("unrelated").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

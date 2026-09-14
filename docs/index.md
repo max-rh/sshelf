@@ -28,19 +28,21 @@ sshelf                             # launch the TUI
   [Searching & connecting](search-connect.md)
 - A dual-pane SFTP file browser (`Ctrl-t`): mark several, send in one go, `F7` to create a
   directory. [Transferring files](transfer.md)
-- tmux mode, where `Enter` opens each host in a new window or pane and keeps the picker up.
+- tmux mode, where `Enter` opens each host in a background window or pane and keeps focus on
+  the picker.
   [Connecting inside tmux](search-connect.md#connecting-inside-tmux)
 - Background port forwards that survive quitting (`Ctrl-f` / `F4`).
   [Port forwarding](port-forwarding.md)
 - Sites with a shared bastion and defaults, plus free-form tags (`F3`).
   [Sites & tags](sites-tags.md)
-- Stored passwords and passphrases auto-supplied at connect, and 2FA code prompts.
-  [Passwords, keys & 2FA](passwords-2fa.md)
+- Stored passwords and passphrases auto-supplied at connect, asked for and saved on a host's
+  first connect, and 2FA code prompts. [Passwords, keys & 2FA](passwords-2fa.md)
 - SSH-config export: one `Include` line and plain `ssh`/`scp`, rsync, and VS Code Remote see
   your hosts. [Exporting to SSH config](export.md)
 - Import from `~/.ssh/config` or your whole Tailscale tailnet (`--tailscale`).
   [Importing hosts](import.md)
-- A scriptable CLI (`sshelf add`, `list --json`, `print-command`, ...).
+- A scriptable CLI (`sshelf add`, `add --from-ssh` to save an ssh command you already have,
+  `list --json`, `print-command`, ...).
   [CLI reference](cli.md)
 - `sshelf doctor`, one command that checks your setup and names the fix.
   [Checking your setup](doctor.md)

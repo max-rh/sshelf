@@ -25,7 +25,9 @@ against) is in [SECURITY.md](SECURITY.md).
   `ssh -N` process's stderr, so a forward that dies can say why. Deleted when the forward stops.
 - `~/.local/share/sshelf/run/` (or `$XDG_RUNTIME_DIR/sshelf/` when that is set) while the
   transfer screen is open: a directory per session holding one `ssh` control socket, removed
-  when the screen closes.
+  when the screen closes. The same directory holds a small `askpass-<id>` file for each connect
+  where a stored secret was handed to ssh. It records the prompt that was answered, never the
+  secret, so a refused one can be spotted, and it is removed after ten minutes.
 - The transfer log, only if you asked for one with `--transfer-log` or `$SSHELF_TRANSFER_LOG`.
 - One keyring entry per host you gave a password to, under the service name `sshelf`,
   keyed by the host's id. In vault mode it's a line in `vault.age` instead.
@@ -37,7 +39,10 @@ against) is in [SECURITY.md](SECURITY.md).
 `ssh` to connect and to hold port forwards, `ssh` plus `sftp` for the transfer screen, `tmux`
 if you turned on tmux mode, and `tailscale status --json` if you run
 `sshelf import --tailscale`. That's the whole list. Each one runs because you pressed a key or
-typed a command, never at startup, never on a timer, never in the background.
+typed a command, never at startup, never on a timer, never in the background. On the first
+connect to a host with nothing stored, sshelf may also run `ssh-keygen -y` on that host's key
+file and one throwaway `ssh ... exit` against the host you are connecting to, to check a secret
+before saving it.
 
 ## What it sends
 

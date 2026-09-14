@@ -203,16 +203,17 @@ sshelf holding something of yours, or talking to something on its own.
 ## First five minutes
 
 ```sh
-sshelf                        # launch the TUI (Ctrl-a adds your first host)
-sshelf import --dry-run       # preview a read-only import from ~/.ssh/config
-sshelf import                 # ...do it
-sshelf import --tailscale     # ...or import your whole Tailscale tailnet
-sshelf prod-web               # connect straight to a saved host (skips the TUI)
-sshelf -                      # reconnect to the most recently used host
-sshelf list tag:prod --json   # scriptable listing (fields + the ssh command)
-sshelf print-command db       # print the ssh command instead of running it
-sshelf export                 # Include file so plain ssh/scp/VS Code see your hosts
-sshelf doctor                 # something not working? check the setup and get told the fix
+sshelf                               # launch the TUI (Ctrl-a adds your first host)
+sshelf import --dry-run              # preview a read-only import from ~/.ssh/config
+sshelf import                        # ...do it
+sshelf import --tailscale            # ...or import your whole Tailscale tailnet
+sshelf add --from-ssh "$(fc -ln -1)" # save the ssh command you just ran as a host
+sshelf prod-web                      # connect straight to a saved host (skips the TUI)
+sshelf -                             # reconnect to the most recently used host
+sshelf list tag:prod --json          # scriptable listing (fields + the ssh command)
+sshelf print-command db              # print the ssh command instead of running it
+sshelf export                        # Include file so plain ssh/scp/VS Code see your hosts
+sshelf doctor                        # something not working? check the setup and get told the fix
 ```
 
 In the TUI: type to filter (plus `tag:NAME` / `site:NAME`) and `Enter` to connect.

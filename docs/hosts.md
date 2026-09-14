@@ -8,6 +8,47 @@ shown.
 **Quick-add:** the form opens with sensible defaults, so a Name + Hostname and `Ctrl-s` is
 enough.
 
+## Add a host from an ssh command
+
+If you already have a working `ssh` line, from your history or a runbook, sshelf can read it:
+
+```sh
+sshelf add --from-ssh 'ssh -i ~/Downloads/dev-ooblek-privco.pem -o StrictHostKeyChecking=no ubuntu@44.196.235.116'
+```
+
+That opens this form filled in: `44.196.235.116` as the name and the hostname, `ubuntu` as the
+user, auth `key` with that key file. Change what you like and save, or `Esc` to add nothing.
+Focus starts on the name, or on the password for a password host, since a command line never
+carries one. `--quiet` saves the host without the form. To save the command you just ran:
+
+```sh
+sshelf add --from-ssh "$(fc -ln -1)"
+```
+
+`ssh ... | sshelf add --from-ssh` can't work: the shell runs that `ssh` and pipes its output.
+Hand sshelf the command as text instead, as above, or with `echo 'ssh ...' |` in front.
+
+The line is read with ssh's own option rules, so `-At`, `-p2222`, `--` and options after the
+destination all mean what they mean to ssh. Nothing is looked up: an alias from your
+`~/.ssh/config` stays an alias, and ssh still resolves it when you connect.
+
+| On the line | Becomes |
+|---|---|
+| `user@host`, `ssh://user@host:port` | hostname, user, port |
+| `-l USER`, `-p PORT` | user and port, over the ones in the destination |
+| `-i KEY` (repeatable) | identity files, and auth `key`. A relative path is saved absolute, since you'll connect from other directories. |
+| `-J a,b` | jump hosts |
+| `-o PasswordAuthentication=yes` or `-o PreferredAuthentications=password`, with no `-i` | auth `password`. Those two options aren't kept. |
+| anything else, e.g. `-A`, `-L ...`, `-F ...`, `-o ServerAliveInterval=30` | extra args, in order |
+
+A few options are dropped, each with a line saying why: `-v`, `-q`, `-G`, `-V`, `-Q`, `-O`, `-S`,
+`-E`, `-M`, `-N`, `-f`, `-n`, `-g`, `-s`, and `-o StrictHostKeyChecking=...`. That last one
+because sshelf passes `accept-new` on every connect and ssh keeps the first value it sees, so a
+saved `no` would claim something that isn't true. A remote command at the end of the line is
+refused rather than dropped, since a saved host has no command, and so is anything that isn't
+ssh in front (`sudo ssh ...`). The name defaults to the destination's host; when that name is
+taken, give one first: `sshelf add prod-web --from-ssh '...'`.
+
 ## Fields
 
 Always shown: **Name** (required), **Hostname** (required), **User** (defaults to `$USER` at
@@ -55,4 +96,8 @@ frecency history, and its stored secret.
 Everything above can be done non-interactively with `sshelf add`. See
 [Adding hosts from the CLI](cli.md#adding-hosts-from-the-cli). `hosts.toml` itself is
 designed to be hand-edited too; the full schema is in [Data model & files](data-model.md)
-(that's also how you give one host **multiple** identity files).
+(that's also how you give one host **multiple** identity files). Each host needs an `id`, and any
+string that's unique in the file will do: sshelf only uses it to find the host's secret and its
+usage history. Secrets never go in the file, so a password host (or an encrypted-key host) you
+wrote by hand has nothing stored. Its first connect asks for the secret and saves it once it
+works; see [saving the secret on first connect](passwords-2fa.md#saving-the-secret-on-first-connect).

@@ -11,6 +11,7 @@ mod config;
 mod display;
 mod doctor;
 mod export;
+mod first_connect;
 mod forwards;
 mod import;
 mod model;
@@ -18,6 +19,7 @@ mod paths;
 mod search;
 mod secrets;
 mod ssh;
+mod sshcmd;
 mod state;
 mod store;
 mod tailscale;
@@ -221,6 +223,31 @@ struct AddArgs {
     /// The host's login needs an interactive verification code (2FA): connect prompts for it.
     #[arg(long = "2fa")]
     requires_2fa: bool,
+    /// Build the host from a working ssh command line: one quoted string, or nothing (or `-`)
+    /// to read it from stdin. Opens the add form filled in; add --quiet to save it without the
+    /// form. Put NAME before this flag. The command line already supplies the hostname, user,
+    /// port, auth, keys, jump hosts and extra args, so those flags can't be used with it.
+    #[arg(
+        long = "from-ssh",
+        value_name = "CMD",
+        num_args = 0..=1,
+        conflicts_with_all = ["hostname", "user", "port", "auth", "identity_files", "jump_hosts", "extra_args"]
+    )]
+    from_ssh: Option<Option<String>>,
+    /// With --from-ssh: add the host without opening the form.
+    #[arg(short = 'q', long)]
+    quiet: bool,
+}
+
+/// Where `sshelf add` goes, given its flags.
+#[derive(Debug, PartialEq, Eq)]
+enum AddRoute {
+    /// Bare `sshelf add`: the empty form.
+    Form,
+    /// Flags: add non-interactively.
+    Flags,
+    /// `--from-ssh`: the filled-in form, or with `--quiet` a non-interactive add.
+    FromSsh,
 }
 
 /// CLI spelling of the auth method, kept separate from `model::AuthMethod` so the model stays
@@ -258,6 +285,22 @@ impl AddArgs {
             || self.extra_args.is_some()
             || self.password_stdin
             || self.requires_2fa
+            || self.from_ssh.is_some()
+            || self.quiet
+    }
+
+    fn route(&self) -> Result<AddRoute> {
+        if self.from_ssh.is_some() {
+            return Ok(AddRoute::FromSsh);
+        }
+        if self.quiet {
+            anyhow::bail!("--quiet only applies to --from-ssh");
+        }
+        Ok(if self.has_args() {
+            AddRoute::Flags
+        } else {
+            AddRoute::Form
+        })
     }
 
     /// Effective auth method, with inference from --identity / --password-stdin.
@@ -321,7 +364,17 @@ fn run() -> Result<()> {
     // emit candidates and exit. A no-op on a normal run.
     CompleteEnv::with_factory(Cli::command).complete();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let note = conflict_note(&e);
+            let _ = e.print();
+            if let Some(note) = note {
+                eprintln!("note: {note}");
+            }
+            std::process::exit(e.exit_code());
+        }
+    };
     reject_host_with_subcommand(cli.host.as_deref(), cli.command.as_ref())?;
     // `--config` is plumbed to all paths via the env var so subcommands + Paths resolution see
     // it uniformly. Set before any Paths::resolve().
@@ -339,13 +392,11 @@ fn run() -> Result<()> {
     }
     match cli.command {
         Some(Command::List { query, json }) => cmd_list(&query.join(" "), json),
-        Some(Command::Add(args)) => {
-            if args.has_args() {
-                cmd_add(args)
-            } else {
-                app::run_add()
-            }
-        }
+        Some(Command::Add(args)) => match args.route()? {
+            AddRoute::Form => app::run_add(),
+            AddRoute::Flags => cmd_add(args),
+            AddRoute::FromSsh => cmd_add_from_ssh(args),
+        },
         Some(Command::Import { dry_run, tailscale }) => cmd_import(dry_run, tailscale),
         Some(Command::Export { stdout }) => cmd_export(stdout),
         Some(Command::SetPassword { host }) => cmd_set_password(&host),
@@ -367,6 +418,16 @@ fn run() -> Result<()> {
             None => app::run(),
         },
     }
+}
+
+/// The extra line for a clap conflict with `--from-ssh`. clap names the two flags but not why
+/// they can't go together.
+fn conflict_note(e: &clap::Error) -> Option<&'static str> {
+    (e.kind() == clap::error::ErrorKind::ArgumentConflict && e.to_string().contains("--from-ssh"))
+        .then_some(
+            "the ssh command line already supplies the hostname, user, port, auth, keys, jump \
+             hosts and extra args",
+        )
 }
 
 /// Reject `sshelf <HOST> <subcommand>`.
@@ -681,10 +742,149 @@ fn hosts_to_json(hosts: &[&Host], sites: &[Site]) -> Result<String> {
 
 /// Add a host non-interactively from CLI flags.
 fn cmd_add(args: AddArgs) -> Result<()> {
-    let auth = args.resolved_auth();
     let read_secret = args.password_stdin;
     let host = args.into_host()?;
+    save_new_host(host, || stdin_secret(read_secret), false)
+}
 
+/// `sshelf add --from-ssh`: read the command line, map it onto a host (D-034), then open the add
+/// form on it, or with `--quiet` save it straight away. With `--password-stdin` as well, the
+/// command line is stdin's first line and the secret its second.
+fn cmd_add_from_ssh(args: AddArgs) -> Result<()> {
+    let line = read_ssh_command(args.from_ssh.flatten())?;
+    let parsed = sshcmd::parse(&line)?;
+    let notes = parsed.notes.clone();
+    let mut host = parsed.into_host(args.name);
+    host.tags = args.tags;
+    host.site = args.site;
+    host.requires_2fa = args.requires_2fa;
+    // `--password-stdin` implies password auth, unless an `-i` on the line made it a key host.
+    if args.password_stdin && host.auth == AuthMethod::Agent {
+        host.auth = AuthMethod::Password;
+    }
+    let print_notes = |notes: &[String]| {
+        for note in notes {
+            println!("note: {}", display::sanitize(note));
+        }
+    };
+    if args.quiet {
+        print_notes(&notes);
+        return save_new_host(host, || stdin_secret(args.password_stdin), true);
+    }
+    // Everything stdin carries is read before the form takes the terminal over.
+    let secret = stdin_secret(args.password_stdin)?;
+    if !stdin_on_terminal() {
+        println!("note: there is no terminal to open the form on, so the host is added without it");
+        print_notes(&notes);
+        return save_new_host(host, move || Ok(secret), true);
+    }
+    app::run_add_prefilled(host, notes, secret.map(Zeroizing::new))
+}
+
+/// Make sure the add form can read keys when stdin was a pipe (`echo 'ssh ...' | sshelf add
+/// --from-ssh`). False when there is no terminal to read from at all.
+///
+/// crossterm falls back to opening `/dev/tty` when stdin is not a terminal, but on macOS its
+/// event source registers that descriptor with kqueue, which refuses the `/dev/tty` alias with
+/// `EINVAL` and the TUI stops at "Failed to initialize input reader". kqueue does accept the
+/// terminal's own device, so that is opened (the name `ttyname` gives for stdout or stderr,
+/// `/dev/tty` only as a last resort) and put on fd 0, where crossterm reads it like any other
+/// terminal stdin. The pipe has been read to the end of what sshelf needs by then.
+#[cfg(unix)]
+fn stdin_on_terminal() -> bool {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    if std::io::stdin().is_terminal() {
+        return true;
+    }
+    let device = [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .find_map(|fd| {
+            // SAFETY: `ttyname` returns null or a NUL-terminated string in a static buffer,
+            // which is copied out at once; nothing else in this single-threaded startup calls it.
+            let name = unsafe { libc::ttyname(fd) };
+            (!name.is_null()).then(|| {
+                let bytes = unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes();
+                PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from("/dev/tty"));
+    let Ok(tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&device)
+    else {
+        return false;
+    };
+    // SAFETY: both descriptors are open. `dup2` makes fd 0 a copy of `tty` without close-on-exec,
+    // so a connect from the TUI hands the terminal on to ssh; `tty` itself closes on drop.
+    unsafe { libc::dup2(tty.as_raw_fd(), libc::STDIN_FILENO) != -1 }
+}
+
+#[cfg(not(unix))]
+fn stdin_on_terminal() -> bool {
+    std::io::stdin().is_terminal()
+}
+
+/// The command line for `--from-ssh`: the flag's value, or one line of stdin when there is no
+/// value or it is `-`. No value on a terminal is a mistake rather than something to wait for.
+fn read_ssh_command(value: Option<String>) -> Result<String> {
+    use std::io::BufRead;
+    match value {
+        Some(v) if v != "-" => return Ok(v),
+        None if std::io::stdin().is_terminal() => {
+            // Printed here rather than returned: the shared error printer drops any line with a
+            // `|` in it (that is how it folds away a toml parse diagram), and the example needs one.
+            eprintln!(
+                "Error: --from-ssh needs the ssh command. Pass it as one quoted string:\n  \
+                 sshelf add --from-ssh 'ssh -i k.pem user@host'\nor pipe it in:\n  \
+                 echo 'ssh ...' | sshelf add --from-ssh"
+            );
+            std::process::exit(1);
+        }
+        _ => {}
+    }
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("reading the ssh command from stdin")?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+/// One secret from the next line of stdin, for `--password-stdin`.
+fn read_stdin_secret() -> Result<String> {
+    use std::io::BufRead;
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("reading secret from stdin")?;
+    let s = line.trim_end_matches(['\n', '\r']).to_string();
+    if s.is_empty() {
+        anyhow::bail!(
+            "--password-stdin was given but stdin was empty — nothing added; pipe the \
+             secret in, e.g. `printf %s \"$PASS\" | sshelf add …`"
+        );
+    }
+    Ok(s)
+}
+
+/// The secret on the next line of stdin when `wanted`, for `--password-stdin`.
+fn stdin_secret(wanted: bool) -> Result<Option<String>> {
+    wanted.then(read_stdin_secret).transpose()
+}
+
+/// Save one new host, and the secret `secret` produces, if any. `secret` runs after the name
+/// check, so a taken name doesn't sit waiting on stdin. Shared by `add` with flags and every
+/// non-interactive `add --from-ssh`; `from_ssh` only changes the advice when the name is taken.
+fn save_new_host(
+    host: Host,
+    secret: impl FnOnce() -> Result<Option<String>>,
+    from_ssh: bool,
+) -> Result<()> {
+    let auth = host.auth;
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
@@ -692,9 +892,15 @@ fn cmd_add(args: AddArgs) -> Result<()> {
     let hosts_path = cfg.hosts_path(&paths);
     let mut file = store::load_hosts(&hosts_path)?;
     if file.hosts.iter().any(|h| h.name == host.name) {
+        let name = display::sanitize(&host.name);
+        if from_ssh {
+            anyhow::bail!(
+                "a host named '{name}' already exists; give this one a name of its own in front \
+                 of the flag: `sshelf add NAME --from-ssh ...`"
+            );
+        }
         anyhow::bail!(
-            "a host named '{}' already exists — pick another name (or edit it in the TUI)",
-            display::sanitize(&host.name)
+            "a host named '{name}' already exists — pick another name (or edit it in the TUI)"
         );
     }
     if let Some(site) = &host.site
@@ -707,24 +913,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
     }
 
     // Read the secret before writing anything, so empty stdin can't leave a half-added host.
-    let secret = if read_secret {
-        use std::io::BufRead;
-        let mut line = String::new();
-        std::io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .context("reading secret from stdin")?;
-        let s = line.trim_end_matches(['\n', '\r']).to_string();
-        if s.is_empty() {
-            anyhow::bail!(
-                "--password-stdin was given but stdin was empty — nothing added; pipe the \
-                 secret in, e.g. `printf %s \"$PASS\" | sshelf add …`"
-            );
-        }
-        Some(s)
-    } else {
-        None
-    };
+    let secret = secret()?;
 
     let id = host.id.clone();
     let name = host.name.clone();
@@ -996,31 +1185,37 @@ fn cmd_connect_last() -> Result<()> {
     connect(&host.with_site_defaults(&file.sites), &paths)
 }
 
-/// Record frecency BEFORE `exec()` (nothing runs after a successful exec), wire `SSH_ASKPASS`
-/// only when a secret is stored, then replace this process with `ssh`.
+/// Record frecency BEFORE `exec()` (nothing runs after a successful exec), then hand over.
 fn connect(host: &Host, paths: &Paths) -> Result<()> {
     let mut st = FrecencyState::load(&paths.state_file())?;
     st.record_use(&host.id);
     if let Err(e) = st.save(&paths.state_file()) {
         eprintln!("sshelf: warning: could not save state: {e:#}");
     }
-    let has_secret = secrets::get_password(&paths.vault_file(), &host.id)
+    Err(handoff(host, paths, None))
+}
+
+/// Everything between the frecency save and the `exec()`, shared by `sshelf <host>` and the TUI
+/// (whose terminal is already restored by then): the first-connect capture (D-035), the 2FA
+/// code, the multi-hop notice, and the handoff. `SSH_ASKPASS` is wired only when a secret is
+/// stored.
+///
+/// `popup_code` is a code the TUI already collected. Without one, a `requires_2fa` host is asked
+/// on the terminal, after the secret, because the code is the one that goes stale. Returns only
+/// on failure; a cancel, or a first secret that did not work, ends the process.
+fn handoff(host: &Host, paths: &Paths, popup_code: Option<Zeroizing<String>>) -> anyhow::Error {
+    let stored = secrets::get_password(&paths.vault_file(), &host.id)
         .ok()
         .flatten()
         .is_some();
-    let code = match prompt_2fa_code(host) {
-        CodePrompt::None => None,
-        CodePrompt::Code(code) => Some(code),
-        // In raw mode Ctrl-C is a key press, not a signal, so the abort it used to mean has to
-        // be done by hand — and it has to happen *before* the exec, or backing out of the
-        // prompt would connect anyway. 130 is the shell's code for "interrupted".
-        CodePrompt::Cancelled => {
-            eprintln!(
-                "cancelled — not connecting to {}",
-                display::sanitize(&host.name)
-            );
-            std::process::exit(130);
-        }
+    let has_secret = stored || capture_first_secret(host, paths);
+    let code = match popup_code {
+        Some(code) => Some(code),
+        None => match prompt_2fa_code(host) {
+            SecretPrompt::None => None,
+            SecretPrompt::Value(code) => Some(code),
+            SecretPrompt::Cancelled => cancel_connect(host),
+        },
     };
     // A chain of hops can't be constrained the way one can, so nothing is wired and ssh asks
     // on the terminal instead. Say so before it does (D-029).
@@ -1032,80 +1227,202 @@ fn connect(host: &Host, paths: &Paths) -> Result<()> {
     }
     // Replaces this process on success; returns only on failure. The code stays in its
     // zeroizing buffer right up to the handoff.
-    Err(ssh::exec_connect(
-        host,
-        has_secret,
-        code.as_deref().map(String::as_str),
-    ))
+    ssh::exec_connect(host, has_secret, code.as_deref().map(String::as_str))
 }
 
-/// How asking for a one-time code ended.
+/// Back out of a prompt without connecting. In raw mode Ctrl-C is a key press, not a signal, so
+/// the abort it used to mean has to be done by hand — and it has to happen *before* the exec, or
+/// backing out of the prompt would connect anyway. 130 is the shell's code for "interrupted".
+fn cancel_connect(host: &Host) -> ! {
+    eprintln!(
+        "cancelled — not connecting to {}",
+        display::sanitize(&host.name)
+    );
+    std::process::exit(130);
+}
+
+/// `user@host` as the connect will use it, with the port when it isn't 22. `host` has its site
+/// defaults resolved already.
+fn login_endpoint(host: &Host) -> String {
+    let endpoint = format!("{}@{}", host.effective_user(), host.hostname);
+    match host.port {
+        Some(port) if port != 22 => format!("{endpoint}:{port}"),
+        _ => endpoint,
+    }
+}
+
+/// The first-connect capture (D-035), for a host with nothing stored: ask for the password or
+/// passphrase, store it, prove it with a throwaway `ssh ... exit`, and keep it only if that
+/// worked. Returns whether a secret is stored now.
 ///
-/// Cancelling is deliberately not the same as "no code": before this prompt read with echo
-/// off, Ctrl-C raised SIGINT and killed sshelf outright, and a user who realises mid-code that
+/// The secret has to be in the store before the check, because the helper reads the store and
+/// nothing else can carry it to ssh. A secret that was refused, or that could not be checked,
+/// is removed again and the process exits 1.
+fn capture_first_secret(host: &Host, paths: &Paths) -> bool {
+    use first_connect::{Decision, Probe, Verdict};
+
+    let (decision, key) = first_connect::assess(host, || false, false);
+    match decision {
+        Decision::AskPassword => {}
+        Decision::ProbeKey if first_connect::probe(host) == Probe::Ask => {}
+        Decision::ProbeKey | Decision::Connect | Decision::StepAside => return false,
+    }
+    let endpoint = display::sanitize(&login_endpoint(host));
+    let (kind, subject) = match &key {
+        Some(key) => (
+            "passphrase",
+            format!("Passphrase for {}", display::sanitize(key)),
+        ),
+        None => ("password", format!("Password for {endpoint}")),
+    };
+    let store = match secrets::backend() {
+        secrets::Backend::Vault => "vault",
+        secrets::Backend::Keyring => "keyring",
+    };
+    let prompt = format!("{subject} (saved to your {store} once it works; Enter to skip): ");
+    let secret = match read_secret_line(&prompt) {
+        SecretPrompt::Value(secret) => secret,
+        // Enter skips: connect exactly as before and let ssh ask. Nothing is remembered.
+        SecretPrompt::None => return false,
+        SecretPrompt::Cancelled => cancel_connect(host),
+    };
+
+    let name = display::sanitize(&host.name);
+    let vault = paths.vault_file();
+    if let Err(e) = secrets::store_password(&vault, &host.id, &secret) {
+        eprintln!(
+            "sshelf: could not save the {kind}: {}; connecting without it",
+            display::error_line(&format!("{e:#}"))
+        );
+        return false;
+    }
+    drop(secret);
+
+    // A check would use up the code this host is about to ask for.
+    if host.requires_2fa {
+        eprintln!(
+            "saved {kind} for {name} (not checked: this host needs a code; if the login fails, \
+             press ^e in the TUI or run sshelf set-password {name})"
+        );
+        return true;
+    }
+
+    let failure = match first_connect::verify(host) {
+        Verdict::Worked => {
+            eprintln!("saved {kind} for {name}");
+            return true;
+        }
+        Verdict::Refused => format!("the {kind} was refused by {endpoint}"),
+        Verdict::Failed(stderr) => {
+            let why = ssh::classify_auth_error(&stderr, host, true)
+                .or_else(|| {
+                    stderr
+                        .lines()
+                        .map(str::trim)
+                        .rfind(|l| !l.is_empty())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "ssh gave no reason".to_string());
+            format!(
+                "could not check the {kind} against {endpoint}: {}",
+                display::sanitize(&why)
+            )
+        }
+    };
+    match secrets::delete_password(&vault, &host.id) {
+        Ok(()) => eprintln!("{failure}; nothing saved"),
+        Err(e) => eprintln!(
+            "{failure}, and removing it again failed: {}; replace it with sshelf set-password {name}",
+            display::error_line(&format!("{e:#}"))
+        ),
+    }
+    std::process::exit(1);
+}
+
+/// How reading a secret or a one-time code off the terminal ended.
+///
+/// Cancelling is deliberately not the same as "nothing": before the code prompt read with echo
+/// off, Ctrl-C raised SIGINT and killed sshelf outright, and a user who realises mid-prompt that
 /// they are pointed at the wrong host must still be able to stop rather than be exec'd into it.
-enum CodePrompt {
-    /// Not a 2FA host, or nothing usable was read — connect without a code.
+enum SecretPrompt {
+    /// No question was asked, or nothing usable was read (an empty line, a failed read).
     None,
-    /// The code the user typed.
-    Code(Zeroizing<String>),
+    /// What the user typed.
+    Value(Zeroizing<String>),
     /// Esc, Ctrl-C or Ctrl-D: back out without connecting.
     Cancelled,
 }
 
 /// For a host flagged `requires_2fa`, prompt on the terminal for the one-time code before the
-/// `exec()` handoff (the CLI has no TUI popup). [`CodePrompt::None`] for non-2FA hosts and when
-/// the read fails; [`CodePrompt::Cancelled`] when the user backs out.
+/// `exec()` handoff (the CLI has no TUI popup). [`SecretPrompt::None`] for non-2FA hosts and when
+/// the read fails; [`SecretPrompt::Cancelled`] when the user backs out.
 ///
 /// On a terminal the code is read with echo **off**, so it never reaches scrollback, a
 /// terminal log, or a screen recording. A piped stdin keeps the plain line read, because
 /// scripts feed the code in that way. Either way the value lives in a zeroizing buffer until
 /// the connect path takes it — it still crosses to `ssh` through the environment, which is the
 /// trade-off D-022 documents and does not change here.
-fn prompt_2fa_code(host: &Host) -> CodePrompt {
+fn prompt_2fa_code(host: &Host) -> SecretPrompt {
     if !host.requires_2fa {
-        return CodePrompt::None;
+        return SecretPrompt::None;
     }
+    let prompt = format!("Verification code for {}: ", display::sanitize(&host.name));
+    read_line_with(&prompt, str::trim)
+}
+
+/// Ask for a password or key passphrase on the terminal: the 2FA code's reader, except a piped
+/// line keeps its spaces, since a secret may have them. Only the line ending is dropped.
+fn read_secret_line(prompt: &str) -> SecretPrompt {
+    read_line_with(prompt, trim_line_ending)
+}
+
+fn trim_line_ending(line: &str) -> &str {
+    line.trim_end_matches(['\n', '\r'])
+}
+
+/// Print `prompt` on stderr and read one answer: with echo off from a terminal, or as a plain
+/// line from a piped stdin, tidied by `piped`. An empty answer is [`SecretPrompt::None`].
+fn read_line_with(prompt: &str, piped: fn(&str) -> &str) -> SecretPrompt {
     use std::io::Write;
-    eprint!("Verification code for {}: ", display::sanitize(&host.name));
+    eprint!("{prompt}");
     let _ = std::io::stderr().flush();
-    let code = if std::io::stdin().is_terminal() {
+    let read = if std::io::stdin().is_terminal() {
         read_code_hidden()
     } else {
-        read_code_piped()
+        read_code_piped(piped)
     };
-    // Nothing echoed the Enter that ended the code (and a pipe never sends one), so the next
+    // Nothing echoed the Enter that ended the answer (and a pipe never sends one), so the next
     // thing printed would otherwise land on the prompt line.
     eprintln!();
-    match code {
-        // An empty code is the user pressing Enter at the prompt: nothing to pass on, but not
+    match read {
+        // An empty answer is the user pressing Enter at the prompt: nothing to pass on, but not
         // a cancel either.
-        CodePrompt::Code(c) if c.is_empty() => CodePrompt::None,
+        SecretPrompt::Value(v) if v.is_empty() => SecretPrompt::None,
         other => other,
     }
 }
 
-/// Read the code from a terminal with echo off, one key event at a time.
+/// Read the answer from a terminal with echo off, one key event at a time.
 ///
 /// Nothing is echoed, so there is no cursor to maintain: Backspace simply drops the last
 /// character. Esc, Ctrl-C and Ctrl-D cancel — in raw mode none of the three reaches the
 /// terminal driver, so each one has to be handled as an ordinary key press.
-fn read_code_hidden() -> CodePrompt {
+fn read_code_hidden() -> SecretPrompt {
     use ratatui::crossterm::event::{self, Event, KeyEventKind};
     use ratatui::crossterm::terminal::enable_raw_mode;
 
     // A terminal that won't go into raw mode is one this can't read from safely; the connect
-    // goes ahead without a code rather than pretending the user backed out.
+    // goes ahead without an answer rather than pretending the user backed out.
     if enable_raw_mode().is_err() {
-        return CodePrompt::None;
+        return SecretPrompt::None;
     }
     let _cooked = CookedMode;
-    // Sized up front, so a growing code doesn't leave older copies of itself behind in
+    // Sized up front, so a growing answer doesn't leave older copies of itself behind in
     // reallocated buffers that nothing will zero.
-    let mut code = Zeroizing::new(String::with_capacity(32));
+    let mut code = Zeroizing::new(String::with_capacity(128));
     loop {
         let Ok(event) = event::read() else {
-            return CodePrompt::None;
+            return SecretPrompt::None;
         };
         let Event::Key(key) = event else {
             continue;
@@ -1118,21 +1435,21 @@ fn read_code_hidden() -> CodePrompt {
             CodeEdit::Backspace => {
                 code.pop();
             }
-            CodeEdit::Accept => return CodePrompt::Code(code),
-            CodeEdit::Cancel => return CodePrompt::Cancelled,
+            CodeEdit::Accept => return SecretPrompt::Value(code),
+            CodeEdit::Cancel => return SecretPrompt::Cancelled,
             CodeEdit::Ignore => {}
         }
     }
 }
 
-/// The piped fallback: a script feeds the code on stdin, where there is no echo to turn off.
+/// The piped fallback: a script feeds the answer on stdin, where there is no echo to turn off.
 /// EOF with nothing typed is the pipe running dry, not a user backing out, so it connects
-/// without a code exactly as it did before.
-fn read_code_piped() -> CodePrompt {
+/// without an answer exactly as it did before.
+fn read_code_piped(tidy: fn(&str) -> &str) -> SecretPrompt {
     let mut line = Zeroizing::new(String::new());
     match std::io::stdin().read_line(&mut line) {
-        Ok(n) if n > 0 => CodePrompt::Code(Zeroizing::new(line.trim().to_string())),
-        _ => CodePrompt::None,
+        Ok(n) if n > 0 => SecretPrompt::Value(Zeroizing::new(tidy(&line).to_string())),
+        _ => SecretPrompt::None,
     }
 }
 
@@ -1484,6 +1801,114 @@ mod tests {
             Some(Command::Add(a)) => assert_eq!(a.resolved_auth(), AuthMethod::Password),
             _ => panic!("expected add"),
         }
+    }
+
+    fn add_args(argv: &[&str]) -> AddArgs {
+        match Cli::try_parse_from(argv).unwrap().command {
+            Some(Command::Add(a)) => a,
+            _ => panic!("expected add"),
+        }
+    }
+
+    #[test]
+    fn add_routes_between_the_form_flags_and_from_ssh() {
+        let route = |argv: &[&str]| {
+            let a = add_args(argv);
+            (a.has_args(), a.route().map_err(|e| e.to_string()))
+        };
+        assert_eq!(route(&["sshelf", "add"]), (false, Ok(AddRoute::Form)));
+        assert_eq!(
+            route(&["sshelf", "add", "web", "-H", "h"]),
+            (true, Ok(AddRoute::Flags))
+        );
+        for argv in [
+            &["sshelf", "add", "--from-ssh", "ssh u@h"][..],
+            &["sshelf", "add", "--from-ssh"],
+            &["sshelf", "add", "--from-ssh", "-"],
+            &["sshelf", "add", "web", "--from-ssh", "ssh u@h", "--quiet"],
+        ] {
+            assert_eq!(route(argv), (true, Ok(AddRoute::FromSsh)), "{argv:?}");
+        }
+        for argv in [
+            &["sshelf", "add", "-q"][..],
+            &["sshelf", "add", "web", "-H", "h", "--quiet"],
+        ] {
+            assert_eq!(
+                route(argv).1,
+                Err("--quiet only applies to --from-ssh".to_string()),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_ssh_takes_a_value_or_stdin_and_composes_with_the_rest() {
+        assert_eq!(
+            add_args(&["sshelf", "add", "--from-ssh", "ssh -p 2222 u@h"]).from_ssh,
+            Some(Some("ssh -p 2222 u@h".to_string()))
+        );
+        assert_eq!(
+            add_args(&["sshelf", "add", "--from-ssh"]).from_ssh,
+            Some(None)
+        );
+        assert_eq!(
+            add_args(&["sshelf", "add", "--from-ssh", "-"]).from_ssh,
+            Some(Some("-".to_string()))
+        );
+        let a = add_args(&[
+            "sshelf",
+            "add",
+            "prod-web",
+            "--from-ssh",
+            "ssh u@h",
+            "--tag",
+            "prod,web",
+            "--site",
+            "dc1",
+            "--2fa",
+            "--password-stdin",
+            "-q",
+        ]);
+        assert_eq!(a.name.as_deref(), Some("prod-web"));
+        assert_eq!(a.tags, vec!["prod", "web"]);
+        assert_eq!(a.site.as_deref(), Some("dc1"));
+        assert!(a.requires_2fa && a.password_stdin && a.quiet);
+    }
+
+    #[test]
+    fn from_ssh_conflicts_with_every_field_the_line_supplies() {
+        for (flag, value) in [
+            ("--hostname", "h"),
+            ("--user", "u"),
+            ("--port", "22"),
+            ("--auth", "key"),
+            ("--identity", "k"),
+            ("--jump", "b"),
+            ("--extra", "-A"),
+        ] {
+            let e = Cli::try_parse_from(["sshelf", "add", "--from-ssh", "ssh u@h", flag, value])
+                .err()
+                .unwrap_or_else(|| panic!("--from-ssh with {flag} must be refused"));
+            assert_eq!(e.kind(), clap::error::ErrorKind::ArgumentConflict, "{flag}");
+            let note = conflict_note(&e).expect("the conflict explains itself");
+            assert!(note.contains("already supplies"), "{note}");
+        }
+        // Other parse errors get no note.
+        let e = Cli::try_parse_from(["sshelf", "add", "--port", "nope"])
+            .err()
+            .unwrap();
+        assert!(conflict_note(&e).is_none());
+    }
+
+    #[test]
+    fn a_login_endpoint_shows_the_port_only_when_it_matters() {
+        let mut h = Host::new("web", "44.196.235.116");
+        h.user = Some("ubuntu".into());
+        assert_eq!(login_endpoint(&h), "ubuntu@44.196.235.116");
+        h.port = Some(22);
+        assert_eq!(login_endpoint(&h), "ubuntu@44.196.235.116");
+        h.port = Some(2222);
+        assert_eq!(login_endpoint(&h), "ubuntu@44.196.235.116:2222");
     }
 
     #[test]

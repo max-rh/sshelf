@@ -7,9 +7,9 @@ Everything sshelf does without opening the TUI.
 | Command | What it does |
 |---|---|
 | `sshelf` | Launch the interactive TUI. |
-| `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI, on the same connect path as `Enter` (frecency recorded, stored secret auto-supplied, [2FA code](passwords-2fa.md#two-factor-2fa-hosts) prompted on the terminal). A miss suggests the closest names; a host named like a subcommand (`list`, `import`, ...) is reached via the TUI instead. |
+| `sshelf <host>` | Connect straight to a saved host by **name or id**, skipping the TUI, on the same connect path as `Enter` (frecency recorded, stored secret auto-supplied or [asked for and saved on the first connect](passwords-2fa.md#saving-the-secret-on-first-connect), [2FA code](passwords-2fa.md#two-factor-2fa-hosts) prompted on the terminal). A miss suggests the closest names; a host named like a subcommand (`list`, `import`, ...) is reached via the TUI instead. |
 | `sshelf -` | Reconnect to the most recently used host. Errors (without connecting) if there's no history yet. |
-| `sshelf add [NAME ...]` | Bare: open the TUI add form. With arguments: add a host non-interactively; see [below](#adding-hosts-from-the-cli). |
+| `sshelf add [NAME ...]` | Bare: open the TUI add form. With arguments: add a host non-interactively; see [below](#adding-hosts-from-the-cli). With `--from-ssh`: build the host from an ssh command line; see [below](#from-an-ssh-command-line). |
 | `sshelf list [query] [--json]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax: fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). The `user@host:port` column shows [site defaults](sites-tags.md) resolved. |
 | `sshelf print-command <host>` | Print the generated, shell-quoted `ssh ...` command (site defaults included) without connecting or touching frecency, the CLI twin of `Ctrl-y`. |
 | `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
@@ -30,6 +30,14 @@ transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 
 A host name and a subcommand can't be combined: `sshelf prod-web list` is refused rather than
 quietly running `list` and forgetting the host.
+
+`sshelf <host>` can ask up to two things on the terminal before it hands over to ssh. A host with
+nothing stored asks for its password or key passphrase and saves it once a throwaway login proves
+it works ([details](passwords-2fa.md#saving-the-secret-on-first-connect)); `Enter` skips. A
+[2FA host](passwords-2fa.md#two-factor-2fa-hosts) then asks for its code. Both read with echo
+off. When stdin is a pipe they read plain lines instead, one per question and in that order, so
+a script connecting to a password host with nothing stored needs one extra line on stdin, the
+same way a 2FA code does.
 
 Plain output replaces terminal control characters. Host names, users, hostnames, tags and site
 names come out of `hosts.toml`, an imported `~/.ssh/config` or a tailnet, and any of those can
@@ -80,7 +88,44 @@ echo "$PASS" | sshelf add legacy -H 10.0.0.9 -u root --password-stdin
 | `--password-stdin` | Read a password / key passphrase from stdin and store it. |
 
 A duplicate name is refused. To store a secret after the fact, use
-`sshelf set-password <name>`.
+`sshelf set-password <name>`, or let the first connect ask for it.
+
+### From an ssh command line
+
+`--from-ssh` builds the host from a working `ssh` command instead of flags:
+
+```sh
+sshelf add --from-ssh 'ssh -i ~/Downloads/dev.pem -p 2222 ubuntu@203.0.113.10'
+sshelf add prod-web --from-ssh "$(fc -ln -1)"        # the ssh command you just ran
+echo 'ssh -J bastion deploy@10.0.0.5' | sshelf add --from-ssh
+```
+
+It opens the add form with the fields filled in, so what's left to type is the secret, if the
+host has one. `-q`/`--quiet` saves the host without the form and prints the same `added` line a
+flag-built add does, after one `note:` line for anything the parser dropped. What maps to which
+field, and what gets dropped, is in
+[Adding & editing hosts](hosts.md#add-a-host-from-an-ssh-command).
+
+| Flag | Meaning |
+|---|---|
+| `--from-ssh [CMD]` | The ssh command as one quoted string. No value, or `-`, reads one line from stdin. Can't be combined with `--hostname`, `--user`, `--port`, `--auth`, `--identity`, `--jump` or `--extra`, which the line already supplies. |
+| `-q, --quiet` | With `--from-ssh`: add without opening the form. Refused without `--from-ssh`. |
+
+`NAME`, `--tag`, `--site`, `--2fa` and `--password-stdin` still apply. Put `NAME` before
+`--from-ssh`, since the flag takes the next word as its value. With no value and stdin on a
+terminal, sshelf stops and shows both ways to pass the command instead of waiting for input.
+
+When `--from-ssh` and `--password-stdin` both read stdin, the command line is the first line and
+the secret is the second:
+
+```sh
+printf '%s\n%s\n' 'ssh -p 2222 ops@legacy.example' "$PASS" |
+  sshelf add legacy --from-ssh --password-stdin --quiet
+```
+
+Without `--quiet`, a secret read that way is put in the form's secret field. If there is no
+terminal to open the form on at all, the host is added as if `--quiet` were given, with a note
+saying so.
 
 ## Shell completions
 

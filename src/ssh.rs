@@ -9,7 +9,7 @@ use crate::model::{AuthMethod, Host};
 
 /// Expand a leading `~` / `~/` to `$HOME`. On the command line the shell normally does this,
 /// but we `exec` ssh directly (no shell), so we must expand identity-file paths ourselves.
-fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     if path == "~"
         && let Ok(home) = std::env::var("HOME")
     {
@@ -246,6 +246,37 @@ fn connect_command(
     cmd
 }
 
+/// `ConnectTimeout` for the two throwaway runs a first connect makes. The caller's own deadline
+/// is twice this, so a slow handshake fails with ssh's message rather than a kill.
+const CHECK_CONNECT_TIMEOUT: &str = "ConnectTimeout=15";
+
+/// The first-connect probe for a key host whose key needs a passphrase (D-035):
+/// `ssh -o BatchMode=yes -o ConnectTimeout=15 <build_args> exit`, with nothing wired. If the agent
+/// or an unencrypted sibling key already gets in, there is no passphrase worth asking for.
+///
+/// Both options come ahead of `build_args`, so they win over the host's `extra_args`: ssh keeps
+/// the first value it is given for an option.
+pub(crate) fn probe_command(host: &Host) -> std::process::Command {
+    let mut cmd = std::process::Command::new("ssh");
+    cmd.args(["-o", "BatchMode=yes", "-o", CHECK_CONNECT_TIMEOUT])
+        .args(build_args(host, true, false))
+        .arg("exit");
+    configure_askpass(&mut cmd, host, false, None);
+    cmd
+}
+
+/// The first-connect verify: `ssh -o ConnectTimeout=15 <build_args> exit`, wired exactly like the
+/// real connect, so the secret that was just stored reaches ssh only through the helper. The
+/// remote `exit` is the whole session.
+pub(crate) fn verify_command(host: &Host) -> std::process::Command {
+    let mut cmd = std::process::Command::new("ssh");
+    cmd.args(["-o", CHECK_CONNECT_TIMEOUT])
+        .args(build_args(host, true, true))
+        .arg("exit");
+    configure_askpass(&mut cmd, host, true, None);
+    cmd
+}
+
 #[cfg(not(unix))]
 pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) -> anyhow::Error {
     // No process-replacement on non-unix; spawn + wait, then mirror the exit code.
@@ -274,6 +305,9 @@ pub enum TmuxFallback {
     /// Two or more jump hops with a secret to protect ([`JumpPlan::Terminal`]): there is no
     /// wiring to hand to a new window, and no terminal in one for `ssh` to ask on either.
     MultiHopJump,
+    /// Nothing is stored yet and the first connect is going to ask for it (D-035). The question
+    /// has to be asked on this terminal, before the handoff, and a new window has no sshelf in it.
+    FirstSecret,
 }
 
 impl TmuxFallback {
@@ -293,6 +327,9 @@ impl TmuxFallback {
             TmuxFallback::MultiHopJump => {
                 "multi-hop jump host — connecting here (ssh has to ask for the secret on a terminal)"
             }
+            TmuxFallback::FirstSecret => {
+                "no secret stored yet, connecting here so the first one can be saved"
+            }
         }
     }
 }
@@ -305,14 +342,20 @@ pub fn inside_tmux() -> bool {
 /// Decide whether a connection can be opened in tmux, given what it needs to authenticate.
 ///
 /// `wire_askpass` = a secret is stored for this host, `two_fa_code` = a code was collected in the
-/// TUI. Returns `Err(reason)` when the connection must `exec()` in place instead; see D-025.
+/// TUI, `first_secret` = nothing is stored and the first connect would ask for it
+/// (`first_connect::Decision::StepAside`). Returns `Err(reason)` when the connection must `exec()`
+/// in place instead; see D-025.
 pub fn tmux_fallback(
     host: &Host,
     wire_askpass: bool,
     has_2fa_code: bool,
+    first_secret: bool,
 ) -> Result<(), TmuxFallback> {
     if has_2fa_code {
         return Err(TmuxFallback::TwoFactor);
+    }
+    if first_secret {
+        return Err(TmuxFallback::FirstSecret);
     }
     // A chain we can't constrain has to prompt on a terminal, and a fresh window has none.
     if matches!(jump_plan(host, wire_askpass), JumpPlan::Terminal) {
@@ -412,14 +455,18 @@ fn window_name(host: &Host) -> String {
 /// `mode` must not be [`Tmux::Off`] — the caller decides that before getting here. The ssh argv is
 /// passed as separate arguments, not one string, so tmux `execvp`s it directly and no shell
 /// re-parses paths with spaces. `-n` names the window (`split-window` has no such flag — a pane
-/// lives in its parent's window).
+/// lives in its parent's window). `-d` creates it in the background for both modes, so focus stays
+/// on the picker and the next host is one keypress away.
 pub fn tmux_connect_args(
     mode: Tmux,
     host: &Host,
     env: &[(String, String)],
     askpass: bool,
 ) -> Vec<String> {
-    let mut a = vec![mode.command().unwrap_or("new-window").to_string()];
+    let mut a = vec![
+        mode.command().unwrap_or("new-window").to_string(),
+        "-d".to_string(),
+    ];
     for (key, value) in env {
         a.push("-e".to_string());
         a.push(format!("{key}={value}"));
@@ -484,11 +531,26 @@ pub(crate) fn no_prompt_args(wire_askpass: bool) -> Vec<String> {
 /// creates: under `BatchMode=yes` a key that needs a passphrase sshelf does not hold fails as a
 /// bare "Permission denied (publickey)", which says nothing about passphrases.
 pub(crate) fn classify_auth_error(stderr: &str, host: &Host, has_secret: bool) -> Option<String> {
+    if has_secret {
+        // The helper saw a second prompt for the secret it had already answered in this connect
+        // and said so on stderr. ssh's own last line after that only reads like the server
+        // turning you away.
+        if stderr.contains(crate::askpass::REFUSED_HINT) {
+            let kind = match host.auth {
+                AuthMethod::Password => "password",
+                _ => "passphrase",
+            };
+            return Some(format!(
+                "could not authenticate: the stored {kind} was refused; replace it with ^e"
+            ));
+        }
+        return None;
+    }
     let low = stderr.to_lowercase();
     let auth_failed = low.contains("permission denied")
         || low.contains("authentication failed")
         || low.contains("too many authentication failures");
-    if !auth_failed || has_secret {
+    if !auth_failed {
         return None;
     }
     Some(match host.auth {
@@ -525,7 +587,8 @@ pub(crate) fn configure_askpass(
         .env_remove("SSH_ASKPASS_REQUIRE")
         .env_remove(crate::askpass::CODE_ENV)
         .env_remove(crate::askpass::KIND_ENV)
-        .env_remove(crate::askpass::IDENTITY_ENV);
+        .env_remove(crate::askpass::IDENTITY_ENV)
+        .env_remove(crate::askpass::CONNECT_ID_ENV);
     if !wire_askpass {
         // No stored secret → the exec'd ssh (and our helper) has no business inheriting the
         // vault master passphrase (it may be exported in the shell for headless use). In the
@@ -539,12 +602,21 @@ pub(crate) fn configure_askpass(
     if let Some(code) = two_fa_code {
         cmd.env(crate::askpass::CODE_ENV, code);
     }
+    // The helper leaves one marker per connect; the only writer is the helper, and the only
+    // reader of an old one would be a connect that is long over.
+    crate::askpass::sweep_stale_markers();
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("SSH_ASKPASS", exe)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("SSHELF_ASKPASS", "1")
             .env("SSHELF_HOST_ID", &host.id)
-            .env(crate::askpass::KIND_ENV, secret_kind(host).as_str());
+            .env(crate::askpass::KIND_ENV, secret_kind(host).as_str())
+            // Fresh per `Command`, so the helper can tell a repeat prompt within this connect
+            // from the first prompt of the next one. An id, nothing secret.
+            .env(
+                crate::askpass::CONNECT_ID_ENV,
+                ulid::Ulid::new().to_string(),
+            );
         if host.auth == AuthMethod::Key {
             cmd.env(crate::askpass::IDENTITY_ENV, identity_list(host));
         }
@@ -814,8 +886,14 @@ mod tests {
     #[test]
     fn a_queued_2fa_code_always_falls_back_to_exec() {
         let h = Host::new("a", "h");
-        assert_eq!(tmux_fallback(&h, false, true), Err(TmuxFallback::TwoFactor));
-        assert_eq!(tmux_fallback(&h, true, true), Err(TmuxFallback::TwoFactor));
+        assert_eq!(
+            tmux_fallback(&h, false, true, false),
+            Err(TmuxFallback::TwoFactor)
+        );
+        assert_eq!(
+            tmux_fallback(&h, true, true, false),
+            Err(TmuxFallback::TwoFactor)
+        );
         assert!(
             TmuxFallback::TwoFactor
                 .message()
@@ -1059,12 +1137,12 @@ mod tests {
         h.auth = AuthMethod::Password;
         h.jump_hosts = vec!["b1".into(), "b2".into()];
         assert_eq!(
-            tmux_fallback(&h, true, false),
+            tmux_fallback(&h, true, false, false),
             Err(TmuxFallback::MultiHopJump)
         );
         // With nothing stored there is nothing to protect, so tmux is fine again.
         assert!(!matches!(
-            tmux_fallback(&h, false, false),
+            tmux_fallback(&h, false, false, false),
             Err(TmuxFallback::MultiHopJump)
         ));
     }
@@ -1086,6 +1164,129 @@ mod tests {
         assert!(
             env.iter()
                 .any(|(k, v)| k == "SSHELF_IDENTITY_FILES" && v == "/abs/key")
+        );
+    }
+
+    // ---- D-035: first connect, and a refused stored secret --------------------------------
+
+    fn env_value(cmd: &std::process::Command, key: &str) -> Option<Option<String>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+            .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn a_wired_command_gets_a_fresh_connect_id_and_an_unwired_one_scrubs_it() {
+        let h = Host::new("a", "h");
+        let mut first = std::process::Command::new("ssh");
+        configure_askpass(&mut first, &h, true, None);
+        let id = env_value(&first, crate::askpass::CONNECT_ID_ENV)
+            .flatten()
+            .expect("a wired connect carries an id");
+        assert!(ulid::Ulid::from_string(&id).is_ok(), "{id}");
+
+        let mut second = std::process::Command::new("ssh");
+        configure_askpass(&mut second, &h, true, None);
+        assert_ne!(
+            env_value(&second, crate::askpass::CONNECT_ID_ENV).flatten(),
+            Some(id),
+            "every command gets its own id"
+        );
+
+        // Unwired: an inherited id is removed along with the rest of the wiring.
+        let mut unwired = std::process::Command::new("ssh");
+        configure_askpass(&mut unwired, &h, false, None);
+        assert_eq!(
+            env_value(&unwired, crate::askpass::CONNECT_ID_ENV),
+            Some(None)
+        );
+
+        // And nothing new crosses tmux's argv.
+        assert!(
+            !tmux_env(&h, true)
+                .iter()
+                .any(|(k, _)| k == crate::askpass::CONNECT_ID_ENV)
+        );
+    }
+
+    #[test]
+    fn a_tmux_connect_keeps_focus_on_the_picker() {
+        let h = Host::new("web", "10.0.0.1");
+        for mode in [Tmux::Window, Tmux::Pane] {
+            let argv = tmux_connect_args(mode, &h, &[], false);
+            assert_eq!(argv[1], "-d", "{mode:?}: {argv:?}");
+        }
+    }
+
+    #[test]
+    fn a_first_secret_steps_aside_from_tmux() {
+        let mut h = Host::new("legacy", "10.0.0.2");
+        h.auth = AuthMethod::Password;
+        assert_eq!(
+            tmux_fallback(&h, false, false, true),
+            Err(TmuxFallback::FirstSecret)
+        );
+        // A queued code still explains itself first.
+        assert_eq!(
+            tmux_fallback(&h, false, true, true),
+            Err(TmuxFallback::TwoFactor)
+        );
+        assert_eq!(
+            TmuxFallback::FirstSecret.message(),
+            "no secret stored yet, connecting here so the first one can be saved"
+        );
+    }
+
+    #[test]
+    fn the_probe_and_verify_commands() {
+        let mut h = Host::new("legacy", "10.0.0.2");
+        h.user = Some("ops".into());
+        h.auth = AuthMethod::Password;
+        h.jump_hosts = vec!["bastion".into()];
+        h.extra_args = Some("-o BatchMode=no -o ConnectTimeout=99".into());
+        let args = |cmd: &std::process::Command| -> Vec<String> {
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+
+        let probe = probe_command(&h);
+        let argv = args(&probe);
+        // Ahead of everything else, so the host's own extra args can't turn them off.
+        assert_eq!(
+            argv[..4],
+            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
+        );
+        assert_eq!(argv[argv.len() - 2..], ["ops@10.0.0.2", "exit"]);
+        assert!(argv.windows(2).any(|w| w == ["-J", "bastion"]));
+        // Nothing wired: an inherited helper is removed, so ssh can only fail, never ask.
+        assert_eq!(env_value(&probe, "SSH_ASKPASS"), Some(None));
+
+        let verify = verify_command(&h);
+        let argv = args(&verify);
+        assert_eq!(argv[..2], ["-o", "ConnectTimeout=15"]);
+        assert_eq!(argv.last().map(String::as_str), Some("exit"));
+        // Wired like the real connect: one hop is constrained, never handed the helper.
+        assert!(argv.iter().any(|a| a.starts_with("ProxyCommand=")));
+        assert_eq!(env_value(&verify, "SSHELF_ASKPASS"), Some(Some("1".into())));
+    }
+
+    #[test]
+    fn a_refused_stored_secret_is_named_on_the_background_screens() {
+        let mut h = Host::new("legacy", "10.0.0.2");
+        h.auth = AuthMethod::Password;
+        let stderr = format!(
+            "sshelf: the stored password for 01ABC {}\r\nops@10.0.0.2: Permission denied (password).\r\n",
+            crate::askpass::REFUSED_HINT
+        );
+        assert_eq!(
+            classify_auth_error(&stderr, &h, true).as_deref(),
+            Some("could not authenticate: the stored password was refused; replace it with ^e")
+        );
+        // Without the helper's line a stored-secret failure stays ssh's own to explain.
+        assert_eq!(
+            classify_auth_error("Permission denied (password).", &h, true),
+            None
         );
     }
 }

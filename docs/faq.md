@@ -86,8 +86,10 @@ client's own command line, which anyone on the machine can read with `ps`. sshel
 put a one-time code there, so those hosts connect in place instead, printing
 `2FA host — connecting here` before the handoff. The same applies to stored-password hosts in
 [vault mode](passwords-2fa.md#where-secrets-live) (the master passphrase would cross the same
-boundary), and to tmux older than 3.0, which has no `-e` at all. Key, agent, and
-keyring-backed password hosts open in tmux normally. Details:
+boundary), and to tmux older than 3.0, which has no `-e` at all. A host with nothing stored
+that's about to ask for its first secret connects in place too, printing
+`no secret stored yet, connecting here so the first one can be saved`, because the question needs
+this terminal. Key, agent, and keyring-backed password hosts open in tmux normally. Details:
 [Connecting inside tmux](search-connect.md#connecting-inside-tmux).
 
 ## Can I send more than one file at a time?
@@ -124,11 +126,32 @@ again with `Ctrl-f`. Automatic re-launch of dropped forwards isn't there yet.
 
 `hosts.toml` is one human-readable TOML file, so keep it in your dotfiles like any config (a
 custom path is a setting: [Configuration](configuration.md)). **Secrets don't travel with
-it**: they're per-machine, in each machine's keyring or vault, so re-add them with
-`sshelf set-password`. Frecency state is per-machine and app-managed.
+it**: they're per-machine, in each machine's keyring or vault. On the new machine each host
+asks for its secret on its first connect and keeps it once it works, or you can store them up
+front with `sshelf set-password`. Frecency state is per-machine and app-managed.
 
 On the new machine, run [`sshelf doctor`](doctor.md). It checks the file parses, has no
 duplicate names or ids, and that its sites all exist.
+
+## I copied `hosts.toml` to a new machine and it asks for passwords
+
+That's the first connect saving them. Secrets never live in `hosts.toml`, so nothing is stored
+on the new machine yet, and each password host (or key host with an encrypted key) asks once,
+checks the answer against the server, and keeps it. After that it goes straight in. `Enter` at
+the prompt skips, and `sshelf set-password <name>` stores one without connecting.
+[How it works](passwords-2fa.md#saving-the-secret-on-first-connect).
+
+If you use the vault (`SSHELF_VAULT_PASSPHRASE`), `vault.age` can be copied over along with
+`hosts.toml`, and with the same passphrase the secrets come with it, since both are keyed by host
+id. A keyring entry doesn't move that way.
+
+## Can I generate `hosts.toml` from an inventory?
+
+Yes. The schema is in [Data model & files](data-model.md). Each host needs an `id`, a `name` and
+a `hostname`, and the id can be any string that's unique in the file, so an inventory key works.
+Run [`sshelf doctor`](doctor.md) on the result: it checks the file parses and has no duplicate
+names or ids. Leave secrets out. The first connect to each host asks for its secret and keeps it
+once it works.
 
 ## Where did the first-connection host-key prompt go?
 

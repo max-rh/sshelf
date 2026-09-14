@@ -5,6 +5,27 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- `sshelf add --from-ssh` saves a host from a working ssh command line:
+  `sshelf add --from-ssh 'ssh -i key.pem -p 2222 user@host'`, `"$(fc -ln -1)"` for the one you
+  just ran, or the line on stdin. It reads ssh's own options and opens the add form with the user,
+  port, keys and jump hosts filled in and everything else kept as extra args, so what's left to
+  type is the secret. `-v`, `-N`, `-f`, `-o StrictHostKeyChecking` and a few others are dropped,
+  with a note saying why. `--quiet` adds the host without the form.
+- Connecting to a password host with nothing stored, or to a key host whose key needs a
+  passphrase, asks for it on the terminal, checks it with one throwaway `ssh ... exit`, and keeps
+  it only if that worked. A key your agent already holds is never asked about, and `Enter` skips.
+  This is what a copied, generated or hand-written `hosts.toml` was missing, since its hosts have
+  no secrets stored yet. A 2FA host saves the password without the check, because checking would
+  use up the code.
+
+### Changed
+
+- tmux mode opens the new window or pane in the background, so focus stays on the picker. It used
+  to switch to the new window. A host that is about to be asked for its first secret connects in
+  place instead, with a line saying why.
+
 ### Fixed
 
 - An upload could overwrite a file that appeared in the remote directory after sshelf checked
@@ -16,6 +37,11 @@ versions follow SemVer.
 - Uploading a single file into a remote directory whose listing was cut short at 50,000 entries
   is no longer refused, since that upload no longer depends on the listing. Folders are still
   refused there.
+- A wrong stored password or passphrase was handed to ssh again on every retry, and the failure
+  read like the server refusing you. The askpass helper now notices ssh asking the same question
+  twice in one connect, prints `sshelf: the stored password for <id> was refused; replace it with
+  sshelf set-password or ^e in the TUI`, and stops answering. The stored secret is left alone. The
+  transfer screen and port forwards name the stored secret in the same situation.
 
 ## [0.14.1] (2026-09-12)
 

@@ -3,10 +3,88 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.15.0, secrets from a password manager. v0.14.0 (security hardening)
-shipped on Sep 9; the first user-reported bugs are fixed on top of it and await a patch release.
+**Current milestone:** v0.16.0, secrets from a password manager. v0.15.0 (add a host from an ssh
+command, save the secret on first connect, and the upload fix) is tagged on Sep 14 and not pushed.
 
 ---
+
+## 2026-09-14: v0.15.0, add a host from an ssh command, and save the secret on first connect
+
+Two features, one bounded fix, and a tmux change, released together with the upload fix below.
+
+**`sshelf add --from-ssh`.** The new `sshcmd` module reads an ssh command line with OpenSSH's own
+option grammar and maps it onto a host: `user@host` or an `ssh://` URL, `-l`, `-p`, `-i`, `-J`, and
+password auth when `-o PasswordAuthentication=yes` or `PreferredAuthentications=password` says
+so. Everything else goes into `extra_args`, quoted only where a word needs it so the connect-time
+split gives the same words back, and `-v`, `-N`, `-f`, `-o StrictHostKeyChecking` and a few more
+are dropped with a note each. It opens the add form filled in (`Wizard::prefill`, focus on the
+password for a password host), or with `--quiet` adds it the way a flag-built `add` does. The
+parser follows ssh in reading options after the destination, since ssh re-reads them, so only the
+first plain word after the destination counts as the remote command that gets refused. D-034.
+
+The pipe case took more than expected. crossterm 0.29 opens `/dev/tty` when stdin isn't a
+terminal, but on macOS its event source registers that with kqueue, and the form stopped at
+`Failed to initialize input reader`. A small kqueue probe in a real terminal showed `/dev/tty`
+failing with `EINVAL` while `/dev/ttys004` worked, so reopening `/dev/tty` onto fd 0 would have
+failed the same way. The prefilled path reads what it needs from the pipe, then `dup2`s the device
+`ttyname` reports for stdout (or stderr) onto fd 0 before the TUI starts. With no terminal at all
+the host is added the `--quiet` way, with a note.
+
+**The secret, saved on first connect.** A connect to a password host with nothing stored, or to a
+key host whose key needs a passphrase, asks on the terminal before the handoff, stores the answer,
+proves it with one `ssh ... exit`, and removes it again if that fails. An encrypted key is probed
+with `BatchMode=yes` first, so a key already in the agent is never asked about. 2FA hosts store
+without the check. Both exec paths now share one tail in `main.rs` (`handoff`), and the terminal
+reader behind the 2FA prompt is shared with the new secret prompt without changing the code
+prompt. In the TUI, a 2FA host that would be asked skips its code popup so both questions come on
+the terminal, secret first. tmux mode falls back in place with its own reason. D-035.
+
+**A refused stored secret says so.** Every wired command carries `SSHELF_CONNECT_ID`, and the
+helper leaves `askpass-<id>` in the runtime directory the first time it answers a secret prompt.
+The same prompt again prints one line naming `set-password` and `^e`, and declines. The secret
+stays. The marker holds the prompt rather than nothing, so a host with two encrypted keys isn't
+told its passphrase was refused when ssh moves on to the second key. The helper's stderr reached
+the terminal of a real connect, so the `NumberOfPasswordPrompts=1` fallback wasn't needed. The
+runtime directory lookup moved from the transfer worker to `paths::runtime_dir`.
+
+**tmux `-d`.** `tmux_connect_args` now passes `-d` for windows and panes both, so focus stays on the
+picker, which is what `search-connect.md` and `index.md` described all along. I changed the code
+rather than the docs: firing off several hosts in a row is the point of the mode. D-025 reworded.
+
+Found on the way. OpenSSH 10.3 prints at most 100 bytes of a key's path in its passphrase prompt
+(seen directly: a 120-byte path came through cut at `.../scratch`), and the helper matches the path
+exactly, so a stored passphrase for a key with a longer path is never supplied. The first connect
+now skips such keys instead of asking for a passphrase and then calling a correct one refused.
+Changing the helper's matching is a separate piece of work. Also separate: an error message with a
+`|` in it prints as a bare `Error:`, because the shared printer drops those lines when it folds a
+toml diagram. The empty-stdin messages of `set-password` and `--password-stdin` already did that
+before this release; the new `--from-ssh` message is printed directly to avoid it.
+
+Verification. Unit tests cover the parser table, the add routing and the flag conflicts,
+`Wizard::prefill`, the trigger matrix, the probe and verify exit rules, the connect id on the wired
+and unwired paths, and the marker. `tests/add_from_ssh.rs` drives the real binary: the motivating
+line with `--quiet` gives a key host with `~/Downloads/dev-ooblek-privco.pem`, user `ubuntu`, no
+extra args and the expected `print-command` argv, and stdin carries the line and then the secret.
+`tests/first_connect_e2e.rs` runs (ignored) against a rootless sshd with password auth on: a wrong
+password is refused and nothing is kept, `Enter` skips, an encrypted key is asked for, checked and
+kept while a `ps` watcher finds the passphrase in no argv, a wrong passphrase is removed, a key in a
+throwaway agent is never asked about, an unencrypted key never prompts, a 2FA host asks for the
+password before the code and says it wasn't checked, and a stale stored password prints the
+refused line once and stays stored.
+
+By hand, in a private tmux server with a throwaway vault: the piped form opens filled in with focus
+on Name and `Esc` adds nothing; the password prompt reads with echo off and a `ps` scan across the
+store and verify found nothing; `Enter` on an encrypted-key host in the TUI asks, saves and logs
+in, and the second connect goes straight in; in tmux mode a password host with nothing stored
+prints the new reason and connects in place, and a key host opens a background window while the
+picker keeps focus; a stale stored password prints the refused line on the terminal, and the
+transfer screen says `the stored password was refused`. `~/.ssh` hashed the same before and after.
+
+Not proven: a correct password against a real server. A sshd that isn't root refuses every
+password and the Docker daemon wasn't running, so the password success path rests on the
+passphrase flow, which runs the same store, verify and keep code. The tmux focus check used a key
+host instead of a stored-secret host, since every stored-secret host falls back in vault mode and
+the run stayed away from the keyring.
 
 ## 2026-09-14: uploads install with a no-replace link, like downloads always have
 

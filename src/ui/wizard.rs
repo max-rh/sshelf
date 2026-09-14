@@ -29,7 +29,7 @@ use crate::model::{AuthMethod, Host};
 const VALUE_COL: u16 = 17;
 const LABEL_W: usize = 14;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
     Name,
     Hostname,
@@ -229,6 +229,8 @@ pub enum WizardOutcome {
 
 pub struct Wizard {
     editing_id: Option<String>,
+    /// The id a prefilled add saves under (the parsed host's fresh ULID). Not an edit.
+    new_id: Option<String>,
     /// Focus index into the currently-active field list.
     focus: usize,
     name: TextField,
@@ -285,6 +287,29 @@ impl Wizard {
         w
     }
 
+    /// The add form filled in from a host that isn't saved yet (`sshelf add --from-ssh`). The
+    /// fields read like [`Wizard::from_host`], but it stays an add: it saves under the host's
+    /// fresh id, a blank secret means no secret, and validation is the add form's. Focus lands
+    /// on the secret for a password host, the one thing a command line never carries, and on
+    /// the name otherwise.
+    pub fn prefill(h: &Host, site_names: &[String]) -> Self {
+        let mut w = Self::from_host(h, site_names);
+        w.editing_id = None;
+        w.new_id = Some(h.id.clone());
+        let target = if h.auth == AuthMethod::Password {
+            Field::Secret
+        } else {
+            Field::Name
+        };
+        w.focus = w.active().iter().position(|f| *f == target).unwrap_or(0);
+        w
+    }
+
+    /// Put a secret in the form's secret field (from `--password-stdin`). Shown masked.
+    pub fn set_secret(&mut self, secret: &str) {
+        self.secret = TextField::with(secret);
+    }
+
     fn build(
         editing_id: Option<String>,
         auth: AuthMethod,
@@ -294,6 +319,7 @@ impl Wizard {
     ) -> Self {
         Wizard {
             editing_id,
+            new_id: None,
             focus: 0,
             name: TextField::new(),
             hostname: TextField::new(),
@@ -498,7 +524,7 @@ impl Wizard {
         };
 
         let mut h = Host::new(name, hostname);
-        if let Some(id) = &self.editing_id {
+        if let Some(id) = self.editing_id.as_ref().or(self.new_id.as_ref()) {
             h.id = id.clone();
         }
         let user = self.user.value.trim();
@@ -998,6 +1024,46 @@ mod tests {
             }
             _ => panic!("expected save"),
         }
+    }
+
+    #[test]
+    fn prefill_is_an_add_that_keeps_the_parsed_host() {
+        let mut h = Host::new("44.196.235.116", "44.196.235.116");
+        h.user = Some("ubuntu".into());
+        h.auth = AuthMethod::Key;
+        h.identity_files = vec!["~/Downloads/dev-ooblek-privco.pem".into()];
+        h.extra_args = Some("-A".into());
+        let mut w = Wizard::prefill(&h, &[]);
+        assert!(!w.is_edit(), "a prefilled form adds a host");
+        assert_eq!(w.active()[w.focus], Field::Name);
+        match w.try_save() {
+            WizardOutcome::Save { host, secret } => {
+                assert_eq!(host.id, h.id, "saved under the parsed host's fresh id");
+                assert_eq!(host.user.as_deref(), Some("ubuntu"));
+                assert_eq!(host.identity_files, h.identity_files);
+                assert_eq!(host.extra_args.as_deref(), Some("-A"));
+                assert!(secret.is_none(), "a blank secret is no secret");
+            }
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn prefill_focuses_the_secret_for_a_password_host() {
+        let mut h = Host::new("legacy", "10.0.0.2");
+        h.auth = AuthMethod::Password;
+        let mut w = Wizard::prefill(&h, &[]);
+        assert_eq!(w.active()[w.focus], Field::Secret);
+        type_str(&mut w, "hunter2");
+        match w.try_save() {
+            WizardOutcome::Save { secret, .. } => assert_eq!(secret.as_deref(), Some("hunter2")),
+            _ => panic!("expected save"),
+        }
+        // Validation is the add form's.
+        let mut w = Wizard::prefill(&h, &[]);
+        w.name = TextField::new();
+        assert!(matches!(w.try_save(), WizardOutcome::Continue));
+        assert_eq!(w.error.as_deref(), Some("Name is required"));
     }
 
     #[test]

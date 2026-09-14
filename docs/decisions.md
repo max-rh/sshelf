@@ -5,6 +5,86 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-035 · A connect with nothing stored asks once, proves the answer, then keeps it
+Secrets never live in `hosts.toml`. That is the point of the file, and it also means a
+hand-written, generated or copied `hosts.toml` has hosts with nothing stored, which prompted on
+every connect until someone ran `set-password`. A 2FA password host couldn't be used at all
+without it, because a code-only helper has no terminal fallback for the password.
+
+A connect to a password host with nothing stored, or to a key host whose key needs a passphrase
+(`ssh-keygen -y -P ''` fails with a passphrase error), now asks on the restored terminal, after
+the frecency save and before the 2FA prompt. The answer is stored first, since the askpass helper
+reads the store and nothing else can carry it to ssh without argv. One throwaway `ssh ... exit`,
+wired exactly like the connect, then proves it. OpenSSH defines the result: 255 is ssh's own
+failure, so 255 with `Permission denied` is a refusal and any other status is the remote `exit`.
+A refused secret, or one that could not be checked, is deleted again and sshelf exits 1. An
+encrypted-key host is probed once with `BatchMode=yes` before anything is asked, so a key already
+in the agent is never asked about, and a host that can't be reached connects normally and shows
+ssh's own error.
+
+`Enter` skips, and nothing is remembered: asking on every connect until something is stored is
+the feature. 2FA hosts are stored without the check, which would burn the code, and the line says
+so. In tmux mode a connect that would ask falls back in place, deciding only the part that needs
+no network, since the probe must not run inside the event loop. In the TUI, a 2FA host that would
+ask skips its code popup, so the secret and then the code are both asked on the terminal: the
+code is the one that goes stale.
+
+The second half is the wrong stored secret, which was answered again on every retry. Each wired
+command now carries `SSHELF_CONNECT_ID`, a fresh ULID, and the helper creates `askpass-<id>`
+exclusively in the private runtime directory (D-030) the first time it answers a secret prompt.
+The same prompt again means the answer was refused: the helper prints one line naming
+`set-password` and `^e`, and declines. An empty marker would be enough for a password host; the
+marker holds the prompt so that a host with two encrypted key files isn't told its passphrase was
+refused when ssh moves on to the second key. A missing id or directory fails open on the
+marker, never on the secret. The helper's stderr is ssh's stderr, and the e2e suite checks the
+line reaches it on a real connect, so there was no need to fall back to
+`NumberOfPasswordPrompts=1`. `classify_auth_error` also looks for the line, so the transfer screen
+and port forwards name the stored secret.
+
+Rejected: an askpass "learn" mode (it gives the helper write access to the store in the one place
+the prompt text is server-controlled); storing without a check for non-2FA hosts (a typo would be
+supplied on every later connect); a config switch to turn the prompt off (`Enter` skips); and
+deleting a refused secret from the helper. A server can ask twice for its own reasons, for example
+offering keyboard-interactive and password where the first fails on the server side, and the
+helper would then destroy a correct secret. The user replaces it on the strength of the message.
+
+### D-034 · `add --from-ssh` reads the ssh grammar, maps what it can, keeps the rest verbatim
+Most hosts already have a working `ssh` line somewhere: shell history, a runbook, a message from a
+colleague. `sshelf add --from-ssh` takes that line, as an argument or on stdin, and reads it with
+OpenSSH's own option rules: booleans combine, values attach or take the next word, `--` ends
+options. What the host model has a field for is mapped (`[user@]host` or an `ssh://` URL, `-l`,
+`-p`, `-i`, `-J`, and password auth when `-o PasswordAuthentication=yes` or
+`PreferredAuthentications=password` says so), everything else lands in `extra_args` in its
+original order, re-quoted so the connect-time `shlex::split` gives the same words back. The result
+opens the add form filled in, or with `--quiet` is saved like a flag-built add.
+
+The parser follows `ssh` itself rather than the synopsis in one place: options after the
+destination are read too, because `ssh` re-parses them (`ssh host -p 2222` works), and the first
+plain word after the destination starts a remote command. `-l` and `-p` win over the
+destination's user and port. A relative `-i` is made absolute when the host is added, since a
+saved host is connected from any directory. Nothing is resolved: an alias stays an alias, and `-F`
+rides along in `extra_args`.
+
+A trailing remote command is an error rather than something to drop, since a saved host has no
+command. `-v`, `-q`, `-G`, `-V`, `-Q`, `-O`, `-S`, `-E`, `-M`, `-N`, `-f`, `-n`, `-g`, `-s` and
+`-o StrictHostKeyChecking` are dropped with a note each: they would change what the saved host does
+on every connect, or, for the host-key option, record something sshelf overrides (it passes
+`accept-new` ahead of the extras, and ssh keeps the first value).
+
+The form is fed by a pipe as often as by an argument. crossterm 0.29 reads keys through `tty_fd`,
+which opens `/dev/tty` when stdin is not a terminal, but on macOS that stops at `Failed to
+initialize input reader`: its mio event source registers the descriptor with kqueue, and kqueue
+refuses the `/dev/tty` alias with `EINVAL` while accepting the terminal's own device
+(`/dev/ttys004`, checked both ways). So the prefilled path reads everything it needs from the pipe
+first, then opens the device `ttyname` reports for stdout or stderr (`/dev/tty` only as a last
+resort) and `dup2`s it onto fd 0 before the TUI starts. With no terminal at all, the host is added
+the `--quiet` way, with a note saying so.
+
+Rejected: a shell function that intercepts `ssh` (sshelf never wraps ssh); reading shell history
+(three formats, and no consent); silently ignoring a trailing remote command; keeping `-v`, `-N`,
+`-f` or `StrictHostKeyChecking` in `extra_args`. A literal `ssh ... | sshelf` can't exist, because
+the pipe runs ssh; `"$(fc -ln -1)"` is the way to hand over the command just typed.
+
 ### D-033 · An upload installs itself with a remote `ln`, so only folders rest on the listing
 Downloads have never rested on the destination listing: a single file lands on a
 `.sshelf-part-…` temporary and is installed with `link()`, which fails if the name is taken.
@@ -267,8 +347,10 @@ overwrite. On success the listing refreshes and the new directory lands under th
 
 ### D-025 · tmux integration: window/pane modes, stay in the picker, and why secrets never cross
 One config key (`tmux = "off" | "window" | "pane"`, default `"off"`) plus a `$TMUX` check.
-When both say yes, `Enter` spawns `tmux new-window`/`split-window` and sshelf **keeps running**;
-that is the feature, not a side effect. The picker's cost per connection is what makes people
+When both say yes, `Enter` spawns `tmux new-window -d`/`split-window -d` and sshelf **keeps
+running** with focus on the picker; that is the feature, not a side effect. (`-d` arrived in
+0.15.0. Before it, tmux switched to the new window and the picker only came back when that
+session ended, which is not what the docs described.) The picker's cost per connection is what makes people
 stop reaching for it, and a tmux user wants four sessions, not four launches. Outside tmux, or
 with the key off, the path is bit-for-bit the old one: tear down, `exec()`, exit to shell (D-001).
 Frecency is persisted before the spawn for the same reason it is persisted before `exec()`: the
@@ -292,6 +374,8 @@ is drawn by content, not convenience:
   with a one-line reason printed after the TUI is down and before ssh starts.
 - **tmux older than 3.0** has no `-e`, so stored-secret hosts fall back there too; an unreadable
   or unparseable `tmux -V` counts as too old, since falling back is always correct.
+- **A first secret to ask for** (D-035): nothing is stored and the connect is going to ask on the
+  terminal. A new window has no sshelf in it to ask, so that connection falls back as well.
 
 Rejected: writing the code or passphrase to a temp file for the new window to read (a second
 secret-at-rest path, with cleanup that a killed pane never runs); `tmux setenv` before spawning

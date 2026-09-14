@@ -58,6 +58,35 @@ not wired at all and `ssh` asks for the target's secret on the terminal. Details
 rejected alternatives: [`ssh-command.md`](./ssh-command.md#3a-the-jump-hop-never-sees-the-helper)
 and [D-029](decisions.md).
 
+## Saving a secret on first connect
+
+A connect to a host with nothing stored can ask for the secret on the terminal
+([details](passwords-2fa.md#saving-the-secret-on-first-connect)). The answer is read with echo off
+into a zeroizing buffer and stored in the keyring or vault **before** it is checked, because the
+askpass helper reads the store and there is no other way to get the secret to ssh without argv.
+The check is one `ssh ... exit` wired exactly like a connect. If the server refuses the secret,
+or the check can't finish, the secret is deleted again before sshelf exits. 2FA hosts are stored
+without a check, since a check would use up the code. The `ssh-keygen -y` and the probe that come
+first never see the secret at all.
+
+Rejected: letting the helper learn the secret from ssh's own prompt (that would give the helper
+write access to the store, in the one place the prompt text comes from the server), and storing
+without a check (a typo would be supplied on every later connect). See D-035.
+
+## A refused stored secret
+
+The helper leaves one marker per connect, `askpass-<connect id>`, created exclusively at mode
+`0600` in sshelf's private runtime directory. It holds the prompt the helper answered and nothing
+secret. When ssh asks the same question again in the same connect, the stored secret was refused:
+the helper prints one line saying so and declines, instead of handing over the same wrong value on
+every retry. The connect id is an opaque ULID in the child's environment and never crosses tmux's
+argv.
+
+The helper never deletes the secret. A server can ask twice for reasons of its own, for example
+offering keyboard-interactive and password where the first fails on the server's side, and a
+helper that deleted on a repeat could destroy a correct secret. The user replaces it on the
+strength of the message. Details: [`ssh-command.md`](./ssh-command.md#3b-a-refused-stored-secret).
+
 ## The tmux boundary
 
 With `tmux = "window"`/`"pane"` ([Searching & connecting](search-connect.md#connecting-inside-tmux)),
@@ -115,7 +144,8 @@ hostile hosts.
   hard-fails if a *known* host's key changes (MITM protection retained).
 - Network: `sshelf` makes no network connections of its own and has no telemetry; it only
   ever launches the OpenSSH tools: `ssh` to connect, and `ssh`/`sftp` for the file-transfer
-  screen. Transfers authenticate exactly as connect does (keys/agent, or the stored secret via
+  screen. On a first connect with nothing stored it can also run `ssh-keygen -y` on the host's
+  key file and one throwaway `ssh ... exit` against the host you are connecting to. Transfers authenticate exactly as connect does (keys/agent, or the stored secret via
   `SSH_ASKPASS`) by opening **one** multiplexed `ssh` ControlMaster and running `sftp` over it,
   so there is no extra secret handling and the secret still never reaches argv. Remote paths are
   quoted for `sftp`'s parser, control characters are stripped from displayed names, and

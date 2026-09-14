@@ -193,54 +193,6 @@ fn private_dir_builder() -> DirBuilder {
     DirBuilder::new()
 }
 
-/// Create `dir` with mode `0700`, treating "already there" as success. The same helper the
-/// config and data directories go through, with `enforce_mode` off: only a directory sshelf
-/// creates gets those permissions — chmod-ing one somebody else made (`$XDG_RUNTIME_DIR` above
-/// all) would be a rude surprise, and it is already theirs to set.
-fn ensure_private_dir(dir: &Path) -> Result<(), String> {
-    crate::paths::ensure_private_dir(dir, false)
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))
-}
-
-/// The private directory the per-session mux directories live in: `$XDG_RUNTIME_DIR/sshelf`
-/// when the runtime dir is set and real (it is already per-user and short, which an AF_UNIX
-/// path needs), otherwise `run/` under sshelf's own data directory.
-fn session_parent() -> Result<PathBuf, String> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from);
-    session_parent_in(runtime.as_deref(), || {
-        crate::paths::Paths::resolve()
-            .map(|p| p.data_dir)
-            .map_err(|e| format!("could not find the sshelf data directory: {e}"))
-    })
-}
-
-/// The same with the inputs handed in, so the tests can take either branch without touching
-/// the process environment — which is process-global and, in edition 2024, unsafe to mutate
-/// from a test thread. `data` stays a closure: resolving the data directory can fail, and it
-/// has no business failing a session that is going to use the runtime directory anyway.
-fn session_parent_in(
-    runtime: Option<&Path>,
-    data: impl FnOnce() -> Result<PathBuf, String>,
-) -> Result<PathBuf, String> {
-    if let Some(runtime) = runtime.filter(|r| r.is_dir()) {
-        let dir = runtime.join("sshelf");
-        ensure_private_dir(&dir)?;
-        return Ok(dir);
-    }
-    let data = data()?;
-    // The XDG data root belongs to the user, not to us: make it the ordinary way, and claim
-    // only sshelf's own two levels below it.
-    if let Some(root) = data.parent() {
-        std::fs::create_dir_all(root).map_err(|e| format!("creating {}: {e}", root.display()))?;
-    }
-    ensure_private_dir(&data)?;
-    let dir = data.join("run");
-    ensure_private_dir(&dir)?;
-    Ok(dir)
-}
-
 /// Create a fresh `mux-<ulid>` directory inside `parent`. `create` rather than `create_dir_all`
 /// is the point: a name that already exists is a name someone else got to first, so take
 /// another one instead of moving in.
@@ -275,7 +227,8 @@ struct ControlSocket {
 
 impl ControlSocket {
     fn new() -> Result<Self, String> {
-        Self::new_in(&session_parent()?)
+        // The per-session mux directories live in sshelf's private runtime directory.
+        Self::new_in(&crate::paths::runtime_dir()?)
     }
 
     /// Same, with the parent given. Split out so the tests can point it at a scratch directory
@@ -2222,7 +2175,7 @@ mod tests {
         let runtime = dir.join("runtime");
         std::fs::create_dir_all(&runtime).unwrap();
 
-        let parent = session_parent_in(Some(&runtime), || {
+        let parent = crate::paths::runtime_dir_in(Some(&runtime), || {
             panic!("the data directory must not be touched when the runtime dir is there")
         })
         .unwrap();
@@ -2243,7 +2196,8 @@ mod tests {
             // whatever mode it has, and `$XDG_RUNTIME_DIR` itself is never touched at all.
             std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
             std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let again = session_parent_in(Some(&runtime), || panic!("not needed")).unwrap();
+            let again =
+                crate::paths::runtime_dir_in(Some(&runtime), || panic!("not needed")).unwrap();
             assert_eq!(again, parent);
             let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
             assert_eq!(
@@ -2269,12 +2223,12 @@ mod tests {
         let missing = dir.join("no-such-runtime");
 
         // A runtime dir that is set but isn't there is no runtime dir…
-        let parent = session_parent_in(Some(&missing), || Ok(data.clone())).unwrap();
+        let parent = crate::paths::runtime_dir_in(Some(&missing), || Ok(data.clone())).unwrap();
         assert_eq!(parent, data.join("run"));
         assert!(parent.is_dir());
         // …and neither is one that was never set.
         assert_eq!(
-            session_parent_in(None, || Ok(data.clone())).unwrap(),
+            crate::paths::runtime_dir_in(None, || Ok(data.clone())).unwrap(),
             parent
         );
 

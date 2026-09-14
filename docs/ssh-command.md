@@ -49,6 +49,8 @@ On connect:
    - `SSHELF_HOST_ID = <id>`     ← which secret to fetch
    - `SSHELF_SECRET_KIND = password | passphrase | agent`  ← which secret that id holds (§3)
    - `SSHELF_IDENTITY_FILES = <path>[:<path>...]`  ← key hosts only, `~` already expanded (§3)
+   - `SSHELF_CONNECT_ID = <ulid>`  ← fresh for every wired command, so the helper can spot a
+     repeated prompt (§3b). An id, nothing secret.
    - `env_remove("SSH_ASKPASS")` of any *inherited* value first, then set ours (avoid pollution).
 3. Tear down the TUI: `disable_raw_mode()` → `LeaveAlternateScreen` → show cursor → flush.
 4. `std::os::unix::process::CommandExt::exec()` into `ssh`. If it returns, it errored →
@@ -63,6 +65,7 @@ sshelf keeps running:
 
 ```
 tmux new-window|split-window
+  -d                                                     # open it in the background
   [-e SSH_ASKPASS=<self>] [-e SSH_ASKPASS_REQUIRE=force]
   [-e SSHELF_ASKPASS=1]   [-e SSHELF_HOST_ID=<id>]      # only when a secret is stored
   [-e SSHELF_SECRET_KIND=...] [-e SSHELF_IDENTITY_FILES=...]
@@ -72,12 +75,52 @@ tmux new-window|split-window
 ```
 
 - Frecency is still persisted **first**; the spawn is as much a point of no return as `exec()`.
+- `-d` creates the window or pane without switching to it, so focus stays on the picker and the
+  next host is one keypress away.
+- `SSHELF_CONNECT_ID` is never passed, so a tmux window gets no repeated-prompt marker (§3b).
 - The argv is passed as separate arguments, never one joined string, so tmux `execvp`s it and a
   path containing a space survives.
 - `-e` pairs land in the tmux client's argv, so only non-secret wiring may ride there. A queued
   2FA code, a vault master passphrase, or a tmux older than 3.0 (no `-e`) sends the connection
   back to the `exec()` path above, with the reason printed once the TUI is down. See
   [`security.md`](./security.md) and D-025.
+- So does a host with nothing stored that the first connect would ask for its secret (§2b):
+  `no secret stored yet, connecting here so the first one can be saved`. Only the part of the
+  trigger that needs no network is checked in the TUI; the probe runs after teardown.
+
+### 2b. First connect: `ssh-keygen`, the probe, and the verify
+
+A connect to a host with nothing stored may ask for its secret first
+([Passwords, keys & 2FA](passwords-2fa.md#saving-the-secret-on-first-connect)). It runs after the
+frecency save and before the 2FA prompt and the `exec()`, and uses up to three kinds of child
+process, each with stdin closed, stderr captured, and a deadline:
+
+```
+ssh-keygen -y -P '' -f <identity file>                         # key hosts, per -i, 5s
+ssh -o BatchMode=yes -o ConnectTimeout=15 <argv from §1> exit   # the probe: encrypted key only, 30s
+ssh -o ConnectTimeout=15 <argv from §1> exit                    # the verify: helper wired, 30s
+```
+
+- `ssh-keygen` exiting 0 means the key has no passphrase. A non-zero exit whose stderr mentions
+  `passphrase` means it has one. Anything else (a missing or unreadable file) means sshelf
+  doesn't ask and lets ssh report the problem. A key whose `~`-expanded path is longer than 100
+  bytes is never asked about: OpenSSH prints the path as `'%.100s'`, so the helper's exact match
+  in §3 could never answer its prompt.
+- The probe is built unwired, the same as a connect with nothing stored. Any exit status but 255
+  means the agent or another key already gets in, and the normal connect runs with nothing asked.
+  255 with `Permission denied` leads to the prompt. On a 2FA key host only a denial that still
+  lists `publickey` counts, because a key the server accepted still ends in
+  `Permission denied (keyboard-interactive)` when `BatchMode` can't send the code. Any other 255
+  connects normally and lets ssh show the error.
+- The secret is stored before the verify, and the verify is wired exactly like the real connect,
+  the §3a jump rules included, so the secret reaches ssh only through the helper. 255 with
+  `Permission denied` is a refusal; any other 255 or the deadline is a failure. Both remove the
+  secret again and exit 1. Any other status is the remote `exit`, so the secret worked. 2FA hosts
+  skip the verify.
+- The `-o` options come first so they beat anything in the host's `extra_args`; ssh keeps the
+  first value it is given.
+- A host whose jump chain takes the terminal path (§3a) is never asked, since there is no helper
+  to save into.
 
 ## 3. Secret auto-supply and the sharp edges
 
@@ -168,6 +211,32 @@ or a queued verification code):
 `master_args` (the transfer ControlMaster) and `build_forward_command` (port forwards) build
 their argv through the same function, so they get the same treatment.
 
+### 3b. A refused stored secret
+
+ssh asks again after a refused password or passphrase, and a stateless helper would answer every
+retry with the same wrong value. Every wired command therefore carries `SSHELF_CONNECT_ID`, a
+fresh ULID, so the helper can tell a second prompt in one connect from the first prompt of the
+next. Before answering a secret prompt, the helper creates `askpass-<connect id>` exclusively, at
+mode `0600`, in sshelf's private runtime directory (`$XDG_RUNTIME_DIR/sshelf`, or
+`~/.local/share/sshelf/run`, the parent of the transfer screen's `mux-<ulid>` directories), and
+writes the prompt it is answering into it.
+
+- Created: the first secret prompt of this connect. Answer as usual.
+- Already there, holding the same prompt: the earlier answer was refused, since that is the only
+  reason ssh asks again. Print
+  `sshelf: the stored <password|passphrase> for <host id> was refused; replace it with sshelf set-password or ^e in the TUI`
+  on stderr and decline. A second line in the marker records that the line was printed, so a
+  password prompt that comes back once per remaining attempt prints it once.
+- Already there, holding a different prompt (a second key file's passphrase): answer as usual.
+- No connect id (a tmux window, which never gets one), a malformed id, or no runtime directory:
+  answer as usual. The marker fails open; the matching in §3 never does.
+
+The helper never deletes the stored secret. `configure_askpass` removes `askpass-*` files older
+than ten minutes before it wires a new command. The helper's stderr is ssh's stderr, so the line
+shows up on the terminal of a real connect, and in the stderr the transfer screen and port
+forwards capture, where `ssh::classify_auth_error` turns it into
+`could not authenticate: the stored password was refused; replace it with ^e`.
+
 ### Validated by the M0 spike (2026-06-05, macOS, OpenSSH 10.2)
 
 Ran against a real password-auth sshd (`lscr.io/linuxserver/openssh-server`):
@@ -194,6 +263,9 @@ expected to be identical.
 - macOS unsigned builds: the re-exec'd askpass child reading Keychain may trigger an OS
   approval prompt every connect (Keychain ACLs are keyed to code signature). Ad-hoc sign for
   dev; document for users building from source.
+- A key path longer than 100 bytes: OpenSSH truncates it in the passphrase prompt
+  (`Enter passphrase for key '%.100s': `, checked against OpenSSH 10.3), the helper's exact match
+  declines, and a stored passphrase for that key is never supplied.
 - Windows: out of scope for v1 (`exec()` replacement is Unix-only).
 
 ## References
