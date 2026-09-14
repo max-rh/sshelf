@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.15.0] (2026-09-14)
+
 ### Added
 
 - `sshelf add --from-ssh` saves a host from a working ssh command line:
@@ -369,7 +371,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/max-rh/sshelf/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/max-rh/sshelf/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/max-rh/sshelf/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/max-rh/sshelf/compare/v0.13.0...v0.13.1
