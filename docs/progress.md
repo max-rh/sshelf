@@ -3,8 +3,31 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.16.0, shared credentials, bulk credential updates and a remote command.
+**Current milestone:** v0.16.1, binding a credential at `add` time.
 Secrets from a password manager moves to v0.17.0 and the 1.0 RC to v0.18.0. v0.15.0 is released.
+
+---
+
+## 2026-10-27: v0.16.1, binding a credential as the host is created
+
+0.16.0 shipped shared credentials without wiring them into the one command that creates hosts
+non-interactively, which is exactly the path a fleet rollout uses. `sshelf add` now takes
+`--credential NAME`, `sshelf credentials add` takes `--password-stdin`, and the scripted order
+is one call per group then one call per node, documented in `docs/cli.md`.
+
+Wiring the flag exposed a latent bug worth recording: `save_new_host` stored a new host's secret
+under `host.id` rather than `host.secret_key()`. That was unreachable while no CLI flag could
+set a credential, and would have written `--credential X --password-stdin` to a key the host
+never reads. Two integration tests now pin it, one of them named for the bug.
+
+Also here, the rest of `hosts.toml`'s writers moved to the checked save that the credential
+commands already used, so `add`, `sites add` and `import` refuse a stale write instead of
+replacing another process's change. That leaves only the TUI's `persist_hosts` unchecked, which
+needs a reload-and-merge story rather than an error, so it stays open on the tracker.
+
+Verified by running the real scenario end to end: two groups, four hosts across two sites, each
+host resolving to its own group's secret, one write rotating one group and leaving the other
+untouched, and a grep confirming neither secret appears anywhere outside the encrypted vault.
 
 ---
 

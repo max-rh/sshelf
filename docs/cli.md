@@ -21,10 +21,11 @@ Everything sshelf does without opening the TUI.
 | `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. A host on a [shared credential](passwords-2fa.md#one-password-for-many-hosts) sets that credential, for every host using it, and says so. |
 | `sshelf set-password --credential NAME` | Store the secret for a shared credential, read from **stdin**. |
 | `sshelf credentials [--json]` | List [shared credentials](passwords-2fa.md#one-password-for-many-hosts): how many hosts use each, whether a secret is stored, and the note. |
-| `sshelf credentials add NAME [--note TEXT]` | Define a credential. Names are lower-cased; letters, digits, `-`, `_` and `.`. |
+| `sshelf credentials add NAME [--note TEXT] [--password-stdin]` | Define a credential, and with `--password-stdin` store its secret in the same call. Names are lower-cased; letters, digits, `-`, `_` and `.`. |
 | `sshelf credentials bind NAME HOST ...` | Point hosts at a credential, so one stored secret serves all of them. |
 | `sshelf credentials unbind HOST ...` | Give hosts their own secret again. The credential is left alone. |
 | `sshelf credentials rm NAME [--force]` | Remove a credential. Refused while hosts still use it; `--force` unbinds them first. The stored secret is deleted either way. |
+| `sshelf add ... --credential NAME` | Add a host that reads its secret from a shared credential instead of keeping its own. With `--password-stdin`, the secret is stored under the credential, for every host on it. See [below](#scripting-a-fleet-with-shared-credentials). |
 | `sshelf doctor` | [Check this machine and your host database](doctor.md): the OpenSSH version, the secret backend, dangling site references, a stale export, a missing ssh-agent. Local and read-only; it never contacts a host. **Exits 1** if any check failed (warnings don't). |
 | `sshelf completions <shell>` | Print static shell completions. |
 | `sshelf man` | Print the man page. |
@@ -38,6 +39,40 @@ transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 A host name and a subcommand can't be combined: `sshelf prod-web list` is refused rather than
 quietly running `list` and forgetting the host. That is also why a remote command needs `--`:
 `sshelf prod-web -- list` runs `list` on the host.
+
+## Scripting a fleet with shared credentials
+
+For a few hundred nodes across several groups, the order is: define each credential once, then
+add the hosts pointing at it. The credential does not have to exist first (a host can name one
+that was never declared), but defining it first means the secret is in place before anyone
+connects, and `sshelf credentials` then shows the whole picture.
+
+```sh
+# One call per group.
+printf %s "$EU_PASS" | sshelf credentials add corp-eu --note "EU directory" --password-stdin
+printf %s "$US_PASS" | sshelf credentials add corp-us --note "US directory" --password-stdin
+
+# Then one call per node, from whatever inventory you already keep.
+while IFS=, read -r name addr site cred; do
+  sshelf add "$name" -H "$addr" -u svc --auth password \
+    --site "$site" --credential "$cred" --tag prod
+done < nodes.csv
+```
+
+Each host lands already bound, with nothing left to type. Rotating a group is one write:
+
+```sh
+printf %s "$NEW" | sshelf set-password --credential corp-eu
+```
+
+Notes for a script:
+
+- An invalid credential name fails before the host is written, so a typo cannot leave a
+  half-added host.
+- `sshelf add` refuses to save if another sshelf process changed `hosts.toml` since it read it,
+  rather than overwriting that change. Run the loop sequentially, or retry on failure; in
+  parallel some calls will be refused by design.
+- `--credential` also works with `--from-ssh --quiet`.
 
 ## Running one command
 

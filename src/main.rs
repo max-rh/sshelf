@@ -217,14 +217,17 @@ enum CredentialsAction {
         #[arg(long)]
         json: bool,
     },
-    /// Define a credential. Set its secret afterwards with
-    /// `sshelf set-password --credential NAME`.
+    /// Define a credential, optionally with its secret, so one call per group is enough to
+    /// script a rollout.
     Add {
         /// Credential name: letters, digits, '-', '_' and '.'.
         name: String,
         /// What it is for, shown in listings. Never the secret.
         #[arg(long)]
         note: Option<String>,
+        /// Read the secret from stdin and store it, keeping it out of argv and shell history.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Remove a credential's definition. Refuses while hosts still use it unless --force,
     /// which unbinds them too. The stored secret is deleted either way.
@@ -238,6 +241,7 @@ enum CredentialsAction {
     /// Point one or more hosts at a credential, so they all authenticate from its one secret.
     Bind {
         /// Credential name.
+        #[arg(add = ArgValueCandidates::new(credential_name_candidates))]
         name: String,
         /// Host names or ids.
         #[arg(required = true, add = ArgValueCandidates::new(host_name_candidates))]
@@ -281,6 +285,11 @@ struct AddArgs {
     /// Site to assign (groups the host + may supply inherited SSH defaults). See `sshelf sites`.
     #[arg(short = 's', long, value_name = "NAME", add = ArgValueCandidates::new(site_name_candidates))]
     site: Option<String>,
+    /// Read this host's secret from a shared credential instead of keeping its own, by name.
+    /// The credential need not exist yet; `sshelf credentials` lists them. With
+    /// --password-stdin, the secret is stored under the credential, for every host on it.
+    #[arg(short = 'c', long, value_name = "NAME", add = ArgValueCandidates::new(credential_name_candidates))]
+    credential: Option<String>,
     /// Extra raw ssh flags, appended verbatim (e.g. "-o BatchMode=yes"). Quote the whole value;
     /// hyphen-leading values are allowed here so the flags pass through.
     #[arg(long = "extra", value_name = "ARGS", allow_hyphen_values = true)]
@@ -399,6 +408,13 @@ impl AddArgs {
         host.jump_hosts = self.jump_hosts;
         host.tags = self.tags;
         host.site = self.site;
+        // Validated here so a typo fails before anything is written, and lower-cased because
+        // the name becomes a key in the secret store.
+        host.credential = self
+            .credential
+            .map(|name| model::validate_credential_name(&name))
+            .transpose()
+            .map_err(|e| anyhow::anyhow!(e))?;
         host.extra_args = self.extra_args;
         host.requires_2fa = self.requires_2fa;
         Ok(host)
@@ -572,7 +588,7 @@ fn apply_import(result: import::ImportResult, dry_run: bool) -> Result<()> {
     paths.ensure_dirs()?;
     let cfg = Config::load(&paths.config_file())?;
     let hosts_path = cfg.hosts_path(&paths);
-    let mut file = store::load_hosts(&hosts_path)?;
+    let (mut file, rev) = store::load_hosts_stamped(&hosts_path)?;
     let mut to_add = import::new_hosts(&result.hosts, &file.hosts)
         .into_iter()
         .cloned()
@@ -610,7 +626,7 @@ fn apply_import(result: import::ImportResult, dry_run: bool) -> Result<()> {
     let added = to_add.len();
     file.sites.extend(new_sites);
     file.hosts.extend(to_add);
-    store::save_hosts(&hosts_path, &file)?;
+    store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
     warn_export_refresh(export::refresh_if_exported(&paths, &file));
     let skipped = match duplicates {
         0 => String::new(),
@@ -889,6 +905,12 @@ fn cmd_add_from_ssh(args: AddArgs) -> Result<()> {
     let mut host = parsed.into_host(args.name);
     host.tags = args.tags;
     host.site = args.site;
+    host.credential = args
+        .credential
+        .as_deref()
+        .map(model::validate_credential_name)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!(e))?;
     host.requires_2fa = args.requires_2fa;
     // `--password-stdin` implies password auth, unless an `-i` on the line made it a key host.
     if args.password_stdin && host.auth == AuthMethod::Agent {
@@ -1022,7 +1044,7 @@ fn save_new_host(
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
     let hosts_path = cfg.hosts_path(&paths);
-    let mut file = store::load_hosts(&hosts_path)?;
+    let (mut file, rev) = store::load_hosts_stamped(&hosts_path)?;
     if file.hosts.iter().any(|h| h.name == host.name) {
         let name = display::sanitize(&host.name);
         if from_ssh {
@@ -1049,18 +1071,45 @@ fn save_new_host(
 
     let id = host.id.clone();
     let name = host.name.clone();
+    // Whichever key this host resolves to: its own id, or the shared credential it names. A
+    // `--credential X --password-stdin` add must populate X, not a key nothing reads.
+    let secret_key = host.secret_key();
+    let credential = host.credential.clone();
     file.hosts.push(host);
-    store::save_hosts(&hosts_path, &file)?;
+    store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
     warn_export_refresh(export::refresh_if_exported(&paths, &file));
     if let Some(s) = &secret {
-        secrets::store_password(&paths.vault_file(), &id, s)?;
+        secrets::store_password(&paths.vault_file(), &secret_key, s)?;
     }
     let name = display::sanitize(&name);
     println!("added '{name}' ({id})");
-    if auth == AuthMethod::Password && secret.is_none() {
-        println!(
-            "note: password auth set but no password stored — run `sshelf set-password {name}`"
-        );
+
+    // What the host still needs, if anything. A host on a shared credential needs nothing when
+    // that credential already has a value, which is the whole point of binding it at add time.
+    match &credential {
+        Some(cred) => {
+            let have = secret.is_some()
+                || secrets::get_password(&paths.vault_file(), &secret_key)
+                    .ok()
+                    .flatten()
+                    .is_some();
+            let cred = display::sanitize(cred);
+            if have {
+                println!("note: it reads its secret from credential '{cred}', which is set");
+            } else {
+                println!(
+                    "note: it reads its secret from credential '{cred}', which has nothing stored \
+                     yet — set it once with `printf %s \"$PASS\" | sshelf set-password \
+                     --credential {cred}`, or let the first connect ask"
+                );
+            }
+        }
+        None if auth == AuthMethod::Password && secret.is_none() => {
+            println!(
+                "note: password auth set but no password stored — run `sshelf set-password {name}`"
+            );
+        }
+        None => {}
     }
     Ok(())
 }
@@ -1164,7 +1213,11 @@ fn cmd_credentials(action: Option<CredentialsAction>, json: bool) -> Result<()> 
     match action {
         Some(CredentialsAction::List { json }) => cmd_credentials_list(json),
         None => cmd_credentials_list(json),
-        Some(CredentialsAction::Add { name, note }) => cmd_credentials_add(name, note),
+        Some(CredentialsAction::Add {
+            name,
+            note,
+            password_stdin,
+        }) => cmd_credentials_add(name, note, password_stdin),
         Some(CredentialsAction::Rm { name, force }) => cmd_credentials_rm(name, force),
         Some(CredentialsAction::Bind { name, hosts }) => cmd_credentials_bind(Some(name), hosts),
         Some(CredentialsAction::Unbind { hosts }) => cmd_credentials_bind(None, hosts),
@@ -1275,7 +1328,7 @@ fn cmd_credentials_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_credentials_add(name: String, note: Option<String>) -> Result<()> {
+fn cmd_credentials_add(name: String, note: Option<String>, password_stdin: bool) -> Result<()> {
     let name = model::validate_credential_name(&name).map_err(|e| anyhow::anyhow!(e))?;
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
@@ -1289,16 +1342,29 @@ fn cmd_credentials_add(name: String, note: Option<String>) -> Result<()> {
             display::sanitize(&name)
         );
     }
+    // Read stdin before writing anything, so empty input cannot leave a credential with no
+    // secret and a message saying it has one.
+    let secret = stdin_secret(password_stdin)?;
+
     let mut cred = model::Credential::new(&name);
     cred.note = note;
     file.credentials.push(cred);
     store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
+    if let Some(s) = &secret {
+        secrets::store_password(&paths.vault_file(), &model::credential_secret_key(&name), s)?;
+    }
     let name = display::sanitize(&name);
     println!("added credential '{name}'");
-    println!(
-        "next: `printf %s \"$PASS\" | sshelf set-password --credential {name}`, then bind hosts \
-         with `sshelf credentials bind {name} <host>...`"
-    );
+    match secret {
+        Some(_) => println!(
+            "next: bind hosts to it with `sshelf credentials bind {name} <host>...`, or add them \
+             with `sshelf add <name> -H <addr> --credential {name}`"
+        ),
+        None => println!(
+            "next: `printf %s \"$PASS\" | sshelf set-password --credential {name}`, then bind hosts \
+             with `sshelf credentials bind {name} <host>...`"
+        ),
+    }
     Ok(())
 }
 
@@ -1517,7 +1583,7 @@ fn cmd_sites_add(
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
     let cfg = Config::load(&paths.config_file())?;
     let hosts_path = cfg.hosts_path(&paths);
-    let mut file = store::load_hosts(&hosts_path)?;
+    let (mut file, rev) = store::load_hosts_stamped(&hosts_path)?;
     if crate::model::find_site(&file.sites, &name).is_some() {
         anyhow::bail!(
             "a site named '{}' already exists — pick another name, or edit that one with F3 \
@@ -1532,7 +1598,7 @@ fn cmd_sites_add(
         jump_hosts,
         identity_files,
     });
-    store::save_hosts(&hosts_path, &file)?;
+    store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
     // Site defaults are resolved into the exported blocks, so a new site refreshes it too.
     warn_export_refresh(export::refresh_if_exported(&paths, &file));
     println!("added site '{}'", display::sanitize(&name));
@@ -1971,6 +2037,27 @@ fn host_candidates_from(hosts: &[Host], sites: &[Site]) -> Vec<CompletionCandida
 }
 
 /// Completion candidates for a `--site` argument: each defined site's name. Best-effort.
+/// Dynamic completion for `--credential` and `sshelf credentials bind`: every name declared in
+/// the table plus every name a host already points at, so an undeclared one still completes.
+fn credential_name_candidates() -> Vec<CompletionCandidate> {
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let Ok(cfg) = Config::load(&paths.config_file()) else {
+        return Vec::new();
+    };
+    match store::load_hosts(&cfg.hosts_path(&paths)) {
+        Ok(file) => {
+            let mut names: Vec<String> = file.credentials.iter().map(|c| c.name.clone()).collect();
+            for name in file.undeclared_credentials() {
+                names.push(name);
+            }
+            names.iter().map(CompletionCandidate::new).collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 fn site_name_candidates() -> Vec<CompletionCandidate> {
     let Ok(paths) = Paths::resolve() else {
         return Vec::new();

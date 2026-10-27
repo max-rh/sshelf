@@ -86,6 +86,16 @@ sshelf credentials                       # who uses what, and whether a secret i
 sshelf credentials unbind web-02         # back to its own secret
 ```
 
+A new host can be bound as it is created, which is what a scripted rollout wants, and the
+credential's secret can be set in the same call that defines it:
+
+```sh
+printf %s "$PASS" | sshelf credentials add corp-ldap --password-stdin
+sshelf add web-07 -H 10.0.0.7 --auth password --credential corp-ldap
+```
+
+The full loop for several groups is in the [CLI reference](cli.md#scripting-a-fleet-with-shared-credentials).
+
 In the TUI, `^s` marks hosts (the marked rows show a `◼`), and `^k` opens the credentials popup
 for them. With nothing marked it acts on whatever the filter is showing, so `tag:prod` then `^k`
 covers a whole group. The popup does three things:

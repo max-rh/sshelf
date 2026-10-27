@@ -5,6 +5,33 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.16.1] (2026-10-27)
+
+### Added
+
+- `sshelf add --credential NAME` (`-c`) binds a host to a shared credential as it is created, so
+  a scripted rollout is one call per group and one call per node rather than an `add` and a
+  `bind` for every host. It works with `--from-ssh --quiet` too, and an invalid name fails
+  before the host is written.
+- `sshelf credentials add NAME --password-stdin` stores the credential's secret in the same call
+  that defines it, which makes one call per group enough. The full loop is in the
+  [CLI reference](https://max-rh.github.io/sshelf/cli.html).
+- Shell completion for credential names, on `--credential` and `credentials bind`. Names a host
+  already uses complete even when they were never declared.
+
+### Fixed
+
+- `sshelf add --credential X --password-stdin` stored the password under the host's own id, which
+  a bound host never reads, so the password was silently useless. It now goes to the credential.
+  The flag is new in this release, so no stored secret was affected.
+- `sshelf add`, `sshelf sites add` and `sshelf import` refuse to save when another sshelf process
+  changed `hosts.toml` since they read it, instead of replacing that change. The credential
+  commands already did this in 0.16.0. A sequential script is unaffected; parallel invocations
+  now fail rather than quietly losing hosts.
+- A host added with a credential that already has a secret no longer prints the "no password
+  stored" note, and one whose credential is empty names the credential in the advice rather than
+  the host.
+
 ## [0.16.0] (2026-10-27)
 
 ### Added
@@ -415,7 +442,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/max-rh/sshelf/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/max-rh/sshelf/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/max-rh/sshelf/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/max-rh/sshelf/compare/v0.14.0...v0.14.1

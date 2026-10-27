@@ -185,6 +185,181 @@ fn one_secret_serves_every_bound_host_and_rotates_once() {
 }
 
 #[test]
+fn add_can_bind_at_creation_and_stores_the_secret_under_the_credential() {
+    let r = Root::new("addbind");
+    // One call per group, then one call per host: the shape a scripted rollout wants.
+    let out = r.sshelf(
+        &["credentials", "add", "corp-ldap", "--password-stdin"],
+        "fleet-secret\n",
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+
+    let out = r.sshelf(
+        &[
+            "add",
+            "web-07",
+            "-H",
+            "10.0.0.7",
+            "--auth",
+            "password",
+            "--credential",
+            "corp-ldap",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    // Already satisfied, so it must not tell you to go and set a password.
+    assert!(
+        stdout.contains("credential 'corp-ldap', which is set"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("no password stored"), "{stdout}");
+
+    assert_eq!(
+        r.host_field("web-07", "credential").as_deref(),
+        Some("corp-ldap")
+    );
+    assert_eq!(
+        r.secret_for_key("credential:corp-ldap").as_deref(),
+        Some("fleet-secret")
+    );
+}
+
+#[test]
+fn adding_with_a_credential_and_a_password_writes_the_shared_key_not_the_host_id() {
+    // The bug this guards: `save_new_host` used to store under the host's own id, which a bound
+    // host never reads, so the password would have been silently useless.
+    let r = Root::new("addsecret");
+    let out = r.sshelf(
+        &[
+            "add",
+            "db-01",
+            "-H",
+            "10.0.0.8",
+            "--credential",
+            "corp",
+            "--password-stdin",
+        ],
+        "from-the-add\n",
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        r.secret_for_key("credential:corp").as_deref(),
+        Some("from-the-add"),
+        "the secret must land where the host will look for it"
+    );
+
+    // And a second host on the same credential needs no secret of its own.
+    let out = r.sshelf(
+        &[
+            "add",
+            "db-02",
+            "-H",
+            "10.0.0.9",
+            "--credential",
+            "corp",
+            "--auth",
+            "password",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("which is set"),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+#[test]
+fn add_says_what_is_missing_when_the_credential_has_no_secret_yet() {
+    let r = Root::new("addempty");
+    let out = r.sshelf(
+        &[
+            "add",
+            "web-01",
+            "-H",
+            "10.0.0.1",
+            "--auth",
+            "password",
+            "-c",
+            "not-set-yet",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("has nothing stored yet"), "{stdout}");
+    assert!(stdout.contains("--credential not-set-yet"), "{stdout}");
+}
+
+#[test]
+fn a_bad_credential_name_on_add_writes_no_host_at_all() {
+    let r = Root::new("addbad");
+    let out = r.sshelf(
+        &[
+            "add",
+            "web-01",
+            "-H",
+            "10.0.0.1",
+            "--credential",
+            "corp ldap",
+        ],
+        "",
+    );
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("credential name cannot use"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(
+        r.hosts_toml(),
+        "",
+        "nothing may be written when the name is refused"
+    );
+}
+
+#[test]
+fn credentials_add_with_empty_stdin_creates_nothing() {
+    let r = Root::new("credempty");
+    let out = r.sshelf(&["credentials", "add", "corp", "--password-stdin"], "");
+    assert!(!out.status.success());
+    assert_eq!(
+        r.hosts_toml(),
+        "",
+        "the credential must not be declared either"
+    );
+}
+
+#[test]
+fn from_ssh_can_bind_at_creation_too() {
+    let r = Root::new("fromssh");
+    let out = r.sshelf(
+        &[
+            "add",
+            "legacy",
+            "--credential",
+            "corp-ldap",
+            "--quiet",
+            "--from-ssh",
+            "ssh -p 2222 ops@10.0.0.50",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        r.host_field("legacy", "credential").as_deref(),
+        Some("corp-ldap")
+    );
+    assert_eq!(
+        r.host_field("legacy", "hostname").as_deref(),
+        Some("10.0.0.50")
+    );
+}
+
+#[test]
 fn unbinding_leaves_the_credential_and_rebinding_finds_it_again() {
     let r = Root::new("unbind");
     r.add("web", "10.0.0.1");
