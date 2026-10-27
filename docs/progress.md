@@ -62,6 +62,10 @@ command's exit status, a remote command on a password host not re-asking, and a 
 credential storing the passphrase under the credential's key rather than the host's). All 11
 e2e tests pass.
 
+After the tag, CI's audit job went red on `clipboard-win 5.4.1`, which crates.io yanked some
+time after the 0.15.0 release. It is a Windows-only dependency of `arboard`, so no shipped
+artifact contains it and the tag was left alone; the lockfile moves to 5.4.3 on master.
+
 **Next:** v0.17.0, secrets from a password manager, which is the `source` field the credential
 table already reserves.
 
