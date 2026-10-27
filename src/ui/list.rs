@@ -79,6 +79,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         hl: Style::default()
             .fg(super::accent())
             .add_modifier(Modifier::BOLD),
+        app,
     };
 
     // Idle → group hosts under site headers; filtering → a flat list with a site column.
@@ -148,6 +149,9 @@ struct RowCtx<'a> {
     fuzzy: &'a str,
     base: Style,
     hl: Style,
+    /// The app, for the per-row marks. Borrowed rather than copied so a large selection costs
+    /// nothing per frame.
+    app: &'a App,
 }
 
 /// One host row: `name  user@host:port  [tags]`, fuzzy-highlighted, with an optional dim
@@ -165,9 +169,27 @@ fn host_row(h: &Host, ctx: &RowCtx, matcher: &mut Matcher, show_site: bool) -> L
     }
     let indices = search::match_indices(&text, ctx.fuzzy, matcher);
     let mut spans = super::highlight(&text, &indices, ctx.base, ctx.hl);
+    // A marked row leads with a filled box. Ahead of the text so the column lines up whether
+    // or not anything is marked, and so it survives the fuzzy highlighting untouched.
+    spans.insert(
+        0,
+        if ctx.app.is_marked(&h.id) {
+            Span::styled("◼ ", Style::default().fg(super::accent()))
+        } else {
+            Span::raw("  ")
+        },
+    );
     if show_site && let Some(site) = &h.site {
         spans.push(Span::styled(
             format!("  ·{site}·"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    // A shared credential is why several hosts answer with the same password, so it is worth
+    // seeing in the list rather than only in the editor.
+    if let Some(cred) = &h.credential {
+        spans.push(Span::styled(
+            format!("  @{cred}"),
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -182,11 +204,28 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let hint = "↵ connect  ^a add  ^e edit  ^d del  ^y yank  ^t transfer  ^f forward  ^o import  F1 help  F2 settings  F3 sites  F4 forwards  esc quit";
     frame.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(hint_for(area.width)).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+/// The widest hint that fits in `width`.
+///
+/// The full line is 142 columns, so on anything narrower it used to be cut mid-word and the
+/// last keys (including `esc quit`) simply vanished. Dropping whole entries instead keeps the
+/// line readable, and `F1` lists every key regardless.
+fn hint_for(width: u16) -> &'static str {
+    const FULL: &str = "↵ connect  ^a add  ^e edit  ^d del  ^s mark  ^k creds  ^y yank  ^t transfer  ^f forward  F1 help  F2 settings  F3 sites  F4 forwards  esc quit";
+    const MEDIUM: &str = "↵ connect  ^a add  ^e edit  ^d del  ^s mark  ^k creds  ^y yank  ^t transfer  ^f forward  F1 help  esc quit";
+    const SHORT: &str = "↵ connect  ^a add  ^s mark  ^k creds  F1 help  esc quit";
+    let width = width as usize;
+    for hint in [FULL, MEDIUM, SHORT] {
+        if hint.chars().count() <= width {
+            return hint;
+        }
+    }
+    "F1 help"
 }
 
 #[cfg(test)]
@@ -199,6 +238,29 @@ mod tests {
     use crate::state::FrecencyState;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn the_hint_bar_drops_whole_entries_rather_than_being_cut() {
+        // Every variant fits the width it is chosen for, and none is cut mid-entry.
+        for width in [40u16, 60, 80, 100, 110, 120, 142, 200] {
+            let hint = hint_for(width);
+            assert!(
+                hint.chars().count() <= width as usize || hint == "F1 help",
+                "{width} got {hint:?}"
+            );
+            assert!(hint.ends_with("quit") || hint == "F1 help", "{hint:?}");
+        }
+        // The two new keys survive every variant that has room for more than the fallback.
+        for width in [60u16, 120, 200] {
+            assert!(hint_for(width).contains("^s mark"), "{width}");
+            assert!(hint_for(width).contains("^k creds"), "{width}");
+        }
+        assert!(hint_for(200).contains("F4 forwards"));
+        assert!(
+            !hint_for(120).contains("F4 forwards"),
+            "120 cols is too narrow for all of it"
+        );
+    }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
         buf.content().iter().map(|c| c.symbol()).collect()

@@ -5,7 +5,7 @@
 > **All modules present:** `main`, `app`, `askpass`, `config`, `doctor`, `export`, `forwards`,
 > `import`, `model`, `paths`, `search`, `secrets`, `ssh`, `state`, `store`, `tailscale`,
 > `transfer/{mod,worker,pane,screen,e2e}`, `testsupport` (test-only), `vault`,
-> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards,two_factor}`.
+> `ui/{mod,list,help,widgets,wizard,browse,settings,sites,transfer,forward_popup,forwards,two_factor,bulk_secret}`.
 > (`error.rs` was removed; the codebase uses `anyhow` throughout.)
 
 ## Repository
@@ -58,6 +58,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 | `ui/forward_popup.rs` | New-port-forward popup (Ctrl-f): kind chooser (Local/Remote/Dynamic) + ports/host fields + validation; emits a `ForwardSpec` for the app to spawn. |
 | `ui/forwards.rs` | Port-forwards manager (F4): lists all active forwards from a live snapshot; emits a kill request for the app to act on. |
 | `ui/two_factor.rs` | 2FA code popup shown before connecting to a `requires_2fa` host; emits the entered code for the app to queue + supply via askpass. |
+| `ui/bulk_secret.rs` | Bulk-credentials popup (Ctrl-k): sets one password per marked host, binds a selection to a shared credential, or unbinds it; emits a validated request for the app to apply. |
 | `ui/help.rs` | Help overlay. |
 | `ui/widgets.rs` | Shared widgets: single-line text input (hand-rolled), keybind hint bar, confirm modal. |
 

@@ -287,11 +287,21 @@ pub fn check_orphaned_secrets(stored: Option<&[String]>, file: &HostsFile) -> Ch
             "orphaned secrets — not checked (the OS keyring can't be listed; vault mode can)",
         );
     };
-    let known: std::collections::HashSet<&str> = file.hosts.iter().map(|h| h.id.as_str()).collect();
+    // Both shapes of key live in one store: a host's own id, and `credential:<name>` for a
+    // shared one. A credential counts as known while it is declared **or** still bound, so a
+    // populated credential nobody uses any more is reported and a declared-but-empty one is not.
+    let mut known: std::collections::HashSet<String> =
+        file.hosts.iter().map(|h| h.id.clone()).collect();
+    for c in &file.credentials {
+        known.insert(c.secret_key());
+    }
+    for h in &file.hosts {
+        known.insert(h.secret_key());
+    }
     let orphans: Vec<&str> = stored
         .iter()
         .map(String::as_str)
-        .filter(|id| !known.contains(id))
+        .filter(|id| !known.contains(*id))
         .collect();
     if orphans.is_empty() {
         return Check::ok(format!(
@@ -494,15 +504,11 @@ pub fn healthy(checks: &[Check]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CURRENT_FORMAT_VERSION, Site};
+    use crate::model::Site;
     use std::path::PathBuf;
 
     fn file_with(hosts: Vec<Host>, sites: Vec<Site>) -> HostsFile {
-        HostsFile {
-            format_version: CURRENT_FORMAT_VERSION,
-            sites,
-            hosts,
-        }
+        HostsFile::with_parts(Vec::new(), sites, hosts)
     }
 
     fn path() -> PathBuf {

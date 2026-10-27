@@ -5,6 +5,69 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-038 · One shared secret is keyed by name; the pointer lives in `hosts.toml`
+A fleet that shares one login password (a directory password, identical appliances, a lab) used
+to mean one stored secret per host: retyped per host, and retyped again on every rotation. A
+host can now name a **credential** instead, and the secret is stored under
+`credential:<name>` rather than under that host's id.
+
+The pointer goes in `hosts.toml` because it is not a secret, which is the same reason a
+password-manager reference can live there. The name is validated and lower-cased to
+`[a-z0-9._-]`, since it becomes a store key and, on macOS, a visible keychain account. Host ids
+are bare ULIDs with no colon, so the two key shapes cannot collide and **every secret saved by
+an earlier version keeps working with no migration**. Resolution depends only on the host's
+`credential` field, not on the `[[credential]]` table: a name with no entry still resolves, so a
+hand-edited file degrades gracefully and `doctor` reports the gap rather than failing. The table
+carries the note today and a `source` later, which is how an external secret source will arrive
+without another schema change.
+
+Deleting a host no longer deletes the secret when the host was reading from a credential: the
+other members still need it. Removing the credential itself does delete the value, because
+nothing can reach it once the name is gone.
+
+Rejected: copying one secret into N per-host entries (the rotation problem comes straight back,
+N times); a per-host override on top of a credential (two sources of truth for one answer, and
+the host that needs its own password is unbound instead); keying by host name (renames are
+free today and would silently orphan the secret).
+
+### D-037 · A bulk credential write is not verified, and says so
+v0.15.0 proves a first secret with one throwaway login before keeping it (D-035). That does not
+scale: fifty marked hosts would mean fifty logins, most of them pointless, and a slow or
+unreachable host would stall the whole batch. The bulk popup therefore stores without checking
+and prints that on screen, and a wrong value surfaces on that host's next connect through the
+refusal path that already exists. The single-host path still verifies, because it can.
+
+Existing secrets are **skipped** by default and replacing them is an explicit toggle (`^r`),
+with the count of affected hosts always visible. Overwriting a stored secret is unrecoverable,
+and a bulk action over a filter is exactly where that would go unnoticed.
+
+Rejected: verifying against one host and assuming the rest (a shared credential is the only
+case where that would hold, and it is precisely the case where one check is already enough);
+verifying in the background after the write (a half-verified fleet with no terminal to report
+to is worse than an honest "not checked").
+
+### D-036 · A remote command is reachable only from the connect path, and needs `--`
+`sshelf <host> -- cmd ...` runs one command instead of opening a shell. It is appended inside
+`connect_command` alone, after the destination, so it cannot reach the transfer screen's
+ControlMaster, the forward builder or `sshelf export`. That is the trap the obvious version
+falls into: `extra_args` is shared by all of those, so a command parked there would fire on
+every sftp listing and would land in the exported `ssh_config` for anyone using the fragment
+with plain `ssh`.
+
+`--` is required. A bare trailing word is ambiguous with the subcommands (`sshelf web list`),
+and that collision is already an explicit error rather than a silent one, so the explicit
+separator keeps both behaviours intact. The words are passed to ssh **unchanged**, which means
+ssh joins them with spaces and the login shell splits them again, exactly as with `ssh`: matching
+ssh's quoting was chosen over quoting each word, because the muscle memory is worth more than
+the convenience and because a user who writes `-- 'echo $HOSTNAME'` usually means the remote
+shell to expand it. No pty unless `-t` is passed, like `ssh host cmd`. A remote command runs in
+place even in tmux mode: a one-shot command is not a session worth a window.
+
+Rejected: storing a per-host command (that is a different feature, and the one that has to solve
+how the transfer and forward paths opt out); quoting each word with shlex (safer for a generated
+call, surprising for a typed one); allowing a bare trailing command (silently changes what the
+host-plus-subcommand error used to catch).
+
 ### D-035 · A connect with nothing stored asks once, proves the answer, then keeps it
 Secrets never live in `hosts.toml`. That is the point of the file, and it also means a
 hand-written, generated or copied `hosts.toml` has hosts with nothing stored, which prompted on

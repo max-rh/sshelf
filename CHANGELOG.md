@@ -5,6 +5,48 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- Hosts that share one login password can now share one stored secret. Name a credential, point
+  hosts at it, and rotating is a single write instead of one per host:
+  `sshelf credentials add corp-ldap`, `sshelf credentials bind corp-ldap web-01 web-02`,
+  `printf %s "$PASS" | sshelf set-password --credential corp-ldap`. `hosts.toml` holds only the
+  name; the secret still lives in the keyring or the vault. `sshelf credentials` lists who uses
+  what and whether a secret is actually stored.
+- `Ctrl-s` marks hosts in the list and `Ctrl-k` sets a password for all of them, or binds them to
+  a shared credential, or unbinds them. With nothing marked it acts on whatever the filter is
+  showing, so `tag:prod` then `Ctrl-k` covers a group. Hosts that already have a secret are
+  skipped unless you turn replacing on with `Ctrl-r`, and the counts are on screen. A bulk write
+  is not checked against the hosts (that would be one login each); a wrong one shows up on that
+  host's next connect, as it already did.
+- `sshelf <host> -- COMMAND ...` runs one command on the host instead of opening a shell and
+  exits with the command's own status. `-t` asks for a pty. The command reaches only that
+  connect: it is never stored on the host, never seen by the transfer screen, the forward builder
+  or `sshelf export`.
+
+### Changed
+
+- `sshelf set-password <host>` on a host that uses a shared credential sets that credential, and
+  says how many hosts it just changed.
+- Deleting a host no longer deletes its stored secret when the host was reading from a shared
+  credential, since the other hosts on it still need the value.
+- A `hosts.toml` that uses shared credentials declares `format_version = 2`. One that does not
+  keeps declaring `1`, so upgrading does not by itself produce a file an older sshelf refuses.
+
+### Fixed
+
+- `sshelf sites --json` works. It has been documented since sites shipped but was rejected
+  unless you spelled out `sshelf sites list --json`. The same applies to the new
+  `sshelf credentials --json`.
+- A `hosts.toml` declaring a `format_version` newer than the running sshelf understands is now
+  refused with a message telling you to upgrade, instead of being parsed and then rewritten
+  without the parts it did not recognise.
+- The CLI paths that edit `hosts.toml` refuse to save when another sshelf changed the file since
+  they read it, instead of replacing that change. An atomic write never corrupted the file, but
+  it could not prevent a lost update.
+- `sshelf set-password` with empty stdin prints its message again. It was swallowed to a bare
+  `Error:` because the text contains a `|`.
+
 ## [0.15.0] (2026-09-14)
 
 ### Added

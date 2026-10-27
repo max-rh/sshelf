@@ -3,8 +3,67 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.16.0, secrets from a password manager. v0.15.0 (add a host from an ssh
-command, save the secret on first connect, and the upload fix) is tagged on Sep 14 and not pushed.
+**Current milestone:** v0.16.0, shared credentials, bulk credential updates and a remote command.
+Secrets from a password manager moves to v0.17.0 and the 1.0 RC to v0.18.0. v0.15.0 is released.
+
+---
+
+## 2026-10-27: v0.16.0, one password for many hosts, bulk updates, and `sshelf <host> -- cmd`
+
+Three features and the schema work they needed.
+
+**Shared credentials.** A host can name a `credential` instead of keeping its own secret, and
+the value is stored under `credential:<name>` rather than the host's id. The pointer lives in
+`hosts.toml` (it is not a secret), the name is validated and lower-cased because it becomes a
+store key and a visible macOS keychain account, and resolution depends only on the host's field,
+not on the `[[credential]]` table, so a hand-edited file degrades gracefully. Host ids are bare
+ULIDs with no colon, so the two key shapes cannot collide and nothing migrates: every secret
+saved by an earlier version keeps working. One rotation now covers a fleet, which was the whole
+point. `Host::secret_key()` is the single place that mapping is decided, so connect,
+`set-password`, the first-connect capture and `doctor` all agree without passing a list around.
+D-038.
+
+Deleting a host stops deleting the secret when the host was reading from a credential, since the
+other members still need it. Removing the credential itself does delete the value, because
+nothing can reach it once the name is gone. `doctor`'s orphan check knows both key shapes.
+
+**Marks and the bulk popup.** `^s` marks hosts by id rather than by position, so filtering
+cannot scramble a selection, and `^k` opens a popup that sets one password per host, binds the
+set to a shared credential, or unbinds it. With nothing marked it acts on what the filter shows.
+Existing secrets are skipped by default with the count on screen, because overwriting one is
+unrecoverable; `^r` turns replacing on. Nothing is verified: fifty hosts would mean fifty
+logins, so a wrong value surfaces on that host's next connect through the refusal path 0.15.0
+already built. D-037.
+
+**`sshelf <host> -- cmd`.** Appended inside `connect_command` alone, so it cannot reach the
+transfer ControlMaster, the forward builder or `sshelf export`. That is the trap the obvious
+version falls into, since `extra_args` is shared by all three. `--` is required because a bare
+trailing word collides with the subcommands, and that collision is already an explicit error.
+The words go to ssh unchanged, so ssh's own quoting rule applies: it joins them with spaces and
+the login shell splits them again. Verified against a real sshd: `-- 'exit 7'` exits 7 and
+`-- sh -c 'exit 7'` exits 0, exactly as with `ssh`. No pty unless `-t`. D-036.
+
+**The schema work underneath.** A new field on `Host` is a data-loss risk with the old loader:
+`format_version` was never validated, so an older build would load a newer file and drop what it
+did not know on the next save. Loading now refuses a version above what the build understands,
+`save_hosts` stamps the version the contents actually need (2 only when credentials are used, so
+a file that does not use them stays loadable by 0.15.0), and the CLI edit paths record the
+revision they read and refuse a stale save rather than replacing another process's change. That
+is three of the four items in tracker #43; the `AuthMethod` serde fallback is still open and only
+matters when a new auth value lands.
+
+Also fixed: `sshelf sites --json` has been documented since sites shipped but was rejected
+unless you wrote `sites list --json`, and `set-password` with empty stdin printed a bare
+`Error:` because its message contains a `|`.
+
+Tests: 427 unit, 9 new integration tests in `tests/credentials.rs` driving the real binary
+against a throwaway vault, and three new ignored e2e tests against a real sshd (the remote
+command's exit status, a remote command on a password host not re-asking, and a shared
+credential storing the passphrase under the credential's key rather than the host's). All 11
+e2e tests pass.
+
+**Next:** v0.17.0, secrets from a password manager, which is the `source` field the credential
+table already reserves.
 
 ---
 

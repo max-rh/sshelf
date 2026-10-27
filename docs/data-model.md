@@ -29,7 +29,12 @@ symlink at the name fails the write instead of being followed. **Secrets are nev
 ## `Host` / `Site` schema (`hosts.toml`)
 
 ```toml
-format_version = 1            # top-level scalar; for future migrations
+format_version = 1            # top-level scalar; 2 once shared credentials are used
+
+[[credential]]                # optional; one secret shared by many hosts (see host.credential)
+name      = "corp-ldap"       # lower-case [a-z0-9._-]; keys the store as credential:<name>
+note      = "directory password"  # optional; shown in listings, never the secret
+# source  = ...               # reserved: where the value comes from. Absent = sshelf's own store.
 
 [[site]]                      # optional; sites are listed before hosts (scalars-before-AoT)
 name      = "prod-dc"         # the name hosts reference (see host.site)
@@ -49,6 +54,7 @@ identity_files = ["~/.ssh/infra-key"]   # for auth="key"; repeatable (-i per ent
 jump_hosts = ["bastion.example.com"]    # ProxyJump chain; key/agent auth only in v1
 tags      = ["prod", "db"]    # many-valued, free-form; for filtering/grouping
 site      = "prod-dc"         # optional; one site (by name); groups + inherits its defaults
+credential = "corp-ldap"      # optional; read the secret from this shared credential, not this id
 requires_2fa = true           # optional (default false); connect prompts for a verification code
 extra_args = "-o ServerAliveInterval=30"  # raw, shlex-split, appended verbatim
 # NOTE: no password field, ever. auth="password" means "look up the secret by id".
@@ -60,7 +66,13 @@ Notes:
 - `identity_files` / `jump_hosts` / `tags` are `Vec<String>` (empty = absent).
 - `format_version` lets sshelf migrate the schema later without breaking older files. Adding
   `[[site]]` and `host.site` needed **no** bump: old files load with `sites = []` /
-  `site = None`.
+  `site = None`. Shared credentials **did** need one, because an older build would drop the
+  pointer and silently unbind the hosts, so a file that uses them declares `2` and a file that
+  does not keeps declaring `1`. From 0.16.0 a `format_version` newer than the build understands
+  is refused on load rather than parsed and rewritten.
+- `credential` is a pointer, not a secret: it names the key the secret is stored under. A name
+  with no `[[credential]]` entry still resolves, so a hand-edited file degrades gracefully and
+  `doctor` reports the gap instead of failing.
 - `requires_2fa` marks a host whose login needs an interactive verification code; connect collects
   it and passes it to `ssh` via the transient `SSHELF_2FA_CODE` env var (never stored on disk).
   See [`decisions.md`](./decisions.md) D-022.
@@ -115,11 +127,20 @@ deleting one clears members' `site`. See [`decisions.md`](./decisions.md) D-020.
 
 ## Secrets
 
-Stored in the OS keyring (service `sshelf`, account = host `id`) or, as a fallback on
-headless systems, in `vault.age`. Either way the key is the host `id`. Full model and threat
-analysis in [`security.md`](./security.md).
+Stored in the OS keyring (service `sshelf`, account = the store key) or, as a fallback on
+headless systems, in `vault.age`. The store key is the host `id`, or `credential:<name>` when
+the host reads from a [shared credential](passwords-2fa.md#one-password-for-many-hosts). Host
+ids are bare ULIDs with no colon, so the two shapes can never collide and secrets saved by
+earlier versions keep working unchanged. Full model and threat analysis in
+[`security.md`](./security.md).
 
 ## Atomic writes
 
 All persistent writes use temp-file + `rename()` (atomic on Unix) so a crash mid-write never
-corrupts `hosts.toml` / `config.toml` / `state.json`. Single-process tool → no file locking needed.
+corrupts `hosts.toml` / `config.toml` / `state.json`.
+
+An atomic write prevents a torn file, not a lost update: two processes that load the same
+revision and both save would leave only the second one's version. The CLI paths that edit
+`hosts.toml` (`credentials add` / `bind` / `unbind` / `rm`) therefore record what the file
+looked like when they read it and refuse to save if it changed in between, telling the user to
+retry rather than overwriting someone else's edit.

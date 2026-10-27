@@ -212,13 +212,41 @@ pub fn command_string(host: &Host, askpass: bool) -> String {
     format!("ssh {joined}")
 }
 
+/// A command to run on the host instead of opening a login shell (`sshelf <host> -- cmd ...`).
+///
+/// Deliberately **only** reachable from the connect path: the transfer screen's ControlMaster,
+/// the forward builder and `sshelf export` all go through [`build_args`], which knows nothing
+/// about it. A remote command that leaked into those would fire on every sftp listing and would
+/// land in the exported `ssh_config`, where plain `ssh` users would inherit it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoteCommand {
+    /// The words to run, already split by the shell that invoked sshelf. Passed after `--`, so
+    /// a command starting with `-` is not read as an ssh option (ssh parses options after the
+    /// destination too).
+    pub argv: Vec<String>,
+    /// Ask for a pty (`-t`). Off by default, like `ssh host cmd`; needed for anything
+    /// full-screen or that expects a terminal.
+    pub tty: bool,
+}
+
+impl RemoteCommand {
+    pub fn is_empty(&self) -> bool {
+        self.argv.is_empty()
+    }
+}
+
 /// Replace the current process with `ssh`. On success this never returns; it returns an
 /// error only if the exec itself fails (e.g. `ssh` not found). The caller must have already
 /// restored the terminal.
 #[cfg(unix)]
-pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) -> anyhow::Error {
+pub fn exec_connect(
+    host: &Host,
+    wire_askpass: bool,
+    two_fa_code: Option<&str>,
+    remote: &RemoteCommand,
+) -> anyhow::Error {
     use std::os::unix::process::CommandExt;
-    let mut cmd = connect_command(host, wire_askpass, two_fa_code);
+    let mut cmd = connect_command(host, wire_askpass, two_fa_code, remote);
     // exec() returns only on failure.
     anyhow::anyhow!(
         "could not launch ssh: {} — is an OpenSSH client installed and on your PATH?",
@@ -235,10 +263,17 @@ fn connect_command(
     host: &Host,
     wire_askpass: bool,
     two_fa_code: Option<&str>,
+    remote: &RemoteCommand,
 ) -> std::process::Command {
     let askpass = wire_askpass || two_fa_code.is_some();
     let mut cmd = std::process::Command::new("ssh");
+    if remote.tty {
+        cmd.arg("-t");
+    }
     cmd.args(build_args(host, true, askpass));
+    if !remote.is_empty() {
+        cmd.arg("--").args(&remote.argv);
+    }
     match jump_plan(host, askpass) {
         JumpPlan::Terminal => configure_askpass(&mut cmd, host, false, None),
         _ => configure_askpass(&mut cmd, host, wire_askpass, two_fa_code),
@@ -278,9 +313,14 @@ pub(crate) fn verify_command(host: &Host) -> std::process::Command {
 }
 
 #[cfg(not(unix))]
-pub fn exec_connect(host: &Host, wire_askpass: bool, two_fa_code: Option<&str>) -> anyhow::Error {
+pub fn exec_connect(
+    host: &Host,
+    wire_askpass: bool,
+    two_fa_code: Option<&str>,
+    remote: &RemoteCommand,
+) -> anyhow::Error {
     // No process-replacement on non-unix; spawn + wait, then mirror the exit code.
-    let mut cmd = connect_command(host, wire_askpass, two_fa_code);
+    let mut cmd = connect_command(host, wire_askpass, two_fa_code, remote);
     match cmd.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(e) => anyhow::anyhow!(
@@ -418,7 +458,7 @@ pub fn tmux_env(host: &Host, wire_askpass: bool) -> Vec<(String, String)> {
         ("SSH_ASKPASS".to_string(), exe.display().to_string()),
         ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
         ("SSHELF_ASKPASS".to_string(), "1".to_string()),
-        ("SSHELF_HOST_ID".to_string(), host.id.clone()),
+        ("SSHELF_HOST_ID".to_string(), host.secret_key()),
         (
             crate::askpass::KIND_ENV.to_string(),
             secret_kind(host).as_str().to_string(),
@@ -609,7 +649,7 @@ pub(crate) fn configure_askpass(
         cmd.env("SSH_ASKPASS", exe)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("SSHELF_ASKPASS", "1")
-            .env("SSHELF_HOST_ID", &host.id)
+            .env("SSHELF_HOST_ID", host.secret_key())
             .env(crate::askpass::KIND_ENV, secret_kind(host).as_str())
             // Fresh per `Command`, so the helper can tell a repeat prompt within this connect
             // from the first prompt of the next one. An id, nothing secret.
@@ -813,7 +853,10 @@ mod tests {
             ]
         );
         // The host id is opaque (the helper trades it for the secret) — never the secret itself.
-        assert!(env.iter().any(|(k, v)| k == "SSHELF_HOST_ID" && v == &h.id));
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "SSHELF_HOST_ID" && v == &h.secret_key())
+        );
     }
 
     /// The whole point of D-025: `-e KEY=VAL` is the tmux client's argv, visible in `ps`.
@@ -1107,7 +1150,7 @@ mod tests {
         let mut h = Host::new("target", "10.0.0.9");
         h.auth = AuthMethod::Password;
         h.jump_hosts = vec!["b1".into(), "b2".into()];
-        let cmd = connect_command(&h, true, None);
+        let cmd = connect_command(&h, true, None, &RemoteCommand::default());
         // No helper, no host id, and the vault passphrase is scrubbed: ssh asks on the terminal.
         for key in ["SSH_ASKPASS", "SSHELF_ASKPASS", "SSHELF_HOST_ID"] {
             assert!(
@@ -1124,11 +1167,77 @@ mod tests {
 
         // One hop is constrained instead, so the helper stays wired.
         h.jump_hosts = vec!["bastion".into()];
-        let cmd = connect_command(&h, true, None);
+        let cmd = connect_command(&h, true, None, &RemoteCommand::default());
         assert!(
             cmd.get_envs()
                 .any(|(k, v)| k == std::ffi::OsStr::new("SSHELF_ASKPASS") && v.is_some())
         );
+    }
+
+    #[test]
+    fn a_remote_command_is_passed_after_a_double_dash() {
+        let h = Host::new("web", "10.0.0.1");
+        let remote = RemoteCommand {
+            argv: vec!["systemctl".into(), "status".into(), "nginx".into()],
+            tty: false,
+        };
+        let cmd = connect_command(&h, false, None, &remote);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let dash = argv.iter().position(|a| a == "--").expect("-- is required");
+        // The destination comes before it, the command after, in order.
+        assert!(argv[..dash].iter().any(|a| a.ends_with("@10.0.0.1")));
+        assert_eq!(&argv[dash + 1..], &["systemctl", "status", "nginx"]);
+        // No pty unless asked, like `ssh host cmd`.
+        assert!(!argv.contains(&"-t".to_string()));
+    }
+
+    #[test]
+    fn a_command_that_looks_like_an_option_is_not_eaten_by_ssh() {
+        // ssh parses options *after* the destination too, so `--` is what stops `-v` from
+        // becoming ssh's own flag instead of the remote command.
+        let h = Host::new("web", "10.0.0.1");
+        let remote = RemoteCommand {
+            argv: vec!["-v".into()],
+            tty: true,
+        };
+        let cmd = connect_command(&h, false, None, &remote);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let dash = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(&argv[dash + 1..], &["-v"]);
+        // -t precedes the destination so it is unambiguously ssh's.
+        let t = argv.iter().position(|a| a == "-t").expect("-t for a tty");
+        assert!(t < dash);
+    }
+
+    #[test]
+    fn no_remote_command_means_no_double_dash() {
+        let h = Host::new("web", "10.0.0.1");
+        let cmd = connect_command(&h, false, None, &RemoteCommand::default());
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!argv.contains(&"--".to_string()));
+        assert!(!argv.contains(&"-t".to_string()));
+    }
+
+    #[test]
+    fn a_remote_command_never_reaches_the_other_ssh_paths() {
+        // The trap that sank the obvious version of this feature: `extra_args` is shared by the
+        // transfer ControlMaster, the forward builder and the ssh_config export, so anything
+        // that lands there fires on every sftp listing and leaks into the exported fragment.
+        // `RemoteCommand` is reachable only from `connect_command`, which these do not use.
+        let h = Host::new("web", "10.0.0.1");
+        let base = build_args(&h, true, false);
+        assert!(!base.contains(&"--".to_string()));
+        assert_eq!(base, build_args(&h, true, false), "build_args is pure");
+        assert!(!command_string(&h, false).contains(" -- "));
     }
 
     #[test]

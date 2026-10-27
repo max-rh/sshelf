@@ -6,23 +6,93 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::model::HostsFile;
+use crate::model::{HostsFile, MAX_SUPPORTED_FORMAT_VERSION};
 
 /// Load the host database. A missing file yields an empty (default) database.
 pub fn load_hosts(path: &Path) -> Result<HostsFile> {
+    Ok(load_hosts_stamped(path)?.0)
+}
+
+/// Load the host database and the revision it was read at, for [`save_hosts_if_unchanged`].
+///
+/// `None` means the file did not exist, which is its own revision: a save may then create it,
+/// but must not overwrite one that appeared in the meantime.
+pub fn load_hosts_stamped(path: &Path) -> Result<(HostsFile, Option<Revision>)> {
     if !path.exists() {
-        return Ok(HostsFile::default());
+        return Ok((HostsFile::default(), None));
     }
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let parsed: HostsFile =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    Ok(parsed)
+    if parsed.format_version > MAX_SUPPORTED_FORMAT_VERSION {
+        anyhow::bail!(
+            "{} declares format_version {}, and this sshelf reads up to {}. Upgrade sshelf \
+             rather than letting an older build rewrite the file, which would drop whatever it \
+             does not understand.",
+            path.display(),
+            parsed.format_version,
+            MAX_SUPPORTED_FORMAT_VERSION
+        );
+    }
+    Ok((parsed, Some(Revision::of(&text))))
 }
 
-/// Persist the host database atomically.
+/// What a loaded `hosts.toml` looked like, so a later save can tell whether anything else
+/// wrote to it in between. `atomic_write` prevents a torn file; this prevents a lost update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revision {
+    len: u64,
+    hash: u64,
+}
+
+impl Revision {
+    fn of(text: &str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        Revision {
+            len: text.len() as u64,
+            hash: h.finish(),
+        }
+    }
+
+    /// The revision `path` is at right now, or `None` when it does not exist.
+    fn current(path: &Path) -> Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(Some(Revision::of(&text)))
+    }
+}
+
+/// Persist the host database atomically, stamping the `format_version` the contents need.
 pub fn save_hosts(path: &Path, hosts: &HostsFile) -> Result<()> {
-    let text = toml::to_string_pretty(hosts).context("serializing hosts")?;
+    let mut hosts = hosts.clone();
+    hosts.format_version = hosts.required_format_version();
+    let text = toml::to_string_pretty(&hosts).context("serializing hosts")?;
     atomic_write(path, text.as_bytes(), 0o600)
+}
+
+/// Save only if `path` is still at `expected` (from [`load_hosts_stamped`]).
+///
+/// Refuses instead of overwriting when another sshelf process edited the file since it was
+/// read, which is the difference between "my change landed" and "my change replaced theirs".
+pub fn save_hosts_if_unchanged(
+    path: &Path,
+    hosts: &HostsFile,
+    expected: Option<&Revision>,
+) -> Result<()> {
+    let now = Revision::current(path)?;
+    if now.as_ref() != expected {
+        anyhow::bail!(
+            "{} changed since it was read (another sshelf probably saved it), so this change \
+             was not written. Reload and try again.",
+            path.display()
+        );
+    }
+    save_hosts(path, hosts)
 }
 
 /// Write `bytes` to `path` atomically: write a sibling temp file, fsync it, then rename
@@ -158,11 +228,7 @@ mod tests {
         site.jump_hosts = vec!["bastion".into()];
         a.site = Some("prod-dc".into());
 
-        let hf = HostsFile {
-            format_version: crate::model::CURRENT_FORMAT_VERSION,
-            sites: vec![site.clone()],
-            hosts: vec![a.clone(), b.clone()],
-        };
+        let hf = HostsFile::with_parts(Vec::new(), vec![site.clone()], vec![a.clone(), b.clone()]);
 
         save_hosts(&path, &hf).unwrap();
         let loaded = load_hosts(&path).unwrap();
@@ -263,6 +329,119 @@ mod tests {
         std::fs::write(&path, "already here").unwrap();
         assert!(create_exclusive(&path, 0o600).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "already here");
+    }
+
+    #[test]
+    fn a_newer_format_version_is_refused_rather_than_silently_downgraded() {
+        let path = tmpdir().join("hosts.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "format_version = {}\n\n[[host]]\nid = \"X\"\nname = \"w\"\nhostname = \"1.1.1.1\"\n",
+                crate::model::MAX_SUPPORTED_FORMAT_VERSION + 1
+            ),
+        )
+        .unwrap();
+        let err = load_hosts(&path).unwrap_err().to_string();
+        assert!(err.contains("Upgrade sshelf"), "{err}");
+        // The file is left exactly as it was: nothing read it, nothing rewrote it.
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("format_version")
+        );
+    }
+
+    #[test]
+    fn a_credential_file_round_trips_and_stamps_version_2() {
+        let path = tmpdir().join("hosts.toml");
+        let mut h = crate::model::Host::new("web", "10.0.0.1");
+        h.credential = Some("corp-ldap".into());
+        let mut cred = crate::model::Credential::new("corp-ldap");
+        cred.note = Some("the directory password".into());
+        let hf = HostsFile::with_parts(vec![cred], Vec::new(), vec![h]);
+
+        save_hosts(&path, &hf).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("format_version = 2"), "{text}");
+        assert!(text.contains("[[credential]]"), "{text}");
+        // No secret ever reaches the file, only the pointer.
+        assert!(!text.contains("password ="), "{text}");
+
+        let loaded = load_hosts(&path).unwrap();
+        assert_eq!(loaded.credentials, hf.credentials);
+        assert_eq!(loaded.hosts[0].credential.as_deref(), Some("corp-ldap"));
+    }
+
+    #[test]
+    fn a_file_without_credentials_still_declares_version_1() {
+        let path = tmpdir().join("hosts.toml");
+        let hf = HostsFile::with_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![crate::model::Host::new("web", "10.0.0.1")],
+        );
+        save_hosts(&path, &hf).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("format_version = 1"), "{text}");
+    }
+
+    #[test]
+    fn a_stale_save_is_refused_instead_of_replacing_someone_elses_edit() {
+        let path = tmpdir().join("hosts.toml");
+        let first = HostsFile::with_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![crate::model::Host::new("a", "1.1.1.1")],
+        );
+        save_hosts(&path, &first).unwrap();
+
+        // This process reads it...
+        let (mut mine, rev) = load_hosts_stamped(&path).unwrap();
+        mine.hosts.push(crate::model::Host::new("mine", "2.2.2.2"));
+
+        // ...another one saves in the meantime.
+        let mut theirs = first.clone();
+        theirs
+            .hosts
+            .push(crate::model::Host::new("theirs", "3.3.3.3"));
+        save_hosts(&path, &theirs).unwrap();
+
+        let err = save_hosts_if_unchanged(&path, &mine, rev.as_ref())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("changed since it was read"), "{err}");
+        let on_disk = load_hosts(&path).unwrap();
+        assert!(on_disk.hosts.iter().any(|h| h.name == "theirs"));
+        assert!(
+            !on_disk.hosts.iter().any(|h| h.name == "mine"),
+            "the stale write must not have landed"
+        );
+
+        // Re-reading and retrying works.
+        let (mut again, rev) = load_hosts_stamped(&path).unwrap();
+        again.hosts.push(crate::model::Host::new("mine", "2.2.2.2"));
+        save_hosts_if_unchanged(&path, &again, rev.as_ref()).unwrap();
+        assert_eq!(load_hosts(&path).unwrap().hosts.len(), 3);
+    }
+
+    #[test]
+    fn a_first_save_expects_no_file_and_notices_one_appearing() {
+        let path = tmpdir().join("hosts.toml");
+        let (empty, rev) = load_hosts_stamped(&path).unwrap();
+        assert!(rev.is_none(), "a missing file has no revision");
+
+        // Someone creates it before we write.
+        save_hosts(
+            &path,
+            &HostsFile::with_parts(
+                Vec::new(),
+                Vec::new(),
+                vec![crate::model::Host::new("theirs", "3.3.3.3")],
+            ),
+        )
+        .unwrap();
+        assert!(save_hosts_if_unchanged(&path, &empty, rev.as_ref()).is_err());
     }
 
     #[test]

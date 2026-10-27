@@ -27,6 +27,8 @@ active**, so plain typing filters the list, and actions use **Ctrl** or function
 | `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | move the selection |
 | `Enter` | connect to the selected host |
 | `Ctrl-a` / `Ctrl-e` / `Ctrl-d` | [add / edit / delete](hosts.md) a host |
+| `Ctrl-s` | mark / unmark the selected host (marked rows show a `◼`) |
+| `Ctrl-k` | [set the password](passwords-2fa.md#one-password-for-many-hosts) for the marked hosts, or share one credential between them. With nothing marked it acts on whatever the filter is showing |
 | `Ctrl-y` | yank: copy the generated `ssh` command without connecting |
 | `Ctrl-t` | [transfer files](transfer.md) to/from the selected host |
 | `Ctrl-f` | [port-forward](port-forwarding.md) through the selected host |
@@ -35,7 +37,7 @@ active**, so plain typing filters the list, and actions use **Ctrl** or function
 | `F2` | settings: hosts file, tmux mode ([Configuration](configuration.md)) |
 | `F3` | manage [sites](sites-tags.md) |
 | `F4` | manage [port forwards](port-forwarding.md#the-forwards-manager-f4) |
-| `Esc` | clear the query if non-empty, otherwise quit |
+| `Esc` | clear the marks if any, else the query if non-empty, else quit |
 | `Ctrl-c` | quit |
 
 ## What "connect" actually does

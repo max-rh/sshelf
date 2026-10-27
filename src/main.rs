@@ -64,8 +64,16 @@ struct Cli {
     /// most recently used host. With no host and no subcommand, sshelf launches the TUI.
     #[arg(value_name = "HOST", add = ArgValueCandidates::new(host_name_candidates))]
     host: Option<String>,
+    /// Ask for a terminal when running a remote command (`ssh -t`). Only meaningful with
+    /// `-- COMMAND`; needed for anything full-screen, like `sshelf web -t -- htop`.
+    #[arg(short = 't', long, requires = "remote_command")]
+    tty: bool,
     #[command(subcommand)]
     command: Option<Command>,
+    /// Run this command on the host instead of opening a shell. Must come after `--`, e.g.
+    /// `sshelf web-01 -- systemctl status nginx`. The exit status is the command's own.
+    #[arg(last = true, value_name = "COMMAND")]
+    remote_command: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -102,11 +110,16 @@ enum Command {
         #[arg(long)]
         stdout: bool,
     },
-    /// Store a password (read from stdin) for a host, by name or id.
+    /// Store a password (read from stdin) for a host, by name or id, or for a shared
+    /// credential with --credential. Naming a host that uses a shared credential sets that
+    /// credential, for every host on it.
     SetPassword {
         /// Host name or id.
         #[arg(add = ArgValueCandidates::new(host_name_candidates))]
-        host: String,
+        host: Option<String>,
+        /// Set the shared credential with this name instead of one host's own secret.
+        #[arg(long, value_name = "NAME", conflicts_with = "host")]
+        credential: Option<String>,
     },
     /// Print the generated ssh command for a host without connecting.
     #[command(name = "print-command")]
@@ -119,6 +132,18 @@ enum Command {
     Sites {
         #[command(subcommand)]
         action: Option<SitesAction>,
+        /// Emit JSON instead of the human table (same as `sshelf sites list --json`).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage shared credentials (one stored secret, many hosts): list, define, remove, and
+    /// bind hosts to one. The secret itself is set with `sshelf set-password --credential`.
+    Credentials {
+        #[command(subcommand)]
+        action: Option<CredentialsAction>,
+        /// Emit JSON instead of the human table (same as `sshelf credentials list --json`).
+        #[arg(long)]
+        json: bool,
     },
     /// Check the environment and the host database for the things that break connections:
     /// the OpenSSH version, the secret backend, dangling site references, a stale export, a
@@ -147,6 +172,7 @@ impl Command {
             Command::SetPassword { .. } => "set-password",
             Command::Print { .. } => "print-command",
             Command::Sites { .. } => "sites",
+            Command::Credentials { .. } => "credentials",
             Command::Doctor => "doctor",
             Command::Completions { .. } => "completions",
             Command::Man => "man",
@@ -179,6 +205,49 @@ enum SitesAction {
         /// Default identity file(s) for key-auth members — repeatable.
         #[arg(short = 'i', long = "identity", value_name = "PATH")]
         identity_files: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CredentialsAction {
+    /// List defined credentials, how many hosts use each, and whether a secret is stored
+    /// (the default action).
+    List {
+        /// Emit JSON instead of the human table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Define a credential. Set its secret afterwards with
+    /// `sshelf set-password --credential NAME`.
+    Add {
+        /// Credential name: letters, digits, '-', '_' and '.'.
+        name: String,
+        /// What it is for, shown in listings. Never the secret.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Remove a credential's definition. Refuses while hosts still use it unless --force,
+    /// which unbinds them too. The stored secret is deleted either way.
+    Rm {
+        /// Credential name.
+        name: String,
+        /// Unbind every host using it, then remove it.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Point one or more hosts at a credential, so they all authenticate from its one secret.
+    Bind {
+        /// Credential name.
+        name: String,
+        /// Host names or ids.
+        #[arg(required = true, add = ArgValueCandidates::new(host_name_candidates))]
+        hosts: Vec<String>,
+    },
+    /// Give hosts their own secret again (the credential itself is left alone).
+    Unbind {
+        /// Host names or ids.
+        #[arg(required = true, add = ArgValueCandidates::new(host_name_candidates))]
+        hosts: Vec<String>,
     },
 }
 
@@ -399,9 +468,12 @@ fn run() -> Result<()> {
         },
         Some(Command::Import { dry_run, tailscale }) => cmd_import(dry_run, tailscale),
         Some(Command::Export { stdout }) => cmd_export(stdout),
-        Some(Command::SetPassword { host }) => cmd_set_password(&host),
+        Some(Command::SetPassword { host, credential }) => {
+            cmd_set_password(host.as_deref(), credential.as_deref())
+        }
         Some(Command::Print { host }) => cmd_print_command(&host),
-        Some(Command::Sites { action }) => cmd_sites(action),
+        Some(Command::Sites { action, json }) => cmd_sites(action, json),
+        Some(Command::Credentials { action, json }) => cmd_credentials(action, json),
         Some(Command::Doctor) => cmd_doctor(),
         Some(Command::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "sshelf", &mut std::io::stdout());
@@ -412,11 +484,21 @@ fn run() -> Result<()> {
             .context("rendering man page"),
         // No subcommand: `-` reconnects to the last host, a bare name connects directly,
         // nothing launches the TUI.
-        None => match cli.host.as_deref() {
-            Some("-") => cmd_connect_last(),
-            Some(name) => cmd_connect(name),
-            None => app::run(),
-        },
+        None => {
+            let remote = ssh::RemoteCommand {
+                argv: cli.remote_command,
+                tty: cli.tty,
+            };
+            match cli.host.as_deref() {
+                Some("-") => cmd_connect_last(&remote),
+                Some(name) => cmd_connect(name, &remote),
+                None if !remote.is_empty() => anyhow::bail!(
+                    "name a host before `--`, e.g. `sshelf web-01 -- {}`",
+                    display::sanitize(&remote.argv.join(" "))
+                ),
+                None => app::run(),
+            }
+        }
     }
 }
 
@@ -604,17 +686,48 @@ fn warn_export_refresh(outcome: Option<Result<()>>) {
     }
 }
 
-fn cmd_set_password(host_ref: &str) -> Result<()> {
+/// `sshelf set-password <host>` or `sshelf set-password --credential <name>`: read one line from
+/// stdin and store it. The host form writes whichever key the host resolves to, so a host on a
+/// shared credential updates that credential (and says how many hosts it serves).
+fn cmd_set_password(host_ref: Option<&str>, credential: Option<&str>) -> Result<()> {
     use std::io::BufRead;
     let paths = Paths::resolve()?;
     let cfg = Config::load(&paths.config_file())?;
-    let hosts = store::load_hosts(&cfg.hosts_path(&paths))?.hosts;
-    let host = hosts
-        .iter()
-        .find(|h| h.id == host_ref || h.name == host_ref)
-        .with_context(|| {
-            format!("no host with name or id '{host_ref}' — run `sshelf list` to see your hosts")
-        })?;
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
+
+    // What is being set, and what to call it in the messages.
+    let (key, subject, shared_with) = match (host_ref, credential) {
+        (Some(host_ref), _) => {
+            let host = file
+                .hosts
+                .iter()
+                .find(|h| h.id == host_ref || h.name == host_ref)
+                .with_context(|| {
+                    format!(
+                        "no host with name or id '{host_ref}' — run `sshelf list` to see your \
+                         hosts"
+                    )
+                })?;
+            let shared = host
+                .credential
+                .as_ref()
+                .map(|name| (name.clone(), file.hosts_using(name).len()));
+            (host.secret_key(), host.name.clone(), shared)
+        }
+        (None, Some(name)) => {
+            let name = model::validate_credential_name(name).map_err(|e| anyhow::anyhow!(e))?;
+            let used = file.hosts_using(&name).len();
+            (
+                model::credential_secret_key(&name),
+                format!("credential '{name}'"),
+                Some((name, used)),
+            )
+        }
+        (None, None) => anyhow::bail!(
+            "name a host, or a shared credential with --credential; run `sshelf list` for hosts \
+             and `sshelf credentials` for credentials"
+        ),
+    };
 
     let mut line = String::new();
     std::io::stdin()
@@ -623,18 +736,37 @@ fn cmd_set_password(host_ref: &str) -> Result<()> {
         .context("reading password from stdin")?;
     let password = line.trim_end_matches(['\n', '\r']);
     if password.is_empty() {
-        anyhow::bail!(
-            "nothing on stdin — nothing stored; pipe the password in, e.g. \
+        // Printed, not returned: `display::error_line` folds away any line containing a `|`,
+        // which this example has (tracker #41).
+        eprintln!(
+            "Error: nothing on stdin, so nothing was stored. Pipe the password in, e.g. \
              `printf %s \"$PASS\" | sshelf set-password {}`",
-            display::sanitize(&host.name)
+            display::sanitize(&subject)
         );
+        std::process::exit(1);
     }
-    secrets::store_password(&paths.vault_file(), &host.id, password)?;
+    secrets::store_password(&paths.vault_file(), &key, password)?;
     println!(
-        "stored password for \"{}\" ({})",
-        display::sanitize(&host.name),
-        display::sanitize(&host.id)
+        "stored password for {} ({})",
+        display::sanitize(&subject),
+        display::sanitize(&key)
     );
+    if let Some((name, count)) = shared_with {
+        match count {
+            0 => println!(
+                "note: no host uses credential '{}' yet — bind one with `sshelf credentials bind \
+                 {} <host>`",
+                display::sanitize(&name),
+                display::sanitize(&name)
+            ),
+            1 => {}
+            n => println!(
+                "note: '{}' is shared, so all {n} hosts using it now authenticate with this \
+                 password",
+                display::sanitize(&name)
+            ),
+        }
+    }
     Ok(())
 }
 
@@ -650,7 +782,7 @@ fn cmd_print_command(host_ref: &str) -> Result<()> {
     // Resolve the secret exactly as connect does, so the printed command is the one sshelf
     // would run (a stored secret changes how a jump host is expressed).
     let host = host.with_site_defaults(&file.sites);
-    let has_secret = secrets::get_password(&paths.vault_file(), &host.id)
+    let has_secret = secrets::get_password(&paths.vault_file(), &host.secret_key())
         .ok()
         .flatten()
         .is_some();
@@ -1028,7 +1160,283 @@ fn ssh_version() -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn cmd_sites(action: Option<SitesAction>) -> Result<()> {
+fn cmd_credentials(action: Option<CredentialsAction>, json: bool) -> Result<()> {
+    match action {
+        Some(CredentialsAction::List { json }) => cmd_credentials_list(json),
+        None => cmd_credentials_list(json),
+        Some(CredentialsAction::Add { name, note }) => cmd_credentials_add(name, note),
+        Some(CredentialsAction::Rm { name, force }) => cmd_credentials_rm(name, force),
+        Some(CredentialsAction::Bind { name, hosts }) => cmd_credentials_bind(Some(name), hosts),
+        Some(CredentialsAction::Unbind { hosts }) => cmd_credentials_bind(None, hosts),
+    }
+}
+
+/// One row per credential: who uses it, and whether its secret is actually there. A credential
+/// with hosts but no stored secret is the state that makes every one of those hosts prompt, so
+/// it is worth seeing at a glance.
+fn cmd_credentials_list(json: bool) -> Result<()> {
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let file = store::load_hosts(&cfg.hosts_path(&paths))?;
+    let vault = paths.vault_file();
+    let stored = |key: &str| secrets::get_password(&vault, key).ok().flatten().is_some();
+
+    // Names a host points at with no `[[credential]]` entry: still resolved, so listed too.
+    let undeclared = file.undeclared_credentials();
+    if json {
+        #[derive(Serialize)]
+        struct Row<'a> {
+            name: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            source: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            note: Option<&'a str>,
+            hosts: Vec<&'a str>,
+            secret_stored: bool,
+            declared: bool,
+        }
+        let mut rows: Vec<Row> = file
+            .credentials
+            .iter()
+            .map(|c| Row {
+                name: &c.name,
+                source: c.source.as_deref(),
+                note: c.note.as_deref(),
+                hosts: file
+                    .hosts_using(&c.name)
+                    .iter()
+                    .map(|h| h.name.as_str())
+                    .collect(),
+                secret_stored: stored(&c.secret_key()),
+                declared: true,
+            })
+            .collect();
+        for name in &undeclared {
+            rows.push(Row {
+                name,
+                source: None,
+                note: None,
+                hosts: file
+                    .hosts_using(name)
+                    .iter()
+                    .map(|h| h.name.as_str())
+                    .collect(),
+                secret_stored: stored(&model::credential_secret_key(name)),
+                declared: false,
+            });
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).context("serializing credentials to JSON")?
+        );
+        return Ok(());
+    }
+
+    if file.credentials.is_empty() && undeclared.is_empty() {
+        println!(
+            "No shared credentials yet. Define one with `sshelf credentials add <name>`, then \
+             bind hosts to it with `sshelf credentials bind <name> <host>...` (or mark hosts in \
+             the TUI with ^s and press ^k)."
+        );
+        return Ok(());
+    }
+    for c in &file.credentials {
+        let used = file.hosts_using(&c.name).len();
+        let secret = if stored(&c.secret_key()) {
+            "secret stored"
+        } else {
+            "no secret yet"
+        };
+        let note = c.note.as_deref().unwrap_or("");
+        println!(
+            "{:<24}  {} host(s)  {:<14}  {}",
+            display::sanitize(&c.name),
+            used,
+            secret,
+            display::sanitize(note)
+        );
+    }
+    for name in &undeclared {
+        println!(
+            "{:<24}  {} host(s)  {:<14}  (used by a host, not declared; add it with `sshelf \
+             credentials add {}`)",
+            display::sanitize(name),
+            file.hosts_using(name).len(),
+            if stored(&model::credential_secret_key(name)) {
+                "secret stored"
+            } else {
+                "no secret yet"
+            },
+            display::sanitize(name)
+        );
+    }
+    Ok(())
+}
+
+fn cmd_credentials_add(name: String, note: Option<String>) -> Result<()> {
+    let name = model::validate_credential_name(&name).map_err(|e| anyhow::anyhow!(e))?;
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts_path = cfg.hosts_path(&paths);
+    let (mut file, rev) = store::load_hosts_stamped(&hosts_path)?;
+    if model::find_credential(&file.credentials, &name).is_some() {
+        anyhow::bail!(
+            "a credential named '{}' already exists — `sshelf credentials` lists them",
+            display::sanitize(&name)
+        );
+    }
+    let mut cred = model::Credential::new(&name);
+    cred.note = note;
+    file.credentials.push(cred);
+    store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
+    let name = display::sanitize(&name);
+    println!("added credential '{name}'");
+    println!(
+        "next: `printf %s \"$PASS\" | sshelf set-password --credential {name}`, then bind hosts \
+         with `sshelf credentials bind {name} <host>...`"
+    );
+    Ok(())
+}
+
+fn cmd_credentials_rm(name: String, force: bool) -> Result<()> {
+    let name = model::validate_credential_name(&name).map_err(|e| anyhow::anyhow!(e))?;
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts_path = cfg.hosts_path(&paths);
+    let (mut file, rev) = store::load_hosts_stamped(&hosts_path)?;
+
+    let users: Vec<String> = file
+        .hosts_using(&name)
+        .iter()
+        .map(|h| display::sanitize(&h.name))
+        .collect();
+    if !users.is_empty() && !force {
+        anyhow::bail!(
+            "{} host(s) still use '{}' ({}) — unbind them first, or pass --force to unbind them \
+             and remove it",
+            users.len(),
+            display::sanitize(&name),
+            users.join(", ")
+        );
+    }
+    let declared = model::find_credential(&file.credentials, &name).is_some();
+    if !declared && users.is_empty() {
+        anyhow::bail!(
+            "no credential named '{}' — `sshelf credentials` lists them",
+            display::sanitize(&name)
+        );
+    }
+    let unbound = users.len();
+    for h in &mut file.hosts {
+        if h.credential
+            .as_deref()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&name))
+        {
+            h.credential = None;
+        }
+    }
+    file.credentials
+        .retain(|c| !c.name.eq_ignore_ascii_case(&name));
+    store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
+
+    // The definition is gone, so its secret can never be reached again: remove it rather than
+    // leaving an unreferenced value in the keyring (`doctor` would report it as an orphan).
+    let key = model::credential_secret_key(&name);
+    if let Err(e) = secrets::delete_password(&paths.vault_file(), &key) {
+        eprintln!("sshelf: warning: could not delete the stored secret: {e:#}");
+    }
+    println!(
+        "removed credential '{}'{}",
+        display::sanitize(&name),
+        match unbound {
+            0 => String::new(),
+            n => format!(
+                " ({n} host(s) now have their own secret again, and will ask on the next connect)"
+            ),
+        }
+    );
+    Ok(())
+}
+
+/// Bind hosts to a credential, or unbind them when `name` is `None`.
+fn cmd_credentials_bind(name: Option<String>, host_refs: Vec<String>) -> Result<()> {
+    let name = match name {
+        Some(n) => Some(model::validate_credential_name(&n).map_err(|e| anyhow::anyhow!(e))?),
+        None => None,
+    };
+    let paths = Paths::resolve()?;
+    paths.ensure_dirs()?;
+    let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
+    let cfg = Config::load(&paths.config_file())?;
+    let hosts_path = cfg.hosts_path(&paths);
+    let (mut file, rev) = store::load_hosts_stamped(&hosts_path)?;
+
+    // Resolve every host first: a half-applied bind is worse than none.
+    let mut idxs: Vec<usize> = Vec::new();
+    for r in &host_refs {
+        let idx = file
+            .hosts
+            .iter()
+            .position(|h| h.id == *r || h.name == *r)
+            .with_context(|| {
+                format!(
+                    "no host with name or id '{}' — run `sshelf list` to see your hosts",
+                    display::sanitize(r)
+                )
+            })?;
+        if !idxs.contains(&idx) {
+            idxs.push(idx);
+        }
+    }
+    for &i in &idxs {
+        file.hosts[i].credential = name.clone();
+    }
+    store::save_hosts_if_unchanged(&hosts_path, &file, rev.as_ref())?;
+
+    match &name {
+        Some(name) => {
+            let key = model::credential_secret_key(name);
+            let have = secrets::get_password(&paths.vault_file(), &key)
+                .ok()
+                .flatten()
+                .is_some();
+            println!(
+                "bound {} host(s) to '{}'",
+                idxs.len(),
+                display::sanitize(name)
+            );
+            if !have {
+                println!(
+                    "note: nothing stored for '{}' yet — set it with `printf %s \"$PASS\" | \
+                     sshelf set-password --credential {}`, or let the first connect ask",
+                    display::sanitize(name),
+                    display::sanitize(name)
+                );
+            }
+            if model::find_credential(&file.credentials, name).is_none() {
+                println!(
+                    "note: '{}' has no [[credential]] entry; it still works, and `sshelf \
+                     credentials add {}` records it",
+                    display::sanitize(name),
+                    display::sanitize(name)
+                );
+            }
+        }
+        None => println!(
+            "unbound {} host(s) — each has its own secret again, and will ask on the next connect",
+            idxs.len()
+        ),
+    }
+    Ok(())
+}
+
+fn cmd_sites(action: Option<SitesAction>, json: bool) -> Result<()> {
     match action {
         Some(SitesAction::Add {
             name,
@@ -1038,7 +1446,7 @@ fn cmd_sites(action: Option<SitesAction>) -> Result<()> {
             identity_files,
         }) => cmd_sites_add(name, user, port, jump_hosts, identity_files),
         Some(SitesAction::List { json }) => cmd_sites_list(json),
-        None => cmd_sites_list(false),
+        None => cmd_sites_list(json),
     }
 }
 
@@ -1132,7 +1540,7 @@ fn cmd_sites_add(
 }
 
 /// Connect directly to a host by name or id, skipping the TUI.
-fn cmd_connect(host_ref: &str) -> Result<()> {
+fn cmd_connect(host_ref: &str, remote: &ssh::RemoteCommand) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
@@ -1163,11 +1571,11 @@ fn cmd_connect(host_ref: &str) -> Result<()> {
             names.join(", ")
         );
     };
-    connect(&host.with_site_defaults(&sites), &paths)
+    connect(&host.with_site_defaults(&sites), &paths, remote)
 }
 
 /// Reconnect to the most-recently-used host (`sshelf -`).
-fn cmd_connect_last() -> Result<()> {
+fn cmd_connect_last(remote: &ssh::RemoteCommand) -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let _ = Config::ensure_default_file(&paths.config_file()); // best-effort
@@ -1182,17 +1590,17 @@ fn cmd_connect_last() -> Result<()> {
         .find(|h| h.id == id)
         .cloned()
         .context("the last-used host is no longer in your list — run `sshelf list`")?;
-    connect(&host.with_site_defaults(&file.sites), &paths)
+    connect(&host.with_site_defaults(&file.sites), &paths, remote)
 }
 
 /// Record frecency BEFORE `exec()` (nothing runs after a successful exec), then hand over.
-fn connect(host: &Host, paths: &Paths) -> Result<()> {
+fn connect(host: &Host, paths: &Paths, remote: &ssh::RemoteCommand) -> Result<()> {
     let mut st = FrecencyState::load(&paths.state_file())?;
     st.record_use(&host.id);
     if let Err(e) = st.save(&paths.state_file()) {
         eprintln!("sshelf: warning: could not save state: {e:#}");
     }
-    Err(handoff(host, paths, None))
+    Err(handoff(host, paths, None, remote))
 }
 
 /// Everything between the frecency save and the `exec()`, shared by `sshelf <host>` and the TUI
@@ -1203,8 +1611,13 @@ fn connect(host: &Host, paths: &Paths) -> Result<()> {
 /// `popup_code` is a code the TUI already collected. Without one, a `requires_2fa` host is asked
 /// on the terminal, after the secret, because the code is the one that goes stale. Returns only
 /// on failure; a cancel, or a first secret that did not work, ends the process.
-fn handoff(host: &Host, paths: &Paths, popup_code: Option<Zeroizing<String>>) -> anyhow::Error {
-    let stored = secrets::get_password(&paths.vault_file(), &host.id)
+fn handoff(
+    host: &Host,
+    paths: &Paths,
+    popup_code: Option<Zeroizing<String>>,
+    remote: &ssh::RemoteCommand,
+) -> anyhow::Error {
+    let stored = secrets::get_password(&paths.vault_file(), &host.secret_key())
         .ok()
         .flatten()
         .is_some();
@@ -1227,7 +1640,12 @@ fn handoff(host: &Host, paths: &Paths, popup_code: Option<Zeroizing<String>>) ->
     }
     // Replaces this process on success; returns only on failure. The code stays in its
     // zeroizing buffer right up to the handoff.
-    ssh::exec_connect(host, has_secret, code.as_deref().map(String::as_str))
+    ssh::exec_connect(
+        host,
+        has_secret,
+        code.as_deref().map(String::as_str),
+        remote,
+    )
 }
 
 /// Back out of a prompt without connecting. In raw mode Ctrl-C is a key press, not a signal, so
@@ -1289,7 +1707,7 @@ fn capture_first_secret(host: &Host, paths: &Paths) -> bool {
 
     let name = display::sanitize(&host.name);
     let vault = paths.vault_file();
-    if let Err(e) = secrets::store_password(&vault, &host.id, &secret) {
+    if let Err(e) = secrets::store_password(&vault, &host.secret_key(), &secret) {
         eprintln!(
             "sshelf: could not save the {kind}: {}; connecting without it",
             display::error_line(&format!("{e:#}"))
@@ -1329,7 +1747,7 @@ fn capture_first_secret(host: &Host, paths: &Paths) -> bool {
             )
         }
     };
-    match secrets::delete_password(&vault, &host.id) {
+    match secrets::delete_password(&vault, &host.secret_key()) {
         Ok(()) => eprintln!("{failure}; nothing saved"),
         Err(e) => eprintln!(
             "{failure}, and removing it again failed: {}; replace it with sshelf set-password {name}",
@@ -2103,7 +2521,10 @@ mod tests {
     #[test]
     fn sites_subcommand_parses() {
         let c = Cli::try_parse_from(["sshelf", "sites"]).unwrap();
-        assert!(matches!(c.command, Some(Command::Sites { action: None })));
+        assert!(matches!(
+            c.command,
+            Some(Command::Sites { action: None, .. })
+        ));
 
         let c = Cli::try_parse_from([
             "sshelf", "sites", "add", "dc1", "-u", "deploy", "-J", "b1,b2",
@@ -2111,6 +2532,7 @@ mod tests {
         .unwrap();
         match c.command {
             Some(Command::Sites {
+                json: _,
                 action:
                     Some(SitesAction::Add {
                         name,

@@ -242,6 +242,29 @@ impl Server {
         self.run(self.sshelf().arg(host), stdin)
     }
 
+    /// `sshelf <host> -- <argv...>`, with the remote command's stdout captured.
+    fn remote(&self, host: &str, argv: &[&str], stdin: &str) -> (Run, String) {
+        let mut cmd = self.sshelf();
+        cmd.arg(host).arg("--").args(argv);
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(stdin.as_bytes()).unwrap();
+        drop(input);
+        let out = child.wait_with_output().unwrap();
+        (
+            Run {
+                code: out.status.code(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            },
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    }
+
     fn set_password(&self, host: &str, secret: &str) {
         let run = self.run(
             self.sshelf().args(["set-password", host]),
@@ -545,4 +568,72 @@ fn a_refused_stored_password_says_so_and_stays() {
         s.stored_password("test-pwhost").as_deref(),
         Some("stale-password")
     );
+}
+
+#[test]
+#[ignore = "spawns a real sshd + ssh; run with `cargo test -- --ignored`"]
+fn a_remote_command_runs_and_returns_its_own_exit_status() {
+    let s = server!("unused-g");
+    // A key host, so nothing has to be typed.
+    let (run, stdout) = s.remote("plainbox", &["echo", "REMOTE-OK"], "");
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(stdout.contains("REMOTE-OK"), "stdout was {stdout:?}");
+
+    // The remote command's status is the process's status, not a generic failure. ssh joins the
+    // words with spaces and the login shell re-splits them, so `-- "exit 7"` is one command,
+    // the same as `ssh host 'exit 7'`.
+    let (run, _) = s.remote("plainbox", &["exit 7"], "");
+    assert_eq!(run.code, Some(7), "{}", run.stderr);
+
+    let (run, _) = s.remote("plainbox", &["false"], "");
+    assert_eq!(run.code, Some(1), "{}", run.stderr);
+}
+
+#[test]
+#[ignore = "spawns a real sshd + ssh; run with `cargo test -- --ignored`"]
+fn a_remote_command_on_a_password_host_rides_the_stored_secret() {
+    let s = server!("unused-h");
+    s.set_password("pwbox", "not-the-account-password");
+    // Without a real account password the login cannot succeed, so this asserts the one thing
+    // that is testable everywhere: the askpass helper was wired and ssh did not stop to ask on
+    // the terminal (which would hang instead of returning).
+    let (run, _) = s.remote("pwbox", &["true"], "");
+    assert!(
+        run.code.is_some(),
+        "the connect must not hang: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("Password for"),
+        "a stored secret must not be re-asked: {}",
+        run.stderr
+    );
+}
+
+#[test]
+#[ignore = "spawns a real sshd + ssh; run with `cargo test -- --ignored`"]
+fn a_shared_credential_logs_in_for_every_bound_host() {
+    const PASSPHRASE: &str = "shared-credential-passphrase";
+    let s = server!(PASSPHRASE);
+    // Bind two key hosts to one credential: the key itself gets them in, and the point here is
+    // that binding does not break a connect that never needed a secret.
+    let run = s.run(
+        s.sshelf()
+            .args(["credentials", "bind", "corp", "plainbox", "lockedbox"]),
+        "",
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let run = s.connect("plainbox", "");
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+
+    // The locked key's passphrase is asked for once and stored under the shared name, so the
+    // helper finds it there rather than under the host id.
+    let run = s.connect("lockedbox", &format!("{PASSPHRASE}\n"));
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(
+        s.stored_passphrase("credential:corp").as_deref(),
+        Some(PASSPHRASE),
+        "stored under the credential, not the host"
+    );
+    assert_eq!(s.stored_passphrase("test-lockedkey"), None);
 }

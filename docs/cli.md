@@ -17,7 +17,14 @@ Everything sshelf does without opening the TUI.
 | `sshelf import [--dry-run]` | [Read-only import](import.md) from `~/.ssh/config`. |
 | `sshelf import --tailscale [--dry-run]` | [Import your Tailscale tailnet](import.md#from-tailscale): runs your own `tailscale status --json` and adds every eligible peer (MagicDNS name → host, tailnet → site, ACL tags → tags). Add-only; re-running adds 0. |
 | `sshelf export [--stdout]` | [Export](export.md) the database as an ssh_config `Include` fragment, written next to sshelf's config (`--stdout` prints it instead). Once the file exists, it refreshes on every hosts change. |
-| `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. |
+| `sshelf <host> -- CMD ...` | Run a command on the host instead of opening a shell, then exit with the command's own status. Same connect path as `sshelf <host>` (frecency, stored secret, first-connect capture). `--` is required; add `-t` for a pty. See [below](#running-one-command). |
+| `sshelf set-password <host>` | Store a password / key passphrase for a host, read from **stdin**. A host on a [shared credential](passwords-2fa.md#one-password-for-many-hosts) sets that credential, for every host using it, and says so. |
+| `sshelf set-password --credential NAME` | Store the secret for a shared credential, read from **stdin**. |
+| `sshelf credentials [--json]` | List [shared credentials](passwords-2fa.md#one-password-for-many-hosts): how many hosts use each, whether a secret is stored, and the note. |
+| `sshelf credentials add NAME [--note TEXT]` | Define a credential. Names are lower-cased; letters, digits, `-`, `_` and `.`. |
+| `sshelf credentials bind NAME HOST ...` | Point hosts at a credential, so one stored secret serves all of them. |
+| `sshelf credentials unbind HOST ...` | Give hosts their own secret again. The credential is left alone. |
+| `sshelf credentials rm NAME [--force]` | Remove a credential. Refused while hosts still use it; `--force` unbinds them first. The stored secret is deleted either way. |
 | `sshelf doctor` | [Check this machine and your host database](doctor.md): the OpenSSH version, the secret backend, dangling site references, a stale export, a missing ssh-agent. Local and read-only; it never contacts a host. **Exits 1** if any check failed (warnings don't). |
 | `sshelf completions <shell>` | Print static shell completions. |
 | `sshelf man` | Print the man page. |
@@ -29,7 +36,32 @@ transfer diagnostics, no secrets, to FILE (also `$SSHELF_TRANSFER_LOG`); see
 [Transferring files](transfer.md#debugging-a-failing-transfer).
 
 A host name and a subcommand can't be combined: `sshelf prod-web list` is refused rather than
-quietly running `list` and forgetting the host.
+quietly running `list` and forgetting the host. That is also why a remote command needs `--`:
+`sshelf prod-web -- list` runs `list` on the host.
+
+## Running one command
+
+```sh
+sshelf web-01 -- systemctl status nginx
+sshelf web-01 -- 'df -h | tail -5'
+sshelf web-01 -t -- htop
+```
+
+Everything after `--` is the command. sshelf passes it to ssh unchanged, which means the usual
+ssh quoting rule applies: **ssh joins the words with spaces and the login shell on the host
+splits them again**. So `-- 'exit 7'` is one command and exits 7, while `-- sh -c 'exit 7'`
+arrives as `sh -c exit 7` and exits 0. Quote the way you would for `ssh`.
+
+Notes:
+
+- The exit status is the remote command's own. 255 still means ssh itself failed.
+- No pty is allocated, like `ssh host cmd`. Pass `-t` for anything full-screen, or anything that
+  asks a question (`sudo` without `-n` will otherwise wait until it times out).
+- It runs **here**, never in a tmux window, even with [tmux mode](configuration.md) on: a
+  one-shot command is not a session to keep.
+- The command reaches only this connect. It is never added to a host, never seen by the
+  [transfer screen](transfer.md), the [forward builder](port-forwarding.md) or
+  [`sshelf export`](export.md), and never written to `hosts.toml`.
 
 `sshelf <host>` can ask up to two things on the terminal before it hands over to ssh. A host with
 nothing stored asks for its password or key passphrase and saves it once a throwaway login proves

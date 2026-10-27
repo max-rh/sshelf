@@ -65,6 +65,13 @@ Auth-specific fields:
 | `key` | **Key**: `←`/`→` cycles private keys found in `~/.ssh`; `Enter` opens a file browser to pick a key anywhere. **Key passphrase**: optional, only if the key is encrypted |
 | `password` | **Password**: stored in the OS keyring / vault, never in a file |
 
+A host can also read its secret from a
+[shared credential](passwords-2fa.md#one-password-for-many-hosts) instead of keeping its own, so
+one password can serve a whole group and rotate in one place. That binding is made from the list
+(`^s` to mark hosts, `^k` to apply) or with `sshelf credentials bind`, not in this form. The
+list shows it as a dim `@name` after the row, and the form's Password field then writes the
+shared value.
+
 Key discovery finds keypairs (a `.pub` sibling) **and** standalone private keys including
 `.pem` (detected by their `PRIVATE KEY` header), so AWS-style keys show up too.
 

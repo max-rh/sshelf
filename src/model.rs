@@ -28,6 +28,77 @@ impl AuthMethod {
     }
 }
 
+/// Prefix for the secret-store key of a named [`Credential`]. Host ids are bare ULIDs
+/// (Crockford base32, no colon), so a prefixed name can never collide with one — which is why
+/// per-host secrets saved by earlier versions keep working untouched.
+pub const CREDENTIAL_KEY_PREFIX: &str = "credential:";
+
+/// One secret shared by any number of hosts, under a name the user picks.
+///
+/// The value still lives in the keyring or the vault, never here (same invariant as a host's
+/// own password). This table only records that the name exists and where its value comes from,
+/// so one directory password can serve a whole fleet and rotate in one place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Credential {
+    /// The name hosts reference (see [`Host::credential`]). Lower-case, `[a-z0-9._-]`.
+    pub name: String,
+    /// Where the value comes from. `None` means sshelf's own store (keyring or vault), which is
+    /// the only source this version resolves; the field exists so an external source can be
+    /// added without a schema change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// What this credential is for, shown in listings. Never the secret itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl Credential {
+    pub fn new(name: impl Into<String>) -> Self {
+        Credential {
+            name: name.into(),
+            source: None,
+            note: None,
+        }
+    }
+
+    /// The key this credential's value is stored under.
+    pub fn secret_key(&self) -> String {
+        credential_secret_key(&self.name)
+    }
+}
+
+/// The secret-store key for a credential name.
+pub fn credential_secret_key(name: &str) -> String {
+    format!("{CREDENTIAL_KEY_PREFIX}{}", name.to_ascii_lowercase())
+}
+
+/// Credential names are keys in the secret store (and in the macOS keychain's visible account
+/// field), so they are kept to a predictable charset rather than accepting anything.
+pub fn validate_credential_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a credential name cannot be empty".to_string());
+    }
+    if name.len() > 64 {
+        return Err("a credential name is at most 64 characters".to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "'{name}' has characters a credential name cannot use; allowed: letters, digits, \
+             '-', '_' and '.'"
+        ));
+    }
+    Ok(name.to_ascii_lowercase())
+}
+
+/// Case-insensitive lookup of a credential by name.
+pub fn find_credential<'a>(creds: &'a [Credential], name: &str) -> Option<&'a Credential> {
+    creds.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+}
+
 /// A named grouping that may also carry optional shared SSH defaults its member hosts inherit
 /// at connect time. Every setting is optional — a bare site (name only) is pure grouping.
 /// Auth is **not** inheritable; it stays per-host.
@@ -100,6 +171,12 @@ pub struct Host {
     /// inherited defaults; an undefined name degrades to pure grouping (no inheritance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
+    /// The shared [`Credential`] this host's secret comes from, by name. When set, the secret
+    /// is looked up under that name instead of this host's id, so several hosts answer from one
+    /// stored value. A name with no `[[credential]]` entry still resolves (the table is
+    /// metadata, not the lookup), so a hand-edited file degrades gracefully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
     /// The login needs an interactive second factor (a keyboard-interactive verification code,
     /// e.g. TOTP). When set, connect prompts for the code first and supplies it to `ssh` via the
     /// askpass helper. Required because a connect that auto-supplies a stored secret runs with
@@ -127,8 +204,25 @@ impl Host {
             tags: Vec::new(),
             extra_args: None,
             site: None,
+            credential: None,
             requires_2fa: false,
         }
+    }
+
+    /// The key this host's secret is stored under: its shared [`Credential`] when it has one,
+    /// otherwise its own id. The only place that mapping is decided, so every caller (connect,
+    /// `set-password`, first connect, `doctor`) agrees without passing the credential list
+    /// around.
+    pub fn secret_key(&self) -> String {
+        match &self.credential {
+            Some(name) => credential_secret_key(name),
+            None => self.id.clone(),
+        }
+    }
+
+    /// True when this host's secret is shared with other hosts rather than its own.
+    pub fn shares_secret(&self) -> bool {
+        self.credential.is_some()
     }
 
     /// The user to connect as: the stored user, else `$USER`, else `"root"`.
@@ -206,21 +300,84 @@ impl Host {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostsFile {
     pub format_version: u32,
+    /// Shared secrets, by name. Declared before the hosts that reference them so the file
+    /// reads top-down when hand-edited.
+    #[serde(default, rename = "credential", skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<Credential>,
     #[serde(default, rename = "site", skip_serializing_if = "Vec::is_empty")]
     pub sites: Vec<Site>,
     #[serde(default, rename = "host", skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<Host>,
 }
 
+/// The version stamped on a file that uses nothing newer than the v1 feature set.
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
+
+/// The version a file must declare once it uses shared credentials.
+pub const CREDENTIALS_FORMAT_VERSION: u32 = 2;
+
+/// The newest version this build can read. A file declaring more is refused on load rather
+/// than parsed with its unknown parts dropped on the next save.
+pub const MAX_SUPPORTED_FORMAT_VERSION: u32 = CREDENTIALS_FORMAT_VERSION;
 
 impl Default for HostsFile {
     fn default() -> Self {
         HostsFile {
             format_version: CURRENT_FORMAT_VERSION,
+            credentials: Vec::new(),
             sites: Vec::new(),
             hosts: Vec::new(),
         }
+    }
+}
+
+impl HostsFile {
+    /// A file holding exactly these parts. The `format_version` is stamped on save, from
+    /// [`HostsFile::required_format_version`], so no caller has to pick one.
+    pub fn with_parts(credentials: Vec<Credential>, sites: Vec<Site>, hosts: Vec<Host>) -> Self {
+        HostsFile {
+            format_version: CURRENT_FORMAT_VERSION,
+            credentials,
+            sites,
+            hosts,
+        }
+    }
+
+    /// The lowest `format_version` that describes what this file actually contains. A database
+    /// with no shared credentials keeps declaring v1, so adopting 0.16 does not by itself make
+    /// a file that an older sshelf would refuse.
+    pub fn required_format_version(&self) -> u32 {
+        if self.credentials.is_empty() && self.hosts.iter().all(|h| h.credential.is_none()) {
+            CURRENT_FORMAT_VERSION
+        } else {
+            CREDENTIALS_FORMAT_VERSION
+        }
+    }
+
+    /// Every credential name referenced by a host but missing from the `[[credential]]` table.
+    /// These still resolve (the table is metadata), so this is a `doctor` warning, not an error.
+    pub fn undeclared_credentials(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for name in self.hosts.iter().filter_map(|h| h.credential.as_deref()) {
+            if find_credential(&self.credentials, name).is_none()
+                && !out.iter().any(|n| n.eq_ignore_ascii_case(name))
+            {
+                out.push(name.to_string());
+            }
+        }
+        out
+    }
+
+    /// Hosts bound to `name`, in file order.
+    pub fn hosts_using(&self, name: &str) -> Vec<&Host> {
+        self.hosts
+            .iter()
+            .filter(|h| {
+                h.credential
+                    .as_deref()
+                    .is_some_and(|c| c.eq_ignore_ascii_case(name))
+            })
+            .collect()
     }
 }
 
@@ -327,5 +484,92 @@ mod tests {
         own.site = Some("prod".into());
         own.user = Some("mike".into());
         assert_eq!(own.endpoint_in(&sites), "mike@10.0.0.2:2222");
+    }
+
+    #[test]
+    fn an_unbound_host_keeps_keying_its_secret_on_its_own_id() {
+        let h = Host::new("web", "10.0.0.1");
+        assert_eq!(h.secret_key(), h.id);
+        assert!(!h.shares_secret());
+        // The bare id is what every released version stored under, so nothing migrates.
+        assert!(!h.secret_key().contains(':'));
+    }
+
+    #[test]
+    fn a_bound_host_keys_its_secret_on_the_credential() {
+        let mut h = Host::new("web", "10.0.0.1");
+        h.credential = Some("Corp-LDAP".into());
+        assert_eq!(h.secret_key(), "credential:corp-ldap");
+        assert!(h.shares_secret());
+        // Two hosts, one key: that is the whole point.
+        let mut other = Host::new("db", "10.0.0.2");
+        other.credential = Some("corp-ldap".into());
+        assert_eq!(h.secret_key(), other.secret_key());
+    }
+
+    #[test]
+    fn site_defaults_never_change_where_the_secret_lives() {
+        let mut h = Host::new("web", "10.0.0.1");
+        h.credential = Some("corp-ldap".into());
+        h.site = Some("prod".into());
+        let resolved = h.with_site_defaults(&[prod_site()]);
+        assert_eq!(resolved.secret_key(), h.secret_key());
+    }
+
+    #[test]
+    fn credential_names_are_checked_and_lowercased() {
+        assert_eq!(
+            validate_credential_name("  Corp-LDAP "),
+            Ok("corp-ldap".into())
+        );
+        assert_eq!(validate_credential_name("a.b_c-1"), Ok("a.b_c-1".into()));
+        assert!(validate_credential_name("").is_err());
+        assert!(validate_credential_name("corp ldap").is_err(), "no spaces");
+        assert!(validate_credential_name("corp:ldap").is_err(), "no colon");
+        assert!(validate_credential_name("corp/ldap").is_err());
+        assert!(validate_credential_name(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn a_credential_name_can_never_collide_with_a_host_id() {
+        // A ULID has no colon, and the prefix always does.
+        let h = Host::new("web", "10.0.0.1");
+        assert_ne!(credential_secret_key(&h.id), h.id);
+        assert!(credential_secret_key("anything").starts_with(CREDENTIAL_KEY_PREFIX));
+    }
+
+    #[test]
+    fn the_format_version_rises_only_when_credentials_are_used() {
+        let mut file =
+            HostsFile::with_parts(Vec::new(), Vec::new(), vec![Host::new("w", "1.1.1.1")]);
+        assert_eq!(file.required_format_version(), CURRENT_FORMAT_VERSION);
+
+        // A bound host is enough on its own.
+        file.hosts[0].credential = Some("corp".into());
+        assert_eq!(file.required_format_version(), CREDENTIALS_FORMAT_VERSION);
+
+        // So is a declaration with nothing bound to it yet.
+        let declared = HostsFile::with_parts(vec![Credential::new("corp")], Vec::new(), Vec::new());
+        assert_eq!(
+            declared.required_format_version(),
+            CREDENTIALS_FORMAT_VERSION
+        );
+    }
+
+    #[test]
+    fn a_used_but_undeclared_credential_is_reported_once() {
+        let mut a = Host::new("a", "1.1.1.1");
+        a.credential = Some("corp-ldap".into());
+        let mut b = Host::new("b", "1.1.1.2");
+        b.credential = Some("CORP-LDAP".into());
+        let mut c = Host::new("c", "1.1.1.3");
+        c.credential = Some("other".into());
+        let file = HostsFile::with_parts(vec![Credential::new("other")], Vec::new(), vec![a, b, c]);
+
+        assert_eq!(file.undeclared_credentials(), vec!["corp-ldap".to_string()]);
+        // Case-insensitive on the way in, so both hosts count as users.
+        assert_eq!(file.hosts_using("corp-ldap").len(), 2);
+        assert_eq!(file.hosts_using("Other").len(), 1);
+        assert_eq!(file.hosts_using("nobody").len(), 0);
     }
 }

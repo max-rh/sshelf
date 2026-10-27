@@ -2,6 +2,7 @@
 //! ratatui's `TestBackend` (no real terminal needed).
 
 mod browse;
+pub(crate) mod bulk_secret;
 pub(crate) mod forward_popup;
 pub(crate) mod forwards;
 mod help;
@@ -100,6 +101,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if let Some(p) = &app.two_factor {
         two_factor::render(frame, p);
+        return;
+    }
+    if let Some(p) = &app.bulk_secret {
+        // Over the list rather than instead of it: the marked rows are the context for what
+        // this is about to do.
+        list::render(frame, app);
+        bulk_secret::render(frame, p);
         return;
     }
     list::render(frame, app);

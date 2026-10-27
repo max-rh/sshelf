@@ -79,6 +79,14 @@ opening the TUI.
 
 ![The sshelf launcher filtering three hosts as you type](docs/assets/launcher.png)
 
+### One password for a whole group
+
+Hosts that share a login password can share one stored secret: name it once, point them at it,
+and rotating it is a single write instead of one per host. `Ctrl-s` marks hosts in the list and
+`Ctrl-k` applies a password to all of them, or binds them to a shared credential. The password
+still lives in your keyring or vault, and `hosts.toml` holds only the name.
+[Passwords, keys & 2FA](https://max-rh.github.io/sshelf/passwords-2fa.html).
+
 ### It `exec()`s into your `ssh`
 
 sshelf builds the argv from the host record, tears its own UI down, and then *replaces itself*
@@ -209,6 +217,7 @@ sshelf import                        # ...do it
 sshelf import --tailscale            # ...or import your whole Tailscale tailnet
 sshelf add --from-ssh "$(fc -ln -1)" # save the ssh command you just ran as a host
 sshelf prod-web                      # connect straight to a saved host (skips the TUI)
+sshelf prod-web -- systemctl status nginx  # run one command there and exit with its status
 sshelf -                             # reconnect to the most recently used host
 sshelf list tag:prod --json          # scriptable listing (fields + the ssh command)
 sshelf print-command db              # print the ssh command instead of running it

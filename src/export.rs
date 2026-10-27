@@ -204,11 +204,7 @@ mod tests {
     use crate::model::Site;
 
     fn file_with(hosts: Vec<Host>, sites: Vec<Site>) -> HostsFile {
-        HostsFile {
-            format_version: crate::model::CURRENT_FORMAT_VERSION,
-            sites,
-            hosts,
-        }
+        HostsFile::with_parts(Vec::new(), sites, hosts)
     }
 
     #[test]

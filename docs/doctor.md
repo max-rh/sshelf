@@ -55,7 +55,10 @@ Two notes on the edges:
 - Orphaned secrets can only be found in vault mode. The OS keyring offers no portable way to
   list what's in it, so the check says it didn't run rather than reporting a clean bill of
   health nobody checked. In [vault mode](passwords-2fa.md#where-secrets-live) the vault is a map
-  sshelf owns, so the ids are right there.
+  sshelf owns, so the ids are right there. Both key shapes count as known: a host's own id, and
+  `credential:<name>` for a [shared credential](passwords-2fa.md#one-password-for-many-hosts)
+  that is either declared or still bound. So a credential nobody uses any more is reported,
+  while one declared but not yet populated is not.
 
 ## What it does *not* do
 

@@ -16,7 +16,8 @@ Each host uses one auth method, chosen in the [add/edit form](hosts.md):
 ## Where secrets live
 
 - The OS keyring (default): macOS Keychain, or the Secret Service on Linux (GNOME Keyring /
-  KWallet). Service `sshelf`, keyed by host id.
+  KWallet). Service `sshelf`, keyed by host id, or by `credential:<name>` for a
+  [shared credential](#one-password-for-many-hosts).
 - The age vault (headless): if `SSHELF_VAULT_PASSPHRASE` is set, secrets go to an
   `age`-encrypted file (`vault.age`, mode `0600`) instead, which is the path for servers and
   CI with no keyring daemon. The tradeoffs are documented in [Security](security.md).
@@ -45,7 +46,71 @@ echo "$PASS" | sshelf set-password prod-db        # store or replace after the f
 echo "$PASS" | sshelf add legacy -H 10.0.0.9 -u root --password-stdin
 ```
 
-Deleting a host removes its stored secret too.
+Deleting a host removes its stored secret too, unless it was reading from a shared credential:
+the other hosts on that credential still need it.
+
+## One password for many hosts
+
+When a set of hosts shares one login password (a directory password, an appliance fleet, a lab
+full of identical boxes), storing it per host means retyping it once per host and again on every
+rotation. A **credential** is that one secret, under a name, with hosts pointing at it:
+
+```toml
+format_version = 2
+
+[[credential]]
+name = "corp-ldap"
+note = "the directory password"
+
+[[host]]
+name = "web-01"
+hostname = "10.0.0.1"
+auth = "password"
+credential = "corp-ldap"
+```
+
+The file holds the pointer, never the secret, exactly as before. The secret lives in the keyring
+or the vault under `credential:corp-ldap`, and every host bound to that name authenticates from
+it. Rotating is one write:
+
+```sh
+printf %s "$PASS" | sshelf set-password --credential corp-ldap
+```
+
+From the CLI:
+
+```sh
+sshelf credentials add corp-ldap --note "the directory password"
+sshelf credentials bind corp-ldap web-01 web-02 db-01
+sshelf credentials                       # who uses what, and whether a secret is stored
+sshelf credentials unbind web-02         # back to its own secret
+```
+
+In the TUI, `^s` marks hosts (the marked rows show a `◼`), and `^k` opens the credentials popup
+for them. With nothing marked it acts on whatever the filter is showing, so `tag:prod` then `^k`
+covers a whole group. The popup does three things:
+
+One password, stored per host: the same value, written separately for each host. Hosts that
+already have a secret are skipped by default, because replacing one is unrecoverable. `^r` turns
+replacing on, and the count is on screen either way.
+
+Shared credential: bind them all to a name and optionally set its secret. Leaving the password
+field empty binds without touching a stored value.
+
+Unbind: back to per-host secrets, with the credential itself kept.
+
+A bulk write is **not checked against the hosts** (proving N secrets would mean N logins), so a
+wrong one surfaces on that host's next connect with the usual
+[refusal message](#when-a-stored-secret-is-wrong). The one-host path still checks, because it
+can. Setting a password on a host that is bound updates the shared credential, and both the CLI
+and the status line say how many hosts that affects.
+
+Naming a credential no host has declared still works: the `[[credential]]` table is metadata
+(the note, and later where the value comes from), not the lookup. `sshelf credentials` flags
+one as undeclared so a typo is visible rather than silent.
+
+A file that uses credentials declares `format_version = 2`. A file that does not keeps
+declaring 1, so adopting 0.16 does not by itself produce a file an older sshelf would refuse.
 
 ## Saving the secret on first connect
 
@@ -152,6 +217,13 @@ connect, [above](#saving-the-secret-on-first-connect); a host that combines an e
   only answers a prompt that names one of the host's key files exactly. A passphrase for a key
   whose full path is longer than that can't be supplied, and the first connect doesn't ask for
   one. Keep that key in your agent, or move it somewhere with a shorter path.
+- A shared credential is one secret, so every host on it has to accept the same one. There is no
+  per-host override: a host that needs its own password is unbound instead.
+- sshelf 0.15.0 and earlier do not know the `credential` field or the `[[credential]]` table.
+  Running an older build against a file that uses them drops both on its next save, which
+  unbinds the hosts (their secrets survive, under the credential's key). 0.16.0 onwards refuses
+  to load a file that declares a newer `format_version` rather than rewriting it, so this is the
+  last version where that can happen.
 - Building from source on macOS: an unsigned binary may trigger a Keychain approval
   prompt on connect (Keychain ACLs are keyed to the code signature). See the
   [FAQ](faq.md#password-auto-supply-isnt-working).

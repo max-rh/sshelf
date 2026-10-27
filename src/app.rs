@@ -24,7 +24,7 @@ use crate::config::{Config, Tmux};
 use crate::first_connect::{self, Decision};
 use crate::forwards::{self, ForwardsState};
 use crate::import;
-use crate::model::{CURRENT_FORMAT_VERSION, Host, HostsFile, Site};
+use crate::model::{Credential, Host, HostsFile, Site};
 use crate::paths::Paths;
 use crate::search;
 use crate::secrets;
@@ -33,6 +33,7 @@ use crate::state::FrecencyState;
 use crate::store;
 use crate::transfer::{self, TransferOutcome};
 use crate::ui;
+use crate::ui::bulk_secret::{BulkOutcome, BulkRequest, BulkSecretPopup, Mode as BulkMode};
 use crate::ui::forward_popup::{ForwardPopup, ForwardPopupOutcome};
 use crate::ui::forwards::{ForwardsManager, ForwardsOutcome};
 use crate::ui::settings::{Settings, SettingsOutcome};
@@ -75,6 +76,12 @@ pub struct App {
     pub hosts: Vec<Host>,
     /// Defined sites (groups + optional inherited SSH defaults).
     pub sites: Vec<Site>,
+    /// Defined shared credentials (one secret, many hosts). Held so every save round-trips
+    /// them: `persist_hosts` rebuilds the whole file from these fields.
+    pub credentials: Vec<Credential>,
+    /// Hosts marked for a bulk action, by **id** rather than index, so filtering and
+    /// reordering the list cannot scramble the selection.
+    pub marked: Vec<String>,
     pub state: FrecencyState,
     pub config: Config,
     pub paths: Paths,
@@ -100,6 +107,8 @@ pub struct App {
     pub forwards_state: ForwardsState,
     /// The 2FA verification-code popup, shown before connecting to a `requires_2fa` host.
     pub two_factor: Option<TwoFactorPopup>,
+    /// The bulk-credentials popup (^k), when open.
+    pub bulk_secret: Option<BulkSecretPopup>,
     /// A one-time 2FA code collected for the pending connect; passed to `ssh` after teardown.
     /// Held zeroizing: it is a live secret from the moment it is typed until the handoff.
     pub pending_2fa_code: Option<zeroize::Zeroizing<String>>,
@@ -134,6 +143,8 @@ impl App {
         let mut app = App {
             hosts,
             sites,
+            credentials: Vec::new(),
+            marked: Vec::new(),
             state,
             config,
             paths,
@@ -150,6 +161,7 @@ impl App {
             forwards_manager: None,
             forwards_state: ForwardsState::default(),
             two_factor: None,
+            bulk_secret: None,
             pending_2fa_code: None,
             transfer: None,
             status: None,
@@ -209,11 +221,11 @@ impl App {
     }
 
     fn persist_hosts(&self) -> Result<()> {
-        let file = HostsFile {
-            format_version: CURRENT_FORMAT_VERSION,
-            sites: self.sites.clone(),
-            hosts: self.hosts.clone(),
-        };
+        let file = HostsFile::with_parts(
+            self.credentials.clone(),
+            self.sites.clone(),
+            self.hosts.clone(),
+        );
         store::save_hosts(&self.hosts_path, &file)?;
         // Best-effort: the ssh_config export is derived data — a refresh failure must never
         // block saving hosts (the next `sshelf export` run reports it).
@@ -260,6 +272,10 @@ impl App {
             self.on_key_two_factor(key);
             return Outcome::Continue;
         }
+        if self.bulk_secret.is_some() {
+            self.on_key_bulk_secret(key);
+            return Outcome::Continue;
+        }
         match self.screen {
             Screen::Help => {
                 self.screen = Screen::List;
@@ -275,6 +291,14 @@ impl App {
         match (key.code, ctrl) {
             (KeyCode::Char('c'), true) => return Outcome::Quit,
             (KeyCode::Esc, _) => {
+                // Marks first, then the query, then quit: esc always undoes the most recent
+                // thing, and a stray quit can never throw away a selection.
+                if !self.marked.is_empty() {
+                    let n = self.marked.len();
+                    self.marked.clear();
+                    self.set_status(format!("cleared {n} mark(s)"));
+                    return Outcome::Continue;
+                }
                 if self.query.is_empty() {
                     return Outcome::Quit;
                 }
@@ -321,6 +345,25 @@ impl App {
                     });
                 }
             }
+            (KeyCode::Char('s'), true) => match self.current() {
+                Some(i) => {
+                    let id = self.hosts[i].id.clone();
+                    match self.marked.iter().position(|m| *m == id) {
+                        Some(at) => {
+                            self.marked.remove(at);
+                        }
+                        None => self.marked.push(id),
+                    }
+                    let n = self.marked.len();
+                    self.set_status(match n {
+                        0 => "nothing marked".to_string(),
+                        1 => "1 host marked · ^k set credentials · esc clears".to_string(),
+                        n => format!("{n} hosts marked · ^k set credentials · esc clears"),
+                    });
+                }
+                None => self.set_status(NO_HOST_SELECTED),
+            },
+            (KeyCode::Char('k'), true) => self.open_bulk_secret(),
             (KeyCode::Char('o'), true) => self.import_ssh_config(),
             (KeyCode::Down, false) | (KeyCode::Char('n'), true) => self.move_down(),
             (KeyCode::Up, false) | (KeyCode::Char('p'), true) => self.move_up(),
@@ -501,11 +544,11 @@ impl App {
                         )),
                     }
                 } else {
-                    let file = HostsFile {
-                        format_version: CURRENT_FORMAT_VERSION,
-                        sites: self.sites.clone(),
-                        hosts: self.hosts.clone(),
-                    };
+                    let file = HostsFile::with_parts(
+                        self.credentials.clone(),
+                        self.sites.clone(),
+                        self.hosts.clone(),
+                    );
                     match store::save_hosts(&new_path, &file) {
                         Ok(()) => Ok(format!("hosts moved to {}", new_path.display())),
                         Err(e) => Err(format!(
@@ -523,11 +566,11 @@ impl App {
                         self.recompute();
                         // Adopting an existing file swapped the host set — keep the ssh_config
                         // export (if enabled) in step with it. Best-effort, like persist_hosts.
-                        let file = HostsFile {
-                            format_version: CURRENT_FORMAT_VERSION,
-                            sites: self.sites.clone(),
-                            hosts: self.hosts.clone(),
-                        };
+                        let file = HostsFile::with_parts(
+                            self.credentials.clone(),
+                            self.sites.clone(),
+                            self.hosts.clone(),
+                        );
                         let _ = crate::export::refresh_if_exported(&self.paths, &file);
                         match self.config.save(&self.paths.config_file()) {
                             Ok(()) => self.set_status(format!("settings saved · {msg}")),
@@ -550,10 +593,13 @@ impl App {
             return;
         }
         if let Some(c) = confirm {
+            let own_secret = own_secret_key(&self.hosts, &c.id);
             self.hosts.retain(|h| h.id != c.id);
             self.state.stats.remove(&c.id);
             let _ = self.state.save(&self.paths.state_file());
-            let _ = secrets::delete_password(&self.paths.vault_file(), &c.id);
+            if let Some(key) = own_secret {
+                let _ = secrets::delete_password(&self.paths.vault_file(), &key);
+            }
             match self.persist_hosts() {
                 Ok(()) => self.set_status(format!("deleted {}", c.name)),
                 Err(e) => self.set_status(self.save_failed(&e)),
@@ -617,10 +663,7 @@ impl App {
         // Resolve the host's site defaults so transfers ride the site's bastion / use its
         // default user; `id` is preserved so the secrets lookup below is unaffected.
         let host = self.hosts[idx].with_site_defaults(&self.sites);
-        let has_secret = secrets::get_password(&self.paths.vault_file(), &host.id)
-            .ok()
-            .flatten()
-            .is_some();
+        let has_secret = self.has_secret(&host.secret_key());
         let start = std::env::current_dir()
             .ok()
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -636,8 +679,8 @@ impl App {
 
     /// True when a login password / key passphrase is stored for this host (so the askpass
     /// helper has something to supply). Mirrors what connect and the transfer worker ask.
-    fn has_secret(&self, id: &str) -> bool {
-        secrets::get_password(&self.paths.vault_file(), id)
+    fn has_secret(&self, key: &str) -> bool {
+        secrets::get_password(&self.paths.vault_file(), key)
             .ok()
             .flatten()
             .is_some()
@@ -648,7 +691,8 @@ impl App {
     /// after teardown, in that order.
     fn asks_first_secret(&self, idx: usize) -> bool {
         let host = self.hosts[idx].with_site_defaults(&self.sites);
-        first_connect::assess(&host, || self.has_secret(&host.id), false).0 != Decision::Connect
+        first_connect::assess(&host, || self.has_secret(&host.secret_key()), false).0
+            != Decision::Connect
     }
 
     /// Persist this host's usage. Returns a warning to surface if the save failed: usage must
@@ -677,7 +721,7 @@ impl App {
         // A queued 2FA code settles this on its own (it could only cross into tmux through
         // argv), so don't ask the keyring anything we won't use.
         let has_code = self.pending_2fa_code.is_some();
-        let wire_askpass = !has_code && self.has_secret(&host.id);
+        let wire_askpass = !has_code && self.has_secret(&host.secret_key());
         // With nothing stored, the first connect may ask for the secret, and that question has
         // to be asked on this terminal (D-035). The probe waits for the in-place path; only the
         // part that needs no network is decided here.
@@ -735,6 +779,158 @@ impl App {
         }
     }
 
+    /// True when `id` is marked for a bulk action.
+    pub fn is_marked(&self, id: &str) -> bool {
+        self.marked.iter().any(|m| m == id)
+    }
+
+    /// The hosts a bulk action applies to: whatever is marked, or everything the filter shows
+    /// when nothing is. Marks win so a filter typed afterwards cannot silently widen the set.
+    fn bulk_targets(&self) -> (Vec<usize>, bool) {
+        if self.marked.is_empty() {
+            return (self.order.clone(), false);
+        }
+        let idxs = self
+            .hosts
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| self.is_marked(&h.id))
+            .map(|(i, _)| i)
+            .collect();
+        (idxs, true)
+    }
+
+    fn open_bulk_secret(&mut self) {
+        let (targets, from_marks) = self.bulk_targets();
+        if targets.is_empty() {
+            self.set_status("no hosts to set a credential for".to_string());
+            return;
+        }
+        let with_secret = targets
+            .iter()
+            .filter(|&&i| self.has_secret(&self.hosts[i].secret_key()))
+            .count();
+        self.bulk_secret = Some(BulkSecretPopup::new(targets, with_secret, from_marks));
+    }
+
+    fn on_key_bulk_secret(&mut self, key: KeyEvent) {
+        let outcome = match self.bulk_secret.as_mut() {
+            Some(p) => p.handle_key(key),
+            None => return,
+        };
+        match outcome {
+            BulkOutcome::Continue => {}
+            BulkOutcome::Cancel => self.bulk_secret = None,
+            BulkOutcome::Apply(req) => {
+                let targets = self
+                    .bulk_secret
+                    .as_ref()
+                    .map(|p| p.targets().to_vec())
+                    .unwrap_or_default();
+                self.bulk_secret = None;
+                let status = self.apply_bulk_secret(&req, &targets);
+                drop(req);
+                self.marked.clear();
+                self.recompute();
+                self.set_status(status);
+            }
+        }
+    }
+
+    /// Apply a bulk credential change and return the status line for it. Writes secrets first
+    /// and `hosts.toml` once at the end, so a failed save never leaves hosts pointing at a
+    /// credential whose secret was not stored.
+    fn apply_bulk_secret(&mut self, req: &BulkRequest, targets: &[usize]) -> String {
+        let vault = self.paths.vault_file();
+        let mut stored = 0usize;
+        let mut skipped = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+
+        match req.mode {
+            BulkMode::Each => {
+                let Some(secret) = req.secret.as_deref() else {
+                    return "nothing typed, nothing stored".to_string();
+                };
+                for &i in targets {
+                    let key = self.hosts[i].secret_key();
+                    if !req.replace_existing && self.has_secret(&key) {
+                        skipped += 1;
+                        continue;
+                    }
+                    match secrets::store_password(&vault, &key, secret) {
+                        Ok(()) => stored += 1,
+                        Err(_) => failed.push(self.hosts[i].name.clone()),
+                    }
+                }
+            }
+            BulkMode::Shared => {
+                let Some(name) = req.credential.as_deref() else {
+                    return "no credential name".to_string();
+                };
+                let key = crate::model::credential_secret_key(name);
+                // One write for the whole set, which is the point of a shared credential.
+                if let Some(secret) = req.secret.as_deref() {
+                    if req.replace_existing || !self.has_secret(&key) {
+                        if let Err(e) = secrets::store_password(&vault, &key, secret) {
+                            return format!("could not store the credential: {e:#}");
+                        }
+                        stored = 1;
+                    } else {
+                        skipped = 1;
+                    }
+                }
+                for &i in targets {
+                    self.hosts[i].credential = Some(name.to_string());
+                }
+                if crate::model::find_credential(&self.credentials, name).is_none() {
+                    self.credentials
+                        .push(crate::model::Credential::new(name.to_string()));
+                }
+                if let Err(e) = self.persist_hosts() {
+                    return self.save_failed(&e);
+                }
+                let secret_note = match (stored, skipped) {
+                    (1, _) => " and set its password",
+                    (_, 1) => " (its stored password was kept)",
+                    _ => " (no password stored for it yet)",
+                };
+                return format!(
+                    "{} host(s) now use '{}'{}",
+                    targets.len(),
+                    crate::display::sanitize(name),
+                    secret_note
+                );
+            }
+            BulkMode::Unbind => {
+                let mut changed = 0usize;
+                for &i in targets {
+                    if self.hosts[i].credential.take().is_some() {
+                        changed += 1;
+                    }
+                }
+                if let Err(e) = self.persist_hosts() {
+                    return self.save_failed(&e);
+                }
+                return match changed {
+                    0 => "none of those hosts used a shared credential".to_string(),
+                    n => format!("{n} host(s) unbound · each needs its own password now"),
+                };
+            }
+        }
+
+        let mut parts = vec![format!("stored a password for {stored} host(s)")];
+        if skipped > 0 {
+            parts.push(format!("{skipped} kept the one they had (^r replaces)"));
+        }
+        if !failed.is_empty() {
+            parts.push(format!(
+                "failed for {}",
+                crate::display::sanitize(&failed.join(", "))
+            ));
+        }
+        parts.join(" · ")
+    }
+
     /// Open the new-port-forward popup for `idx`. Called from the loop (mirrors `open_transfer`).
     fn open_forward_popup(&mut self, idx: usize) {
         self.forward_popup = Some(ForwardPopup::new(idx, self.hosts[idx].name.clone()));
@@ -755,10 +951,7 @@ impl App {
                 // Resolve site defaults (bastion/user/port/identity) before building the ssh
                 // command; secrets/frecency still key on the original `host.id`.
                 let host = self.hosts[idx].with_site_defaults(&self.sites);
-                let has_secret = secrets::get_password(&self.paths.vault_file(), &host.id)
-                    .ok()
-                    .flatten()
-                    .is_some();
+                let has_secret = self.has_secret(&host.secret_key());
                 // Spawning blocks briefly (~2.5s) to catch a bind/auth failure; see forwards.rs.
                 match forwards::spawn_forward(&host, &self.hosts[idx].name, has_secret, kind, spec)
                 {
@@ -915,6 +1108,7 @@ fn run_with(start: Start) -> Result<()> {
     let file = store::load_hosts(&config.hosts_path(&paths))?;
     let state = FrecencyState::load(&paths.state_file())?;
     let mut app = App::new(file.hosts, file.sites, state, config, paths);
+    app.credentials = file.credentials;
     // Load the active-forward ledger and reconcile it against reality (drop any that ended while
     // sshelf was closed), so the user sees only forwards that are still actually running.
     match ForwardsState::load(&app.paths.forwards_file()) {
@@ -968,6 +1162,7 @@ fn run_with(start: Start) -> Result<()> {
             &host,
             &app.paths,
             app.pending_2fa_code.take(),
+            &crate::ssh::RemoteCommand::default(),
         ));
     }
     Ok(())
@@ -1012,7 +1207,7 @@ fn dispatch(app: &mut App, key: KeyEvent) {
         Outcome::Yank(idx) => {
             let host = app.hosts[idx].with_site_defaults(&app.sites);
             // Same flag the real connect would use, so a jump host reads the same either way.
-            let cmd = ssh::command_string(&host, app.has_secret(&host.id));
+            let cmd = ssh::command_string(&host, app.has_secret(&host.secret_key()));
             if ssh::copy_to_clipboard(&cmd) {
                 app.set_status(format!("copied: {cmd}"));
             } else {
@@ -1025,6 +1220,18 @@ fn dispatch(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// The secret key a host owns outright, or `None` when it reads from a shared credential.
+///
+/// Deleting a host must only delete a secret of the first kind: the members of a shared
+/// credential still answer from it, and one of them leaving is not a reason to lock the rest out.
+fn own_secret_key(hosts: &[Host], id: &str) -> Option<String> {
+    hosts
+        .iter()
+        .find(|h| h.id == id)
+        .filter(|h| !h.shares_secret())
+        .map(|h| h.secret_key())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,6 +1241,157 @@ mod tests {
     }
     fn ctrl(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn marking_toggles_by_id_and_esc_clears_marks_before_the_query() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::Char('p'))); // query: "p" -> both prod hosts
+        app.recompute();
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(app.marked.len(), 1);
+        let first = app.marked[0].clone();
+        app.move_down();
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(app.marked.len(), 2);
+        assert!(app.is_marked(&first));
+
+        // Toggling the same row again unmarks it.
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(app.marked.len(), 1);
+
+        // esc clears the marks and keeps the query; a second esc clears the query.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.marked.is_empty());
+        assert_eq!(app.query, "p");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn a_mark_survives_a_filter_that_hides_it() {
+        let mut app = test_app();
+        app.on_key(ctrl(KeyCode::Char('s')));
+        let marked = app.marked[0].clone();
+        // Filter to something that cannot match the marked host.
+        app.query = "bastion".into();
+        app.recompute();
+        assert!(app.is_marked(&marked), "marks are ids, not positions");
+        let (targets, from_marks) = app.bulk_targets();
+        assert!(from_marks);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(app.hosts[targets[0]].id, marked);
+    }
+
+    #[test]
+    fn with_nothing_marked_a_bulk_action_takes_what_the_filter_shows() {
+        let mut app = test_app();
+        app.query = "prod".into();
+        app.recompute();
+        let (targets, from_marks) = app.bulk_targets();
+        assert!(!from_marks);
+        assert_eq!(targets.len(), 2);
+        assert!(
+            targets
+                .iter()
+                .all(|&i| app.hosts[i].name.starts_with("prod")),
+            "only the filtered hosts"
+        );
+    }
+
+    #[test]
+    fn binding_a_selection_points_the_hosts_at_one_credential_and_declares_it() {
+        let mut app = test_app();
+        app.query = "prod".into();
+        app.recompute();
+        let (targets, _) = app.bulk_targets();
+        let req = BulkRequest {
+            mode: BulkMode::Shared,
+            credential: Some("corp-ldap".into()),
+            secret: None,
+            replace_existing: false,
+        };
+        let status = app.apply_bulk_secret(&req, &targets);
+        assert!(status.contains("2 host(s) now use 'corp-ldap'"), "{status}");
+
+        let bound: Vec<&str> = app
+            .hosts
+            .iter()
+            .filter(|h| h.credential.as_deref() == Some("corp-ldap"))
+            .map(|h| h.name.as_str())
+            .collect();
+        assert_eq!(bound.len(), 2);
+        assert!(
+            !bound.contains(&"bastion"),
+            "an unselected host is untouched"
+        );
+        // Declared once, so it shows up in listings even before a secret exists.
+        assert_eq!(app.credentials.len(), 1);
+        assert_eq!(app.credentials[0].name, "corp-ldap");
+
+        // Both now resolve to the same store key.
+        let keys: std::collections::HashSet<String> = app
+            .hosts
+            .iter()
+            .filter(|h| h.credential.is_some())
+            .map(|h| h.secret_key())
+            .collect();
+        assert_eq!(keys.len(), 1);
+
+        // And it round-tripped to disk as a v2 file.
+        let text = std::fs::read_to_string(&app.hosts_path).unwrap();
+        assert!(text.contains("format_version = 2"), "{text}");
+        assert!(text.contains("[[credential]]"), "{text}");
+    }
+
+    #[test]
+    fn binding_twice_does_not_declare_the_credential_twice() {
+        let mut app = test_app();
+        let req = BulkRequest {
+            mode: BulkMode::Shared,
+            credential: Some("corp-ldap".into()),
+            secret: None,
+            replace_existing: false,
+        };
+        app.apply_bulk_secret(&req, &[0]);
+        app.apply_bulk_secret(&req, &[1]);
+        assert_eq!(app.credentials.len(), 1);
+        assert_eq!(app.hosts[0].credential.as_deref(), Some("corp-ldap"));
+        assert_eq!(app.hosts[1].credential.as_deref(), Some("corp-ldap"));
+    }
+
+    #[test]
+    fn unbinding_reports_only_the_hosts_that_were_bound() {
+        let mut app = test_app();
+        app.hosts[0].credential = Some("corp-ldap".into());
+        let unbind = BulkRequest {
+            mode: BulkMode::Unbind,
+            credential: None,
+            secret: None,
+            replace_existing: false,
+        };
+        let status = app.apply_bulk_secret(&unbind, &[0, 1, 2]);
+        assert!(status.starts_with("1 host(s) unbound"), "{status}");
+        assert!(app.hosts.iter().all(|h| h.credential.is_none()));
+
+        // Nothing bound: say so rather than claiming work.
+        let status = app.apply_bulk_secret(&unbind, &[0, 1, 2]);
+        assert!(status.contains("none of those hosts"), "{status}");
+    }
+
+    #[test]
+    fn deleting_a_host_only_claims_a_secret_it_owns() {
+        let mut hosts = vec![Host::new("a", "1.1.1.1"), Host::new("b", "1.1.1.2")];
+        hosts[1].credential = Some("corp-ldap".into());
+        let (own, shared) = (hosts[0].id.clone(), hosts[1].id.clone());
+
+        assert_eq!(own_secret_key(&hosts, &own), Some(own.clone()));
+        assert_eq!(
+            own_secret_key(&hosts, &shared),
+            None,
+            "the other members still need the shared secret"
+        );
+        assert_eq!(own_secret_key(&hosts, "nobody"), None);
     }
 
     fn test_app() -> App {
@@ -1440,11 +1798,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sshelf-adopt-{}", ulid::Ulid::new()));
         std::fs::create_dir_all(&dir).unwrap();
         let new_path = dir.join("hosts.toml");
-        let existing = HostsFile {
-            format_version: CURRENT_FORMAT_VERSION,
-            sites: Vec::new(),
-            hosts: vec![Host::new("fromdisk", "9.9.9.9")],
-        };
+        let existing = HostsFile::with_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![Host::new("fromdisk", "9.9.9.9")],
+        );
         store::save_hosts(&new_path, &existing).unwrap();
 
         open_settings_set_hosts_path(&mut app, &new_path);
