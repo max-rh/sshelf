@@ -3,12 +3,12 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.17.0, searching the inventory from the shell.
-Secrets from a password manager moves to v0.18.0 and the 1.0 RC after it. v0.16.1 is released.
+**Current milestone:** v0.16.3, searching the inventory from the shell.
+Secrets from a password manager moves to v0.17.0 and the 1.0 RC after it. v0.16.1 is released.
 
 ---
 
-## 2026-10-28: v0.17.0, a host picker for the shell
+## 2026-10-28: v0.16.3, a host picker for the shell
 
 Asked for after a demo: a way to search the inventory from the command line without opening
 sshelf, "something like ctrl+r". `sshelf pick` is that. It runs the ordinary list with `Enter`

@@ -5,6 +5,8 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.16.3] (2026-10-28)
+
 ### Added
 
 - `sshelf pick` opens the picker in the rows under your prompt, prints the name of the host you
@@ -470,7 +472,8 @@ Initial public release.
 - Packaging: Homebrew tap, shell installer, Debian/Ubuntu `.deb` (x86_64 + arm64, macOS +
   Linux).
 
-[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/max-rh/sshelf/compare/v0.16.3...HEAD
+[0.16.3]: https://github.com/max-rh/sshelf/compare/v0.16.1...v0.16.3
 [0.16.1]: https://github.com/max-rh/sshelf/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/max-rh/sshelf/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/max-rh/sshelf/compare/v0.14.1...v0.15.0

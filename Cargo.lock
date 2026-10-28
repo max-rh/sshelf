@@ -3039,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "sshelf"
-version = "0.16.1"
+version = "0.16.3"
 dependencies = [
  "age",
  "anyhow",
