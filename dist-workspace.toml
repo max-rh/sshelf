@@ -24,3 +24,11 @@ github-attestations = true
 # release.yml is hand maintained after generation (SHA-pinned actions, least-privilege
 # permissions), so `dist` must not treat those edits as a reason to refuse.
 allow-dirty = ["ci"]
+
+# dist 0.32 still picks `macos-14` for Apple silicon, and GitHub retires that image on
+# 2026-11-02: capacity is being cut ahead of it, with brownouts from 2026-10-29. The v0.16.3
+# build sat queued for 15 minutes twice and was never given a runner, while the Intel job on
+# `macos-15-intel` ran in five. Pinned rather than `macos-latest` so a release build does not
+# change host under us the way the SHA-pinned actions in release.yml would not.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

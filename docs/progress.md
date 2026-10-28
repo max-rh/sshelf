@@ -60,7 +60,13 @@ agent by design, and the failed-authentication message no longer claims the agen
 A new `AuthMethod` variant was deliberately not added: without the serde fallback it would make
 `hosts.toml` unparseable for every older build.
 
-Next: nothing is pushed. Tests at 436 unit plus 28 integration plus 11 ignored e2e.
+Next: tests at 436 unit plus 28 integration plus 11 ignored e2e.
+
+The v0.16.3 tag's first two release runs failed without building anything on Apple silicon: dist
+0.32 asks for `macos-14`, GitHub retires that image on 2026-11-02 and is cutting its capacity
+ahead of time, so the job sat queued for 15 minutes and was never given a runner while the Intel
+job on `macos-15-intel` ran in five. `dist-workspace.toml` now pins that target to `macos-15`.
+`ubuntu-22.04`, which the other three jobs use, is deprecated too but not until 2027-04-17.
 
 ## 2026-10-27: v0.16.1, binding a credential as the host is created
 
