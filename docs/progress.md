@@ -3,10 +3,64 @@
 Reverse-chronological. Newest entry on top. Every change to the project adds an entry here
 (the docs-in-sync rule). Keep entries short: what changed, why, and what's next.
 
-**Current milestone:** v0.16.1, binding a credential at `add` time.
-Secrets from a password manager moves to v0.17.0 and the 1.0 RC to v0.18.0. v0.15.0 is released.
+**Current milestone:** v0.17.0, searching the inventory from the shell.
+Secrets from a password manager moves to v0.18.0 and the 1.0 RC after it. v0.16.1 is released.
 
 ---
+
+## 2026-10-28: v0.17.0, a host picker for the shell
+
+Asked for after a demo: a way to search the inventory from the command line without opening
+sshelf, "something like ctrl+r". `sshelf pick` is that. It runs the ordinary list with `Enter`
+recording the row instead of connecting, then prints the chosen name on stdout. The event loop
+is now generic over the ratatui backend, because pick mode draws on **stderr**: stdout is the
+name, and ratatui's own `init`/`restore` (plus its panic hook) write the alternate-screen
+sequences to stdout, which would land in the `$(sshelf pick)` a shell captures. Measured 6 bytes
+of stdout for a 5-character name, 0 on a cancel, with the terminal restored either way.
+
+It draws **inline**, in 15 rows under the prompt, the way `Ctrl-r` and atuin do, with
+`--height`, the `pick_height` config key and `--full-screen` for the rest of the choices. Two
+things that cost an afternoon between them. ratatui places an inline viewport by asking where
+the cursor is, and crossterm sends that question (`ESC [ 6 n`) to `io::stdout()` rather than to
+the backend's writer, so in pick mode it went into the pipe and the setup failed two seconds
+later with "the cursor position could not be read"; fd 1 is now lent to the terminal while the
+list is up and handed back before the name is printed. And the first inline draw only writes
+cells that differ from an all-spaces buffer, so the space in the top border never erased the
+shell prompt underneath it and `P>` showed through the frame; clearing the viewport once before
+the loop fixes that. Verified in a pane with the prompt on the last row (the terminal scrolls to
+make room and the prompt comes back), with Esc (the typed line is untouched), and at three
+heights.
+
+Pick mode now answers only the chooser keys. The add form, the settings screen, the two managers
+and the help overlay are full-screen designs that cannot be drawn in fifteen rows, and a picker
+a shell fires off on a keypress has no business editing the inventory, so `^d` and the rest are
+inert. That also retired the pick-specific line in the help overlay, since F1 no longer opens
+it there.
+
+The work was in reading keys, not drawing. A zsh widget keeps all three streams, so the child
+sees no terminal at all, and crossterm's fallback to the `/dev/tty` alias dies on macOS with
+"Failed to initialize input reader" (the kqueue refusal from D-034). `ttyname` is no help there:
+on macOS it answers `/dev/tty` for a descriptor opened from `/dev/tty`, and `fstat` reports that
+alias's own device number rather than the terminal's. So the controlling terminal is resolved by
+identity instead, through `proc_pidinfo`'s `e_tdev` plus `devname`, with `/proc` on Linux. D-039
+has the full trail. The add form's piped-stdin path now shares that lookup.
+
+`contrib/` holds the zsh and bash plugins that bind it to Alt-s, verified in a real tmux pane:
+empty line gives `sshelf db-01`, mid-line inserts the name at the cursor, two marked rows give
+both names, and `Esc` leaves the line untouched. Apple's bash 3.2 cannot rewrite the command
+line from `bind -x`, so there the plugin defines a plain `sshelf-pick` command and skips the
+binding.
+
+Also from the same demo: the hosts those users reach with no password at all are already
+covered by `auth = "agent"`, which adds no `-i` and no `PreferredAuthentications` and therefore
+runs plain `ssh user@host`. That needed documentation rather than a new auth method, so
+`passwords-2fa.md` now has "hosts that need no secret at all" (host-based auth, GSSAPI/Kerberos,
+appliances accepting `none`), the `doctor` ssh-agent warning is explained for fleets with no
+agent by design, and the failed-authentication message no longer claims the agent was at fault.
+A new `AuthMethod` variant was deliberately not added: without the serde fallback it would make
+`hosts.toml` unparseable for every older build.
+
+Next: nothing is pushed. Tests at 436 unit plus 28 integration plus 11 ignored e2e.
 
 ## 2026-10-27: v0.16.1, binding a credential as the host is created
 

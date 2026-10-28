@@ -13,11 +13,14 @@
 //! without putting a secret in argv fall back to the in-place handoff — see `ssh::tmux_fallback`
 //! and D-025.
 
+use std::io::{IsTerminal, Stderr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::execute;
 use zeroize::Zeroizing;
 
 use crate::config::{Config, Tmux};
@@ -129,6 +132,9 @@ pub struct App {
     /// What `sshelf add --from-ssh` dropped or rewrote, joined for the status line. Shown once
     /// the form it opened closes, whichever way it closes.
     pub add_notes: Option<String>,
+    /// Pick mode (`sshelf pick`): `Enter` records the row and quits **without** connecting, so
+    /// the name can be printed for a shell to use. Nothing else about the list changes.
+    pub pick: bool,
 }
 
 impl App {
@@ -170,6 +176,7 @@ impl App {
             connect_note: None,
             in_tmux: ssh::inside_tmux(),
             add_notes: None,
+            pick: false,
         };
         app.recompute();
         app
@@ -287,6 +294,9 @@ impl App {
 
     fn on_key_list(&mut self, key: KeyEvent) -> Outcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.pick && !pick_allows(key.code, ctrl) {
+            return Outcome::Continue;
+        }
         self.status = None;
         match (key.code, ctrl) {
             (KeyCode::Char('c'), true) => return Outcome::Quit,
@@ -355,10 +365,17 @@ impl App {
                         None => self.marked.push(id),
                     }
                     let n = self.marked.len();
+                    // What a mark is *for* differs by mode: a bulk credential write in the TUI,
+                    // the set of names to print in pick mode, where ^k is not even reachable.
+                    let next = if self.pick {
+                        "↵ prints every marked host"
+                    } else {
+                        "^k set credentials"
+                    };
                     self.set_status(match n {
                         0 => "nothing marked".to_string(),
-                        1 => "1 host marked · ^k set credentials · esc clears".to_string(),
-                        n => format!("{n} hosts marked · ^k set credentials · esc clears"),
+                        1 => format!("1 host marked · {next} · esc clears"),
+                        n => format!("{n} hosts marked · {next} · esc clears"),
                     });
                 }
                 None => self.set_status(NO_HOST_SELECTED),
@@ -752,6 +769,26 @@ impl App {
         self.should_quit = true;
     }
 
+    /// The names `sshelf pick` prints: every marked host, or the row that was chosen when
+    /// nothing is marked. Empty when the user quit without choosing anything.
+    ///
+    /// Marks win over the cursor, and they are read from `hosts` rather than the display order,
+    /// so a filter typed after marking can't silently drop one — the same rule the bulk
+    /// credentials popup follows.
+    pub fn picked_names(&self) -> Vec<String> {
+        let Some(idx) = self.pending_connect else {
+            return Vec::new();
+        };
+        if self.marked.is_empty() {
+            return vec![self.hosts[idx].name.clone()];
+        }
+        self.hosts
+            .iter()
+            .filter(|h| self.is_marked(&h.id))
+            .map(|h| h.name.clone())
+            .collect()
+    }
+
     /// Open the 2FA code popup for `idx` (a `requires_2fa` host). On submit it queues the code +
     /// the pending connect and quits, so the real `exec()` happens after terminal restore.
     fn open_two_factor(&mut self, idx: usize) {
@@ -1057,6 +1094,44 @@ fn group_order(hosts: &[Host], ranked: &[usize]) -> Vec<usize> {
     out
 }
 
+/// How pick mode draws itself.
+///
+/// Inline is the default and the point of the mode: the list appears in the rows under your
+/// prompt, the way `Ctrl-r` or atuin does, and the prompt is still there when it closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickView {
+    /// `height` rows anchored at the cursor, with no alternate screen.
+    Inline(u16),
+    /// The whole terminal, on the alternate screen (`--full-screen`).
+    FullScreen,
+}
+
+/// Resolve how pick mode draws: the flag wins, then the `pick_height` config key.
+///
+/// A height of `0` from either means the whole screen, which is how atuin spells the same
+/// choice. Anything taller than the terminal is clamped to leave a row for the prompt the
+/// picker opened under, so a careless value cannot scroll it out of sight. `rows` of 0 means the
+/// size could not be read, and then the request is taken as given.
+fn pick_view_for(
+    configured: u16,
+    requested: Option<u16>,
+    full_screen: bool,
+    rows: u16,
+) -> PickView {
+    if full_screen {
+        return PickView::FullScreen;
+    }
+    let height = requested.unwrap_or(configured);
+    if height == 0 {
+        return PickView::FullScreen;
+    }
+    let limit = rows.saturating_sub(1);
+    let height = if rows == 0 { height } else { height.min(limit) };
+    // Below a search box, one row of list and the hint there is nothing to look at, and a
+    // one-row terminal is not worth a special case.
+    PickView::Inline(height.max(5))
+}
+
 /// What the TUI opens on.
 // `Prefilled` carries a Host (large) while the others are unit variants; this is built once
 // and consumed at startup, so the size difference doesn't matter.
@@ -1064,6 +1139,12 @@ fn group_order(hosts: &[Host], ranked: &[usize]) -> Vec<usize> {
 pub enum Start {
     /// The host list (`sshelf`).
     List,
+    /// The host list in pick mode (`sshelf pick`), with the search box prefilled.
+    Pick {
+        query: String,
+        height: Option<u16>,
+        full_screen: bool,
+    },
     /// The empty add form (`sshelf add`).
     Add,
     /// The add form filled in by `sshelf add --from-ssh`, with the parser's notes and a secret
@@ -1084,6 +1165,18 @@ pub fn run() -> Result<()> {
 /// Like [`run`], but with the add-host form already open (`sshelf add`).
 pub fn run_add() -> Result<()> {
     run_with(Start::Add)
+}
+
+/// `sshelf pick`: open the list, print the chosen host's name on stdout, connect to nothing.
+///
+/// `height` is the `--height` flag and falls back to the `pick_height` config key, which
+/// `run_with` resolves once it has loaded the config.
+pub fn run_pick(query: &str, height: Option<u16>, full_screen: bool) -> Result<()> {
+    run_with(Start::Pick {
+        query: query.to_string(),
+        height,
+        full_screen,
+    })
 }
 
 /// Like [`run_add`], with the form filled in from a parsed ssh command line. Nothing is saved
@@ -1118,8 +1211,27 @@ fn run_with(start: Start) -> Result<()> {
         }
         Err(e) => eprintln!("sshelf: warning: could not load forwards: {e:#}"),
     }
+    let mut pick_view = None;
     match start {
         Start::List => {}
+        Start::Pick {
+            query,
+            height,
+            full_screen,
+        } => {
+            app.pick = true;
+            app.query = query;
+            app.recompute();
+            let rows = ratatui::crossterm::terminal::size()
+                .map(|(_, rows)| rows)
+                .unwrap_or(0);
+            pick_view = Some(pick_view_for(
+                app.config.pick_height,
+                height,
+                full_screen,
+                rows,
+            ));
+        }
         Start::Add => {
             let names = app.site_names();
             app.wizard = Some(Wizard::new_add(&names));
@@ -1137,6 +1249,10 @@ fn run_with(start: Start) -> Result<()> {
             app.wizard = Some(wizard);
             app.add_notes = (!notes.is_empty()).then(|| notes.join(" · "));
         }
+    }
+
+    if let Some(view) = pick_view {
+        return finish_pick(&mut app, view);
     }
 
     let mut terminal = ratatui::init();
@@ -1168,7 +1284,191 @@ fn run_with(start: Start) -> Result<()> {
     Ok(())
 }
 
-fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
+/// Pick mode's tail: run the loop on a stderr terminal, then print what was chosen.
+///
+/// Nothing connects and nothing is recorded in the frecency state. A name on stdout is the whole
+/// product, and the connect that usually follows records its own use, so picking a host twice to
+/// run two commands on it doesn't count as using it twice.
+fn finish_pick(app: &mut App, view: PickView) -> Result<()> {
+    let (mut terminal, stdout_swap) = init_pick_terminal(view)?;
+    let loop_result = event_loop(&mut terminal, app);
+    // Inline mode draws in the normal buffer, so the rows it used have to be wiped or they stay
+    // on screen above the next prompt. Moving to the viewport's own origin first makes `clear`
+    // (which restores wherever the cursor happened to be) leave it exactly where the picker
+    // started, which is where the shell will redraw its prompt.
+    if matches!(view, PickView::Inline(_)) {
+        let origin = terminal.get_frame().area().as_position();
+        let _ = terminal.set_cursor_position(origin);
+        let _ = terminal.clear();
+    }
+    restore_pick_terminal(view);
+    // Only now: `clear` asks the terminal where the cursor is, and that question goes out on
+    // fd 1, which the swap is still holding. Dropping it hands the pipe back for the name.
+    drop(stdout_swap);
+    loop_result?;
+
+    let names = app.picked_names();
+    if names.is_empty() {
+        // Quit without choosing (esc / ^c): no output at all, and a non-zero status so a shell
+        // widget can tell "the user backed out" from "the user chose a host".
+        std::process::exit(1);
+    }
+    for name in names {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+/// Pick mode's terminal, on **stderr**.
+///
+/// ratatui's `init`/`restore` are stdout-only, and in pick mode stdout carries the chosen name:
+/// `LeaveAlternateScreen` written there would land in the `$(sshelf pick)` the shell captures,
+/// so the pair is spelled out here against stderr. The panic hook is replaced for the same
+/// reason — ratatui's own hook restores the wrong stream.
+///
+/// Inline mode stays out of the alternate screen entirely. ratatui anchors the viewport at the
+/// cursor row and scrolls the terminal if the prompt sits too near the bottom to fit. To place
+/// it, it has to know where the cursor is, and crossterm asks the terminal that with `ESC [ 6 n`
+/// written to `io::stdout()` rather than to the backend's own writer. In pick mode stdout is the
+/// pipe carrying the chosen name, so the question would be captured instead of answered and the
+/// setup would fail two seconds later with "the cursor position could not be read". So fd 1 is
+/// lent to the terminal for as long as the list is up, and the returned guard hands the pipe
+/// back. Resize does the same query mid-loop, which is the other reason the guard lives that
+/// long.
+fn init_pick_terminal(
+    view: PickView,
+) -> Result<(
+    ratatui::Terminal<CrosstermBackend<Stderr>>,
+    Option<StdoutSwap>,
+)> {
+    use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+    use ratatui::{TerminalOptions, Viewport};
+
+    if !std::io::stderr().is_terminal() {
+        anyhow::bail!(
+            "`sshelf pick` draws the list on stderr and needs a terminal there; stdout is \
+             free for the chosen name, so use it as `host=$(sshelf pick)`"
+        );
+    }
+    // Pick mode is normally launched from a shell widget, where none of the three streams is the
+    // terminal (zle keeps it) and crossterm's own fallback to the `/dev/tty` alias stops at
+    // "Failed to initialize input reader" on macOS. Point fd 0 at the real device, the same way
+    // the add form does for a piped stdin. Nothing else in pick mode reads stdin.
+    if !crate::stdin_is_readable_terminal() && !crate::stdin_from_terminal_device() {
+        anyhow::bail!("found no terminal to read keys from");
+    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_pick_terminal(view);
+        // A panic cannot clear the inline viewport (that needs the terminal, which is being
+        // unwound past), so end the line instead and let the message print below the list
+        // rather than over its last row.
+        if matches!(view, PickView::Inline(_)) {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(b"\r\n");
+        }
+        previous(info);
+    }));
+    enable_raw_mode().context("putting the terminal in raw mode")?;
+    let backend = CrosstermBackend::new(std::io::stderr());
+    match view {
+        PickView::FullScreen => {
+            execute!(std::io::stderr(), EnterAlternateScreen)
+                .context("opening the alternate screen")?;
+            let terminal = ratatui::Terminal::new(backend).context("setting up the terminal")?;
+            Ok((terminal, None))
+        }
+        PickView::Inline(height) => {
+            let swap = StdoutSwap::to_terminal();
+            let mut terminal = ratatui::Terminal::with_options(
+                backend,
+                TerminalOptions {
+                    viewport: Viewport::Inline(height),
+                },
+            )
+            .context("setting up the terminal")?;
+            // The viewport lands on the row the prompt is on, and the first draw only writes
+            // cells that differ from an all-spaces buffer, so a space never erases what the
+            // shell already put there (the prompt showed through the top border). Clearing once
+            // up front empties the region and forces that first draw to write every cell.
+            terminal.clear().context("clearing the picker's rows")?;
+            Ok((terminal, swap))
+        }
+    }
+}
+
+/// fd 1 pointed at the terminal, holding the pipe it displaced aside.
+///
+/// Dropping it puts the original descriptor back, so a panic unwinding past cannot leave the
+/// chosen name writing to the screen. See [`init_pick_terminal`] for what needs this.
+struct StdoutSwap(i32);
+
+impl StdoutSwap {
+    #[cfg(unix)]
+    fn to_terminal() -> Option<Self> {
+        use std::os::fd::AsRawFd;
+
+        let device = crate::terminal_device()?;
+        let tty = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device)
+            .ok()?;
+        // SAFETY: fd 1 is open, so `dup` returns a second descriptor for whatever it points at
+        // (here, the pipe). Both calls are checked, and the terminal descriptor closes on drop
+        // once fd 1 holds a copy of it.
+        unsafe {
+            let saved = libc::dup(libc::STDOUT_FILENO);
+            if saved < 0 {
+                return None;
+            }
+            if libc::dup2(tty.as_raw_fd(), libc::STDOUT_FILENO) < 0 {
+                libc::close(saved);
+                return None;
+            }
+            Some(StdoutSwap(saved))
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn to_terminal() -> Option<Self> {
+        None
+    }
+}
+
+impl Drop for StdoutSwap {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` came from `dup` and has not been closed; this is the only owner.
+        #[cfg(unix)]
+        unsafe {
+            libc::dup2(self.0, libc::STDOUT_FILENO);
+            libc::close(self.0);
+        }
+    }
+}
+
+/// Undo [`init_pick_terminal`]. Called on every exit path, the panic hook included (the fifth
+/// hard invariant), and it writes to stderr only.
+///
+/// Inline mode has no alternate screen to leave: the caller clears the viewport while it still
+/// has the terminal to measure it with.
+fn restore_pick_terminal(view: PickView) {
+    use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+
+    let _ = disable_raw_mode();
+    if view == PickView::FullScreen {
+        let _ = execute!(std::io::stderr(), LeaveAlternateScreen);
+    }
+}
+
+/// Generic over the backend so the same loop drives the normal stdout terminal and pick mode's
+/// stderr one. The bound on `Error` is what lets a draw failure become an `anyhow::Error`; both
+/// backends in use here fail with `io::Error`.
+fn event_loop<B>(terminal: &mut ratatui::Terminal<B>, app: &mut App) -> Result<()>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
         // The transfer screen and the forwards manager are "live": poll so worker events /
@@ -1195,10 +1495,15 @@ fn dispatch(app: &mut App, key: KeyEvent) {
     match app.on_key(key) {
         Outcome::Quit => app.should_quit = true,
         Outcome::Connect(idx) => {
-            // A connect that may ask for its first secret skips the popup: the secret is asked
-            // on the terminal after teardown, and the code after it, since the code goes stale.
-            if app.hosts[idx].requires_2fa && !app.asks_first_secret(idx) {
-                // Collect the verification code first; the connect happens on the popup's submit.
+            // Pick mode stops here: the row is recorded and the loop ends, nothing is asked and
+            // nothing connects. No 2FA code either, since a code would be stale by the time the
+            // shell got around to using the name.
+            if app.pick {
+                app.queue_exec_connect(idx);
+            } else if app.hosts[idx].requires_2fa && !app.asks_first_secret(idx) {
+                // A connect that may ask for its first secret skips the popup: the secret is
+                // asked on the terminal after teardown, and the code after it, since the code
+                // goes stale. Otherwise collect the code first and connect on its submit.
                 app.open_two_factor(idx);
             } else {
                 app.connect(idx);
@@ -1217,6 +1522,25 @@ fn dispatch(app: &mut App, key: KeyEvent) {
         Outcome::Transfer(idx) => app.open_transfer(idx),
         Outcome::OpenForwardPopup(idx) => app.open_forward_popup(idx),
         Outcome::Continue => {}
+    }
+}
+
+/// The keys pick mode answers: filtering, moving, marking, choosing and leaving.
+///
+/// Everything else is dropped, for two reasons. Pick mode usually runs in an inline viewport of
+/// about fifteen rows, and the add form, the settings screen, the two managers and the help
+/// overlay are all full-screen designs that cannot be drawn in it. And a chooser that a shell
+/// widget fires off has no business editing the database on the way past: `^d` is the one that
+/// matters there, since the picker is pointed at whatever inventory the shell was configured
+/// with.
+fn pick_allows(code: KeyCode, ctrl: bool) -> bool {
+    match (code, ctrl) {
+        // Quit, mark, and move.
+        (KeyCode::Char('c' | 's' | 'n' | 'p'), true) => true,
+        // Type to filter, and the keys that undo it or act on it.
+        (KeyCode::Char(_) | KeyCode::Backspace, false) => true,
+        (KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Esc, _) => true,
+        _ => false,
     }
 }
 
@@ -1415,6 +1739,147 @@ mod tests {
             Config::default(),
             paths,
         )
+    }
+
+    #[test]
+    fn the_pick_viewport_follows_the_flag_then_the_config() {
+        // The flag wins over the config key.
+        assert_eq!(
+            pick_view_for(15, Some(8), false, 40),
+            PickView::Inline(8),
+            "--height overrides the config"
+        );
+        assert_eq!(pick_view_for(8, None, false, 40), PickView::Inline(8));
+        // Either side can ask for the whole screen, and --full-screen beats a height.
+        assert_eq!(pick_view_for(0, None, false, 40), PickView::FullScreen);
+        assert_eq!(pick_view_for(15, Some(0), false, 40), PickView::FullScreen);
+        assert_eq!(pick_view_for(15, Some(8), true, 40), PickView::FullScreen);
+    }
+
+    #[test]
+    fn the_pick_viewport_always_leaves_the_prompt_a_row() {
+        // Taller than the terminal is clamped, so the prompt the picker opened under cannot be
+        // scrolled out of sight.
+        assert_eq!(pick_view_for(15, Some(99), false, 24), PickView::Inline(23));
+        assert_eq!(pick_view_for(15, None, false, 16), PickView::Inline(15));
+        // Nothing useful fits below five rows, and an unreadable size takes the request as given.
+        assert_eq!(pick_view_for(15, Some(1), false, 24), PickView::Inline(5));
+        assert_eq!(pick_view_for(15, None, false, 0), PickView::Inline(15));
+    }
+
+    #[test]
+    fn pick_mode_answers_only_the_chooser_keys() {
+        for (code, ctrl) in [
+            (KeyCode::Char('a'), false), // type to filter
+            (KeyCode::Backspace, false),
+            (KeyCode::Up, false),
+            (KeyCode::Down, false),
+            (KeyCode::Enter, false),
+            (KeyCode::Esc, false),
+            (KeyCode::Char('n'), true), // move
+            (KeyCode::Char('p'), true),
+            (KeyCode::Char('s'), true), // mark
+            (KeyCode::Char('c'), true), // quit
+        ] {
+            assert!(pick_allows(code, ctrl), "{code:?} ctrl={ctrl} should pass");
+        }
+        // Everything that writes, connects sideways, or opens a full-screen screen is refused.
+        for (code, ctrl) in [
+            (KeyCode::Char('a'), true), // add
+            (KeyCode::Char('e'), true), // edit
+            (KeyCode::Char('d'), true), // delete
+            (KeyCode::Char('k'), true), // bulk credentials
+            (KeyCode::Char('o'), true), // import
+            (KeyCode::Char('t'), true), // transfer
+            (KeyCode::Char('f'), true), // forward
+            (KeyCode::Char('y'), true), // yank
+            (KeyCode::F(1), false),
+            (KeyCode::F(2), false),
+            (KeyCode::F(3), false),
+            (KeyCode::F(4), false),
+        ] {
+            assert!(!pick_allows(code, ctrl), "{code:?} ctrl={ctrl} should not");
+        }
+    }
+
+    #[test]
+    fn pick_mode_cannot_edit_or_delete_the_inventory() {
+        let mut app = test_app();
+        app.pick = true;
+        let before = app.hosts.len();
+        for key in [
+            ctrl(KeyCode::Char('d')),
+            ctrl(KeyCode::Char('a')),
+            ctrl(KeyCode::Char('e')),
+            ctrl(KeyCode::Char('k')),
+            ctrl(KeyCode::Char('o')),
+            KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE),
+        ] {
+            app.on_key(key);
+        }
+        assert!(app.confirm.is_none(), "^d must not open a delete confirm");
+        assert!(app.wizard.is_none(), "^a/^e must not open the form");
+        assert!(app.bulk_secret.is_none());
+        assert!(app.settings.is_none());
+        assert!(app.sites_manager.is_none());
+        assert_eq!(app.screen, Screen::List, "F1 must not open the overlay");
+        assert_eq!(app.hosts.len(), before);
+    }
+
+    #[test]
+    fn pick_mode_prints_the_chosen_row_and_connects_to_nothing() {
+        let mut app = test_app();
+        app.pick = true;
+        assert!(app.picked_names().is_empty(), "nothing chosen yet");
+
+        // Enter is the same key as a connect, routed differently.
+        dispatch(&mut app, key(KeyCode::Enter));
+        assert!(app.should_quit);
+        assert_eq!(app.picked_names().len(), 1);
+        // The cursor starts on the first row of the current order.
+        let first = app.hosts[app.order[0]].name.clone();
+        assert_eq!(app.picked_names(), vec![first]);
+        // Nothing was recorded as used: the connect that follows does its own recording.
+        assert!(app.state.stats.is_empty());
+    }
+
+    #[test]
+    fn pick_mode_prints_every_marked_host_rather_than_the_cursor() {
+        let mut app = test_app();
+        app.pick = true;
+        // Mark the second and third rows, leaving the cursor somewhere in the set.
+        app.move_down();
+        app.on_key(ctrl(KeyCode::Char('s')));
+        app.move_down();
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(app.marked.len(), 2);
+
+        // A filter typed after marking cannot drop a mark from the output.
+        app.query = "bastion".to_string();
+        app.recompute();
+        dispatch(&mut app, key(KeyCode::Enter));
+
+        let names = app.picked_names();
+        assert_eq!(names.len(), 2, "both marks print: {names:?}");
+        for name in &names {
+            let id = &app.hosts.iter().find(|h| &h.name == name).unwrap().id;
+            assert!(app.is_marked(id), "{name} should be one of the marks");
+        }
+    }
+
+    #[test]
+    fn a_2fa_host_does_not_open_the_code_popup_in_pick_mode() {
+        let mut app = test_app();
+        app.pick = true;
+        app.hosts[app.order[0]].requires_2fa = true;
+        dispatch(&mut app, key(KeyCode::Enter));
+        assert!(
+            app.two_factor.is_none(),
+            "a code would be stale before the shell used the name"
+        );
+        assert_eq!(app.picked_names().len(), 1);
     }
 
     #[test]

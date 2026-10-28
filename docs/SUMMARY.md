@@ -15,6 +15,7 @@
 - [Importing hosts](import.md)
 - [Exporting to SSH config](export.md)
 - [CLI reference](cli.md)
+- [Shell integration](shell.md)
 - [Configuration](configuration.md)
 - [Checking your setup (`doctor`)](doctor.md)
 - [FAQ & troubleshooting](faq.md)

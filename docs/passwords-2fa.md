@@ -8,10 +8,30 @@
 
 Each host uses one auth method, chosen in the [add/edit form](hosts.md):
 
-- `agent` (default): ssh uses your keys/agent as usual and sshelf stores nothing.
+- `agent` (default): sshelf wires nothing and runs plain `ssh user@host`. No `-i`, no forced
+  `PreferredAuthentications`, no askpass helper, and nothing stored.
 - `key`: one or more `-i` identity files. If the key is encrypted, you can store its
   passphrase and sshelf supplies it automatically at connect.
 - `password`: sshelf stores the login password and supplies it automatically.
+
+### Hosts that need no secret at all
+
+`agent` is the method for every host where ssh already gets you in without being told anything,
+whatever the reason. Despite the name it does not require an agent: because the command is
+plain `ssh user@host`, whatever your ssh and the host negotiate is what happens.
+
+That covers a key your agent is already holding, host-based authentication, GSSAPI/Kerberos,
+and the appliances and network gear that accept the `none` method. Set those hosts to `agent`
+and they connect without a prompt. There is nothing extra to configure and nothing to store.
+
+Two consequences worth knowing:
+
+- `sshelf doctor` warns when `$SSH_AUTH_SOCK` is unset while hosts use `agent` auth. On a fleet
+  that authenticates with Kerberos or host keys, that warning is expected and harmless: it is a
+  warning, not a failure, and does not affect the exit code. See [`doctor`](doctor.md).
+- The only case `agent` does not cover is an account with an empty password where the host still
+  prompts (`PermitEmptyPasswords yes`). sshelf will not store an empty secret, so that prompt
+  arrives on your terminal and you press Enter.
 
 ## Where secrets live
 

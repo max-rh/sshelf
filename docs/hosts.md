@@ -61,7 +61,7 @@ Auth-specific fields:
 
 | Auth | Extra fields |
 |---|---|
-| `agent` (default) | none, ssh uses your agent/keys as usual |
+| `agent` (default) | none. sshelf wires nothing and runs plain `ssh user@host`, so an agent key, host-based auth, GSSAPI/Kerberos or a host that needs no secret at all all work. See [hosts that need no secret](passwords-2fa.md#hosts-that-need-no-secret-at-all) |
 | `key` | **Key**: `←`/`→` cycles private keys found in `~/.ssh`; `Enter` opens a file browser to pick a key anywhere. **Key passphrase**: optional, only if the key is encrypted |
 | `password` | **Password**: stored in the OS keyring / vault, never in a file |
 

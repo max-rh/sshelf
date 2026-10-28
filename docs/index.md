@@ -44,6 +44,10 @@ sshelf                             # launch the TUI
 - A scriptable CLI (`sshelf add`, `add --from-ssh` to save an ssh command you already have,
   `list --json`, `print-command`, ...).
   [CLI reference](cli.md)
+- A picker you can bind to a key in zsh or bash, drawn under your prompt rather than over your
+  screen, so a host name lands on the command line you are already typing (`sshelf pick`, plus
+  the plugins in `contrib/`).
+  [Shell integration](shell.md)
 - `sshelf doctor`, one command that checks your setup and names the fix.
   [Checking your setup](doctor.md)
 

@@ -12,6 +12,7 @@ comments on first run:
 | `accent` | `"cyan"` | UI accent color: black / red / green / yellow / blue / magenta / cyan / white / gray. |
 | `hosts_file` | (config dir) | Custom host-database path; `~` is expanded. Editable from `F2`. |
 | `tmux` | `"off"` | Inside tmux, where `Enter` opens a connection: `"off"`, `"window"`, or `"pane"`. See [Searching & connecting](search-connect.md#connecting-inside-tmux). Editable from `F2`. |
+| `pick_height` | `15` | Rows `sshelf pick` draws under your prompt; `0` takes the whole terminal. Clamped so the prompt keeps a row. See [Shell integration](shell.md). |
 
 Point sshelf at an alternate **config file** with `--config FILE` or `$SSHELF_CONFIG`. The
 config-file location itself isn't a key in the file (that would be circular). The **hosts

@@ -97,3 +97,8 @@ sshelf -              # reconnect to the most recently used host
 A miss suggests the closest matching names; a host named like a subcommand (`list`,
 `import`, ...) is reached via the TUI instead. The rest of the CLI:
 [CLI reference](cli.md).
+
+To search the list without leaving the command line you are typing, bind the picker to a key:
+`sshelf pick` draws the list under your prompt, prints the name you choose and connects to
+nothing, and `contrib/` has a zsh and a bash plugin that do the binding. See
+[Shell integration](shell.md).

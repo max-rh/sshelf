@@ -597,8 +597,10 @@ pub(crate) fn classify_auth_error(stderr: &str, host: &Host, has_secret: bool) -
         AuthMethod::Key => "could not authenticate: if that key needs a passphrase, load it with \
              `ssh-add` or save it on the host with ^e — this screen cannot prompt for one"
             .to_string(),
-        AuthMethod::Agent => "could not authenticate: your agent has no key the host accepts \
-             (check `ssh-add -l`)"
+        // `agent` is also the method for hosts that need no secret at all (host-based auth,
+        // GSSAPI, an appliance), so this cannot assume an agent is what was missing.
+        AuthMethod::Agent => "could not authenticate: the host accepted nothing ssh offered \
+             (check `ssh-add -l` if this host uses a key, or run `ssh -v` to see what it tried)"
             .to_string(),
         AuthMethod::Password => "could not authenticate: the host is set to password auth but no \
              password is stored for it — add one with ^e"

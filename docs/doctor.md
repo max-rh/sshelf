@@ -52,6 +52,10 @@ Two notes on the edges:
 
 - Duplicate ids are a failure, not a nitpick. The id keys both the stored secret and the
   frecency history, so two hosts sharing one share a password and a usage count.
+- The ssh-agent warning fires for any host set to `agent`, which is also the method for
+  [hosts that need no secret](passwords-2fa.md#hosts-that-need-no-secret-at-all): host-based
+  auth, GSSAPI/Kerberos, an appliance that lets you in. On a fleet like that the warning is
+  expected and can be ignored. It stays a warning, so the exit code is unaffected.
 - Orphaned secrets can only be found in vault mode. The OS keyring offers no portable way to
   list what's in it, so the check says it didn't run rather than reporting a clean bill of
   health nobody checked. In [vault mode](passwords-2fa.md#where-secrets-live) the vault is a map

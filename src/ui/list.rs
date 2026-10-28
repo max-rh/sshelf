@@ -27,7 +27,14 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_search(frame: &mut Frame, app: &App, area: Rect) {
-    let title = format!(" sshelf  {}/{} ", app.order.len(), app.hosts.len());
+    // The title says `pick` in pick mode, so a list that won't connect doesn't look like one
+    // that will.
+    let title = format!(
+        " sshelf{}  {}/{} ",
+        if app.pick { " pick" } else { "" },
+        app.order.len(),
+        app.hosts.len()
+    );
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     let text = Line::from(vec![
@@ -205,7 +212,7 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     frame.render_widget(
-        Paragraph::new(hint_for(area.width)).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(hint_for(area.width, app.pick)).style(Style::default().fg(Color::DarkGray)),
         area,
     );
 }
@@ -215,7 +222,20 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
 /// The full line is 142 columns, so on anything narrower it used to be cut mid-word and the
 /// last keys (including `esc quit`) simply vanished. Dropping whole entries instead keeps the
 /// line readable, and `F1` lists every key regardless.
-fn hint_for(width: u16) -> &'static str {
+///
+/// Pick mode gets its own short line: `Enter` prints a name instead of connecting, and that is
+/// the one thing a user coming from `$(sshelf pick)` needs to be told.
+fn hint_for(width: u16, pick: bool) -> &'static str {
+    if pick {
+        const PICK: &str = "↵ print the name  ^s mark (prints every marked host)  esc cancel";
+        const PICK_SHORT: &str = "↵ print  ^s mark  esc cancel";
+        let width = width as usize;
+        return if PICK.chars().count() <= width {
+            PICK
+        } else {
+            PICK_SHORT
+        };
+    }
     const FULL: &str = "↵ connect  ^a add  ^e edit  ^d del  ^s mark  ^k creds  ^y yank  ^t transfer  ^f forward  F1 help  F2 settings  F3 sites  F4 forwards  esc quit";
     const MEDIUM: &str = "↵ connect  ^a add  ^e edit  ^d del  ^s mark  ^k creds  ^y yank  ^t transfer  ^f forward  F1 help  esc quit";
     const SHORT: &str = "↵ connect  ^a add  ^s mark  ^k creds  F1 help  esc quit";
@@ -243,7 +263,7 @@ mod tests {
     fn the_hint_bar_drops_whole_entries_rather_than_being_cut() {
         // Every variant fits the width it is chosen for, and none is cut mid-entry.
         for width in [40u16, 60, 80, 100, 110, 120, 142, 200] {
-            let hint = hint_for(width);
+            let hint = hint_for(width, false);
             assert!(
                 hint.chars().count() <= width as usize || hint == "F1 help",
                 "{width} got {hint:?}"
@@ -252,14 +272,29 @@ mod tests {
         }
         // The two new keys survive every variant that has room for more than the fallback.
         for width in [60u16, 120, 200] {
-            assert!(hint_for(width).contains("^s mark"), "{width}");
-            assert!(hint_for(width).contains("^k creds"), "{width}");
+            assert!(hint_for(width, false).contains("^s mark"), "{width}");
+            assert!(hint_for(width, false).contains("^k creds"), "{width}");
         }
-        assert!(hint_for(200).contains("F4 forwards"));
+        assert!(hint_for(200, false).contains("F4 forwards"));
         assert!(
-            !hint_for(120).contains("F4 forwards"),
+            !hint_for(120, false).contains("F4 forwards"),
             "120 cols is too narrow for all of it"
         );
+    }
+
+    #[test]
+    fn pick_mode_says_print_rather_than_connect() {
+        // The whole point of the mode is that Enter does not connect, so no width may claim it
+        // does, and every variant has to fit.
+        for width in [20u16, 40, 60, 80, 200] {
+            let hint = hint_for(width, true);
+            assert!(hint.contains("print"), "{width} got {hint:?}");
+            assert!(!hint.contains("connect"), "{width} got {hint:?}");
+            assert!(
+                hint.chars().count() <= width as usize || width < 30,
+                "{width} got {hint:?}"
+            );
+        }
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {

@@ -79,6 +79,15 @@ opening the TUI.
 
 ![The sshelf launcher filtering three hosts as you type](docs/assets/launcher.png)
 
+### A picker you can bind to a key
+
+`sshelf pick` opens the same list in the rows under your prompt, the way `Ctrl-r` does, prints
+the name you choose, and connects to nothing. Your prompt is where you left it afterwards. The
+zsh and bash plugins in `contrib/` bind it to Alt-s: on an empty line you get `sshelf web-01`
+ready to run, mid-line you get the name where your cursor is, and marked rows give you every
+name for a loop.
+[Shell integration](https://max-rh.github.io/sshelf/shell.html).
+
 ### One password for a whole group
 
 Hosts that share a login password can share one stored secret: name it once, point them at it,

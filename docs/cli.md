@@ -12,6 +12,7 @@ Everything sshelf does without opening the TUI.
 | `sshelf add [NAME ...]` | Bare: open the TUI add form. With arguments: add a host non-interactively; see [below](#adding-hosts-from-the-cli). With `--from-ssh`: build the host from an ssh command line; see [below](#from-an-ssh-command-line). |
 | `sshelf list [query] [--json]` | List hosts (with a `·site·` column). `query` filters with the TUI's syntax: fuzzy text and/or `tag:NAME` / `site:NAME` (e.g. `sshelf list site:prod-dc`). The `user@host:port` column shows [site defaults](sites-tags.md) resolved. |
 | `sshelf print-command <host>` | Print the generated, shell-quoted `ssh ...` command (site defaults included) without connecting or touching frecency, the CLI twin of `Ctrl-y`. |
+| `sshelf pick [query]` | Open the picker in the rows under your prompt, print the chosen host's **name** on stdout, connect to nothing. The list draws on stderr, so `host=$(sshelf pick)` captures the name alone; marked rows (`^s`) print one name per line; quitting without choosing prints nothing and exits 1. `--height ROWS` or the `pick_height` config key sets the size, `--full-screen` takes the whole terminal. Only the chooser keys are live. Built for a shell key binding: [Shell integration](shell.md). |
 | `sshelf sites [--json]` | List defined sites with member counts + their shared defaults. |
 | `sshelf sites add NAME [-u/-p/-J/-i]` | Define a [site](sites-tags.md) (settings optional; edit later with `F3`). |
 | `sshelf import [--dry-run]` | [Read-only import](import.md) from `~/.ssh/config`. |
@@ -208,7 +209,9 @@ source <(COMPLETE=zsh sshelf)    # zsh:  add to ~/.zshrc (after compinit)
 COMPLETE=fish sshelf | source    # fish: add to ~/.config/fish/config.fish
 ```
 
-Host-name completion works for direct connect, `print-command`, and `set-password`.
+Host-name completion works for direct connect, `print-command`, `set-password` and `pick`.
+
+For a picker on a key rather than a completion, see [Shell integration](shell.md).
 
 ## JSON output
 

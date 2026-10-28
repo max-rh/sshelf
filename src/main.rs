@@ -128,6 +128,22 @@ enum Command {
         #[arg(add = ArgValueCandidates::new(host_name_candidates))]
         host: String,
     },
+    /// Open the picker, print the chosen host's name, and exit without connecting. Draws in the
+    /// rows under your prompt and leaves it where it was, so it suits a shell key binding. The
+    /// list goes to stderr, so `$(sshelf pick)` captures the name and nothing else. Mark several
+    /// rows (^s) to print one name per line. Exits 1 if you quit without choosing.
+    Pick {
+        /// Start with the search box already filled (same syntax as `sshelf list`).
+        #[arg(value_name = "QUERY", num_args = 0.., add = ArgValueCandidates::new(host_name_candidates))]
+        query: Vec<String>,
+        /// Rows to draw under the prompt (default: the `pick_height` config key, else 15).
+        /// Clamped to the terminal, which always keeps one row for your prompt.
+        #[arg(long, value_name = "ROWS", conflicts_with = "full_screen")]
+        height: Option<u16>,
+        /// Take the whole terminal instead, the way the TUI does.
+        #[arg(long)]
+        full_screen: bool,
+    },
     /// Manage sites (groups with optional shared SSH defaults): list them, or add one.
     Sites {
         #[command(subcommand)]
@@ -171,6 +187,7 @@ impl Command {
             Command::Export { .. } => "export",
             Command::SetPassword { .. } => "set-password",
             Command::Print { .. } => "print-command",
+            Command::Pick { .. } => "pick",
             Command::Sites { .. } => "sites",
             Command::Credentials { .. } => "credentials",
             Command::Doctor => "doctor",
@@ -488,6 +505,11 @@ fn run() -> Result<()> {
             cmd_set_password(host.as_deref(), credential.as_deref())
         }
         Some(Command::Print { host }) => cmd_print_command(&host),
+        Some(Command::Pick {
+            query,
+            height,
+            full_screen,
+        }) => app::run_pick(&query.join(" "), height, full_screen),
         Some(Command::Sites { action, json }) => cmd_sites(action, json),
         Some(Command::Credentials { action, json }) => cmd_credentials(action, json),
         Some(Command::Doctor) => cmd_doctor(),
@@ -946,24 +968,21 @@ fn cmd_add_from_ssh(args: AddArgs) -> Result<()> {
 /// terminal stdin. The pipe has been read to the end of what sshelf needs by then.
 #[cfg(unix)]
 fn stdin_on_terminal() -> bool {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStrExt;
+    std::io::stdin().is_terminal() || stdin_from_terminal_device()
+}
 
-    if std::io::stdin().is_terminal() {
-        return true;
-    }
-    let device = [libc::STDOUT_FILENO, libc::STDERR_FILENO]
-        .into_iter()
-        .find_map(|fd| {
-            // SAFETY: `ttyname` returns null or a NUL-terminated string in a static buffer,
-            // which is copied out at once; nothing else in this single-threaded startup calls it.
-            let name = unsafe { libc::ttyname(fd) };
-            (!name.is_null()).then(|| {
-                let bytes = unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes();
-                PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from("/dev/tty"));
+/// Open this process's terminal **by device name** and put it on fd 0, so crossterm reads keys
+/// from it like any other terminal stdin. `false` if there is no terminal to find.
+///
+/// Callers that already know fd 0 is unusable (a pipe, or a shell widget's stdin) call this
+/// directly; [`stdin_is_readable_terminal`] is the test for the ones that don't.
+#[cfg(unix)]
+pub(crate) fn stdin_from_terminal_device() -> bool {
+    use std::os::fd::AsRawFd;
+
+    let Some(device) = terminal_device() else {
+        return false;
+    };
     let Ok(tty) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -974,6 +993,116 @@ fn stdin_on_terminal() -> bool {
     // SAFETY: both descriptors are open. `dup2` makes fd 0 a copy of `tty` without close-on-exec,
     // so a connect from the TUI hands the terminal on to ssh; `tty` itself closes on drop.
     unsafe { libc::dup2(tty.as_raw_fd(), libc::STDIN_FILENO) != -1 }
+}
+
+/// Whether fd 0 is a terminal **crossterm can read from**: a real device rather than the
+/// `/dev/tty` alias, which kqueue refuses (the same `EINVAL` as above, and a shell widget hands
+/// its child exactly that alias when it redirects stdin).
+#[cfg(unix)]
+pub(crate) fn stdin_is_readable_terminal() -> bool {
+    std::io::stdin().is_terminal()
+        && ttyname_of(libc::STDIN_FILENO).is_some_and(|p| p != Path::new(DEV_TTY))
+}
+
+/// This process's terminal as a path under `/dev` that kqueue will accept, or `None` when it has
+/// no terminal at all.
+///
+/// `ttyname` answers first, asked of the streams most likely to still be attached. On macOS it
+/// answers `/dev/tty` for a descriptor that was itself opened from `/dev/tty`, so when every
+/// stream is that alias the device is recovered from the descriptor's identity instead of its
+/// name.
+#[cfg(unix)]
+pub(crate) fn terminal_device() -> Option<PathBuf> {
+    [libc::STDERR_FILENO, libc::STDOUT_FILENO, libc::STDIN_FILENO]
+        .into_iter()
+        .filter(|&fd| unsafe { libc::isatty(fd) } == 1)
+        .find_map(|fd| ttyname_of(fd).filter(|p| p != Path::new(DEV_TTY)))
+        .or_else(device_behind_the_alias)
+}
+
+#[cfg(unix)]
+const DEV_TTY: &str = "/dev/tty";
+
+/// The device `ttyname` reports for `fd`, if it reports one.
+#[cfg(unix)]
+fn ttyname_of(fd: i32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    // SAFETY: `ttyname` returns null or a NUL-terminated string in a static buffer, which is
+    // copied out at once; nothing else in this single-threaded startup calls it.
+    let name = unsafe { libc::ttyname(fd) };
+    (!name.is_null()).then(|| {
+        let bytes = unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes();
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    })
+}
+
+/// The real device behind `/dev/tty`, for when that alias is all this process can see.
+///
+/// Linux names an open descriptor through `/proc`. macOS does not, and `fstat` on a descriptor
+/// opened from `/dev/tty` reports that alias's own device number (major 2, minor 0) rather than
+/// the terminal's, so there the controlling terminal is asked for by identity instead.
+#[cfg(all(unix, target_os = "linux"))]
+fn device_behind_the_alias() -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+
+    let tty = std::fs::File::open(DEV_TTY).ok()?;
+    std::fs::read_link(format!("/proc/self/fd/{}", tty.as_raw_fd()))
+        .ok()
+        .filter(|p| p.is_absolute() && p != Path::new(DEV_TTY))
+}
+
+#[cfg(all(unix, target_vendor = "apple"))]
+fn device_behind_the_alias() -> Option<PathBuf> {
+    use std::ffi::{CStr, OsStr, c_void};
+    use std::os::unix::ffi::OsStrExt;
+
+    // `e_tdev` is this process's controlling terminal, as a device number; `devname` turns that
+    // into the bare name under /dev ("ttys004") that kqueue will accept.
+    let mut info = unsafe { std::mem::zeroed::<libc::proc_bsdinfo>() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: the buffer is `size` bytes of exactly the type the flavor names, and the call only
+    // writes into it. A short write means the field below was not filled in, so it is rejected.
+    let filled = unsafe {
+        libc::proc_pidinfo(
+            std::process::id() as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&raw mut info).cast::<c_void>(),
+            size,
+        )
+    };
+    if filled != size || info.e_tdev == 0 || info.e_tdev == u32::MAX {
+        return None;
+    }
+    // SAFETY: `devname` returns null or a NUL-terminated name in a static buffer, copied out at
+    // once; nothing else here calls it.
+    let name = unsafe { libc::devname(info.e_tdev as libc::dev_t, libc::S_IFCHR) };
+    if name.is_null() {
+        return None;
+    }
+    let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
+    Some(Path::new("/dev").join(OsStr::from_bytes(bytes)))
+}
+
+#[cfg(all(unix, not(target_os = "linux"), not(target_vendor = "apple")))]
+fn device_behind_the_alias() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(unix))]
+pub(crate) fn stdin_from_terminal_device() -> bool {
+    false
+}
+
+#[cfg(not(unix))]
+pub(crate) fn terminal_device() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(unix))]
+pub(crate) fn stdin_is_readable_terminal() -> bool {
+    std::io::stdin().is_terminal()
 }
 
 #[cfg(not(unix))]

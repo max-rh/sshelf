@@ -5,6 +5,34 @@ versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- `sshelf pick` opens the picker in the rows under your prompt, prints the name of the host you
+  choose, and connects to nothing, so you can search the inventory from the shell without
+  leaving the line you are typing. Your prompt is where you left it afterwards and nothing the
+  list drew stays behind. The list goes to stderr, so `host=$(sshelf pick)` captures the name
+  and nothing else; marked rows (`^s`) print one name per line; quitting without choosing prints
+  nothing and exits 1. An optional query prefills the search box.
+- `sshelf pick --height ROWS` and the `pick_height` config key (default 15) set how many rows it
+  uses; `0` or `--full-screen` takes the whole terminal instead. A height taller than the window
+  is clamped so your prompt keeps a row.
+- Pick mode answers only the chooser keys: filter, move, `^s` to mark, `Enter`, `Esc`, `^c`.
+  Adding, editing, deleting and the other screens are inert there, so a picker your shell fires
+  off on a keypress cannot change the database on the way past.
+- `contrib/sshelf.plugin.zsh` and `contrib/sshelf.bash` bind the picker to Alt-s. On an empty
+  line you get `sshelf web-01` ready to run, mid-line you get the host name at the cursor, and
+  marked hosts give you every name for a loop. They work with Oh My Zsh, zinit, antidote, or a
+  plain `source`. Details in the new
+  [Shell integration](https://max-rh.github.io/sshelf/shell.html) page.
+
+### Changed
+
+- `auth = "agent"` is documented for what it actually is: sshelf wires nothing and runs plain
+  `ssh user@host`, so host-based authentication, GSSAPI/Kerberos and appliances that need no
+  secret all work with it. The failed-authentication message no longer assumes an agent was
+  involved, and `doctor`'s ssh-agent warning is explained for fleets that have no agent by
+  design. No code or file-format change for existing hosts.
+
 ## [0.16.1] (2026-10-27)
 
 ### Added

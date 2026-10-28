@@ -18,6 +18,7 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 ├── SECURITY.md         (M8) threat model for OSS users (mirrors docs/security.md)
 ├── LICENSE-MIT         (M1)
 ├── LICENSE-APACHE      (M1)
+├── contrib/            shell integration: `sshelf.plugin.zsh`, `sshelf.bash` (not built, not installed)
 ├── docs/               living documentation (this directory)
 └── src/                see below
 ```
@@ -26,8 +27,8 @@ ssh-tui/                 (crate/binary name: `sshelf`)
 
 | File | Responsibility |
 |---|---|
-| `main.rs` | Entry/dispatch. If `SSHELF_ASKPASS` is set → askpass mode (read `argv[1]`). Else clap parses: default TUI, or subcommands (`import`, `list`, `add`, `add --from-ssh`). Also the connect tail both exec paths share: the first-connect prompt and store, the 2FA prompt, the echo-off terminal reader, and the handoff. |
-| `app.rs` | `App` state + synchronous event loop + screen routing (component orchestration). |
+| `main.rs` | Entry/dispatch. If `SSHELF_ASKPASS` is set → askpass mode (read `argv[1]`). Else clap parses: default TUI, or subcommands (`import`, `list`, `add`, `add --from-ssh`). Also the controlling-terminal lookup (`terminal_device`) that the add form and pick mode both need when stdio is not a terminal. Also the connect tail both exec paths share: the first-connect prompt and store, the 2FA prompt, the echo-off terminal reader, and the handoff. |
+| `app.rs` | `App` state + synchronous event loop + screen routing (component orchestration). Also pick mode (`sshelf pick`): the same list in an inline viewport on a stderr terminal, where `Enter` records the row for printing instead of connecting and only the chooser keys are live. |
 | `model.rs` | `Host` + `Site` structs (+ `AuthMethod`); `Host::with_site_defaults`/`find_site` (site inheritance); serde derives. |
 | `store.rs` | Load/save `hosts.toml` with atomic write (exclusive temp + rename); `create_exclusive`, the shared "create this file and fail if the name is taken" helper the forward logs use too. |
 | `state.rs` | Frecency state (`use_count`, `last_used`) load/save (`state.json`); score computation. |

@@ -5,6 +5,61 @@ whenever you make a non-trivial design choice.
 
 ---
 
+### D-039 · `sshelf pick` draws inline on stderr, and finds its own keyboard
+Searching the inventory from the shell is a shell widget's job, and a widget needs one thing
+from sshelf: the name of a host, on stdout, with the UI somewhere else. So pick mode runs the
+ordinary list with `Enter` recording the row instead of connecting, and the loop was made
+generic over the ratatui backend so the same code can draw to stderr.
+
+It draws **inline** by default, in 15 rows anchored at the prompt (`Viewport::Inline`), because
+that is what the request was: `Ctrl-r`, not an application. `--height`, the `pick_height` config
+key and `--full-screen` cover the rest, and `0` means the whole screen, which is how atuin
+spells the same choice. Two inline details are worth recording because neither is obvious.
+ratatui places the viewport by asking the terminal where the cursor is, and crossterm writes
+that query (`ESC [ 6 n`) to `io::stdout()` rather than to the backend's own writer, so in pick
+mode it went into the pipe carrying the name and the setup failed two seconds later with "the
+cursor position could not be read". fd 1 is therefore lent to the terminal for as long as the
+list is up, and handed back before anything is printed; a resize repeats that query mid-loop,
+which is why the swap lasts the whole loop rather than just the setup. And the first draw only
+writes cells that differ from an all-spaces buffer, so the space in the top border never erased
+the shell prompt the viewport had landed on: clearing the viewport once before the loop forces
+that first draw to write every cell.
+
+Pick mode answers only the chooser keys (filter, move, mark, choose, leave). The add form, the
+settings screen, the two managers and the help overlay are full-screen designs that cannot be
+drawn in fifteen rows, and a picker a shell fires off on a keypress should not be able to edit
+the database on the way past: `^d` is the one that matters, since the picker is pointed at
+whatever inventory that shell was configured with.
+
+ratatui's `init`/`restore` are stdout-only, so pick mode spells out its own pair against stderr
+and replaces the panic hook: the default one writes `LeaveAlternateScreen` to stdout, and those
+bytes would land in the `$(sshelf pick)` the shell captures. A real terminal on stderr is
+required rather than assumed, so a redirected run refuses instead of drawing into a file. The
+measured result is 6 bytes of stdout for a 5-character host name, and 0 bytes on a cancel.
+
+Reading keys is the part that needed work. A zsh widget keeps all three streams, so the child
+sees none of them as a terminal, and crossterm's own fallback to the `/dev/tty` alias stops at
+"Failed to initialize input reader" on macOS: its event source registers that descriptor with
+kqueue, which refuses the alias (first hit in D-034, where the add form reads a piped ssh command). `ttyname` cannot help, because on
+macOS it answers `/dev/tty` for a descriptor opened from `/dev/tty`, and neither can `fstat`,
+which reports the alias's own device number (major 2, minor 0) rather than the terminal's. So
+the controlling terminal is asked for by identity: `proc_pidinfo`'s `e_tdev` is its device
+number and `devname` turns that into the name under `/dev` that kqueue accepts. Linux reads the
+descriptor's name from `/proc` instead, and needs none of this, since epoll watches the alias
+happily. The same lookup now serves the add form's piped-stdin path.
+
+A pick does not touch the frecency state. The connect that normally follows records its own
+use, and a widget that inserts a name the user then edits away should not count as a visit.
+
+Rejected: the alternate screen as the default (it is the thing that makes a picker feel like an
+application, and the whole point was the opposite); requiring the shell to pass the device
+(`sshelf pick < $TTY` works in zsh, but it is not exported, bash has no equivalent, and every
+third-party integration would have to learn the same macOS trick); drawing on the terminal
+device directly instead of stderr (it would hijack the terminal from a piped script, and make
+"no terminal" undetectable in tests); printing the generated ssh command instead of the name
+(the name is what every other sshelf command takes, and a command string invites the shell to
+run it without the askpass wiring that makes a stored secret work).
+
 ### D-038 · One shared secret is keyed by name; the pointer lives in `hosts.toml`
 A fleet that shares one login password (a directory password, identical appliances, a lab) used
 to mean one stored secret per host: retyped per host, and retyped again on every rotation. A
@@ -141,7 +196,9 @@ refuses the `/dev/tty` alias with `EINVAL` while accepting the terminal's own de
 (`/dev/ttys004`, checked both ways). So the prefilled path reads everything it needs from the pipe
 first, then opens the device `ttyname` reports for stdout or stderr (`/dev/tty` only as a last
 resort) and `dup2`s it onto fd 0 before the TUI starts. With no terminal at all, the host is added
-the `--quiet` way, with a note saying so.
+the `--quiet` way, with a note saying so. (The `ttyname` lookup is enough here because a piped
+run still has the terminal on stdout or stderr. D-039 covers the case where it does not, and now
+owns the shared lookup.)
 
 Rejected: a shell function that intercepts `ssh` (sshelf never wraps ssh); reading shell history
 (three formats, and no consent); silently ignoring a trailing remote command; keeping `-v`, `-N`,

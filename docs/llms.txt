@@ -24,7 +24,8 @@ network calls of its own, never writes anything under `~/.ssh`, and keeps no sec
 - [Passwords, keys & 2FA](https://max-rh.github.io/sshelf/passwords-2fa.html): auth methods, where secrets live, auto-supply, saving the secret on first connect, one password shared by many hosts, setting a password for a marked set, what a refused stored secret prints, and hosts that need a verification code.
 - [Importing hosts](https://max-rh.github.io/sshelf/import.html): read-only import from `~/.ssh/config`, and `--tailscale` for a whole tailnet.
 - [Exporting to SSH config](https://max-rh.github.io/sshelf/export.html): the `Include` fragment sshelf writes that lets plain ssh/scp/rsync and VS Code Remote resolve your hosts.
-- [CLI reference](https://max-rh.github.io/sshelf/cli.html): every subcommand and flag, non-interactive `add` and `add --from-ssh`, `list --json`, `credentials`, running one command with `sshelf <host> -- cmd`, and shell completions.
+- [CLI reference](https://max-rh.github.io/sshelf/cli.html): every subcommand and flag, non-interactive `add` and `add --from-ssh`, `list --json`, `credentials`, running one command with `sshelf <host> -- cmd`, `pick` for shell widgets, and shell completions.
+- [Shell integration](https://max-rh.github.io/sshelf/shell.html): tab completion, the `sshelf pick` host picker (drawn inline under the prompt, `--height` / `pick_height` / `--full-screen`) and what it prints, the zsh and bash plugins in `contrib/` that bind it to a key, and how to write your own widget.
 - [Configuration](https://max-rh.github.io/sshelf/configuration.html): `config.toml` keys, the settings screen, and where every file lives.
 - [Checking your setup (doctor)](https://max-rh.github.io/sshelf/doctor.html): what `sshelf doctor` checks, what each verdict means, and its exit code.
 - [FAQ & troubleshooting](https://max-rh.github.io/sshelf/faq.html): common questions, including why sshelf doesn't use your ssh config.

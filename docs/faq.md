@@ -106,6 +106,22 @@ Flag it: **2FA = yes** in the edit form (or `--2fa` on `sshelf add`). A stored-s
 routes *all* prompts to the askpass helper with no terminal fallback, so the verification
 prompt needs the [2FA flow](passwords-2fa.md#two-factor-2fa-hosts) to answer it.
 
+## Some of my hosts need no password at all. Which auth method is that?
+
+`agent`. It means sshelf wires nothing and runs plain `ssh user@host`, so whatever your ssh
+already does on its own is what happens: a key in your agent, host-based authentication,
+GSSAPI/Kerberos, or an appliance that accepts the `none` method. Set those hosts to `agent` and
+they connect straight through. [Hosts that need no
+secret](passwords-2fa.md#hosts-that-need-no-secret-at-all) has the detail, including why
+`doctor`'s ssh-agent warning is harmless on a Kerberos fleet.
+
+## Can I search my hosts from the shell, without opening sshelf?
+
+Yes, two ways. `sshelf prod<Tab>` completes host names once dynamic completion is set up, and
+`sshelf pick` opens the picker, prints the name you chose and connects to nothing, so a key
+binding can drop it onto the line you are typing. `contrib/` has a ready zsh and bash plugin
+that binds Alt-s: [Shell integration](shell.md).
+
 ## Tab completion doesn't complete my host names
 
 Completion has two layers. The packages install **static** completion (subcommands + flags),

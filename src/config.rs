@@ -83,6 +83,15 @@ pub struct Config {
     /// Where `Enter` opens the connection when sshelf itself runs inside tmux.
     #[serde(default)]
     pub tmux: Tmux,
+    /// Rows `sshelf pick` draws under your prompt. `0` means the whole screen.
+    #[serde(default = "default_pick_height")]
+    pub pick_height: u16,
+}
+
+/// Enough rows for a search box, nine hosts and the hint line, which is about what a shell
+/// widget can take over without the prompt scrolling out of view.
+fn default_pick_height() -> u16 {
+    15
 }
 
 impl Default for Config {
@@ -93,6 +102,7 @@ impl Default for Config {
             accent: "cyan".to_string(),
             hosts_file: None,
             tmux: Tmux::default(),
+            pick_height: default_pick_height(),
         }
     }
 }
@@ -113,6 +123,9 @@ accent = \"cyan\"
 # Inside tmux, open connections in a new \"window\" or \"pane\" and stay in the picker.
 # \"off\" (the default) hands the terminal straight to ssh, as outside tmux.
 tmux = \"off\"
+
+# Rows `sshelf pick` draws under your prompt (0 = take the whole screen).
+pick_height = 15
 ";
 
 impl Config {
